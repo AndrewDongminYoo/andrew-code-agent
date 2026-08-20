@@ -330,7 +330,7 @@ test("rejects non-ASCII portable targets, including NFC and NFD case-fold canari
   });
 });
 
-test("rejects FIFO sources and source modes that do not exactly match the manifest", async () => {
+test("normalizes owner-only modes while rejecting every other mismatch", async () => {
   await withSourceRepository(async (repository) => {
     const fifoPath = join(repository, "rules", "canary.fifo");
     await execFile("mkfifo", [fifoPath]);
@@ -351,6 +351,21 @@ test("rejects FIFO sources and source modes that do not exactly match the manife
     );
 
     await rm(fifoPath);
+    await chmod(join(repository, "rules/default.rules"), 0o600);
+    await chmod(join(repository, "hooks/safety.sh"), 0o700);
+    const normalized = await resolveSourceFiles(
+      repository,
+      baseManifest(cleanFiles()),
+    );
+    assert.deepEqual(
+      normalized.map((file) => [file.targetPath, file.mode]),
+      [
+        ["agents/advisor.toml", 0o644],
+        ["hooks/safety.sh", 0o755],
+        ["rules/default.rules", 0o644],
+      ],
+    );
+
     await chmod(join(repository, "rules/default.rules"), 0o755);
     await execFile("git", ["-C", repository, "add", "rules/default.rules"]);
     await execFile("git", [

@@ -67,7 +67,7 @@ export async function resolveSourceFiles(
         );
       }
       const actualMode = file.mode & 0o777;
-      if (actualMode !== mode) {
+      if (!isAcceptedSourceMode(actualMode, mode)) {
         throw new SourceTreeError(
           "UNEXPECTED_MODE",
           `Manifest source for target ${entry.target} has an unexpected mode.`,
@@ -96,6 +96,17 @@ export async function resolveSourceFiles(
 
   return resolvedFiles.sort((left, right) =>
     compareCodeUnits(left.targetPath, right.targetPath),
+  );
+}
+
+function isAcceptedSourceMode(
+  actualMode: number,
+  expectedMode: 0o644 | 0o755,
+): boolean {
+  return (
+    actualMode === expectedMode ||
+    (actualMode === 0o600 && expectedMode === 0o644) ||
+    (actualMode === 0o700 && expectedMode === 0o755)
   );
 }
 
