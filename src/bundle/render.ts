@@ -1,6 +1,8 @@
+import { execFile as execFileCallback } from "node:child_process";
 import { access, realpath, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { isAbsolute } from "node:path";
+import { promisify } from "node:util";
 
 import { parse } from "smol-toml";
 
@@ -18,6 +20,7 @@ const generatedConfigTarget = "config.toml";
 const generatedHooksTarget = "hooks.json";
 const configInputTarget = "__render_input_config.toml";
 const hooksInputTarget = "__render_input_hooks.json";
+const execFile = promisify(execFileCallback);
 
 export interface CapabilityInputs {
   readonly oracle?: { readonly llmWikiRoot: string };
@@ -31,6 +34,7 @@ export interface RenderedBundle {
 
 export type RenderErrorCode =
   | "UNSUPPORTED_CAPABILITY"
+  | "CAPABILITY_INPUT_INVALID"
   | "ORACLE_INPUT_INVALID"
   | "BASE_REQUIREMENT_UNAVAILABLE"
   | "CAPABILITY_REQUIREMENT_UNAVAILABLE"
@@ -38,10 +42,14 @@ export type RenderErrorCode =
   | "CONFIG_INVALID"
   | "CONFIG_KEY_MISSING"
   | "HOOKS_INVALID"
+  | "HOOK_COMMAND_INVALID"
+  | "HOOK_CARDINALITY_INVALID"
   | "HOOK_SOURCE_MISMATCH"
   | "HOOK_DEPENDENCY_MISSING"
   | "REPLACEMENT_INPUT_INVALID"
   | "REPLACEMENT_COUNT_MISMATCH"
+  | "DISABLED_CAPABILITY_TOKEN"
+  | "INSTRUCTION_SECTION_CARDINALITY"
   | "INSTRUCTION_SECTION_MISSING";
 
 export class RenderError extends Error {
@@ -66,6 +74,7 @@ export async function renderBundle(
   capabilities: CapabilityInputs,
 ): Promise<RenderedBundle> {
   assertSupportedCapabilities(manifest.capabilities);
+  assertCapabilityInputs(manifest, capabilities);
   await assertRequirements(manifest.requirements, undefined);
 
   const oracle = manifest.capabilities.find(
@@ -91,6 +100,8 @@ export async function renderBundle(
       hook.capability === undefined ||
       enabledCapabilities.includes(hook.capability),
   );
+  assertHookCommands(activeHooks);
+  assertUniqueHookSelections(activeHooks);
   const sourceFiles = await resolveSourceFiles(
     sourceRoot,
     manifestForSourceResolution(manifest, activeFiles),
@@ -104,7 +115,7 @@ export async function renderBundle(
     renderSourceFile(entry, readSourceFile(sourceByTarget, entry.target)),
   );
 
-  assertNoGeneratedTargetConflict(renderedFiles, manifest.configSource);
+  assertNoGeneratedTargetConflict(renderedFiles);
   assertHookDependencies(activeHooks, renderedFiles);
   const sourceConfig = parseConfig(configSource);
   const sourceHooks = parseHooks(hooksSource);
@@ -126,7 +137,13 @@ export async function renderBundle(
     generatedHooks,
   ].sort(compareTargets);
 
+  assertFinalTargets(files);
   validatePortableFiles(files, manifest);
+  assertDisabledCapabilityTokens(
+    files,
+    manifest.capabilities,
+    enabledCapabilities,
+  );
   return { files, enabledCapabilities, disabledCapabilities };
 }
 
@@ -139,6 +156,58 @@ function assertSupportedCapabilities(
       "Only the oracle capability is supported by this renderer.",
     );
   }
+}
+
+function assertCapabilityInputs(
+  manifest: BundleManifest,
+  capabilities: CapabilityInputs,
+): void {
+  if (
+    !isObjectRecord(capabilities) ||
+    !hasOnlyOwnKeys(capabilities, ["oracle"])
+  ) {
+    throw new RenderError(
+      "CAPABILITY_INPUT_INVALID",
+      "Capability inputs contain an unsupported value.",
+    );
+  }
+  if (!Object.hasOwn(capabilities, "oracle")) {
+    return;
+  }
+  if (
+    !manifest.capabilities.some((capability) => capability.name === "oracle")
+  ) {
+    throw new RenderError(
+      "CAPABILITY_INPUT_INVALID",
+      "Oracle input was provided without an Oracle capability declaration.",
+    );
+  }
+  const oracle = capabilities.oracle;
+  if (
+    !isObjectRecord(oracle) ||
+    !hasOnlyOwnKeys(oracle, ["llmWikiRoot"]) ||
+    !Object.hasOwn(oracle, "llmWikiRoot") ||
+    typeof oracle.llmWikiRoot !== "string"
+  ) {
+    throw new RenderError(
+      "CAPABILITY_INPUT_INVALID",
+      "Oracle input must contain only llmWikiRoot.",
+    );
+  }
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyOwnKeys(
+  value: Record<string, unknown>,
+  allowedKeys: readonly string[],
+): boolean {
+  const keys = Reflect.ownKeys(value);
+  return keys.every(
+    (key) => typeof key === "string" && allowedKeys.includes(key),
+  );
 }
 
 async function resolveOracleCapability(
@@ -185,6 +254,13 @@ async function assertRequirements(
       if (!metadata.isFile()) {
         throw new Error("not a file");
       }
+      await execFile(requirement.executable, requirement.arguments, {
+        shell: false,
+        timeout: 5000,
+        maxBuffer: 64 * 1024,
+        cwd: "/",
+        env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" },
+      });
     } catch {
       throw new RenderError(
         capability === undefined
@@ -293,18 +369,77 @@ function fileMode(entry: BundleFileEntry): 0o644 | 0o755 {
 
 function assertNoGeneratedTargetConflict(
   files: readonly ResolvedSourceFile[],
-  configSource: string,
 ): void {
-  const targets = new Set(files.map((file) => file.targetPath));
+  const reservedTargets = new Set(
+    [generatedConfigTarget, generatedHooksTarget].map(targetIdentity),
+  );
   if (
-    targets.has(generatedConfigTarget) ||
-    targets.has(generatedHooksTarget) ||
-    configSource !== generatedConfigTarget
+    files.some((file) => reservedTargets.has(targetIdentity(file.targetPath)))
   ) {
     throw new RenderError(
       "RENDERED_TARGET_CONFLICT",
       "Generated config or hooks would conflict with a rendered source file.",
     );
+  }
+}
+
+function assertFinalTargets(files: readonly ResolvedSourceFile[]): void {
+  const targets = new Set<string>();
+  for (const file of files) {
+    const identity = targetIdentity(file.targetPath);
+    if (targets.has(identity)) {
+      throw new RenderError(
+        "RENDERED_TARGET_CONFLICT",
+        "Rendered files contain a duplicate or case-colliding target.",
+      );
+    }
+    targets.add(identity);
+  }
+}
+
+function targetIdentity(targetPath: string): string {
+  return targetPath.normalize("NFC").toLowerCase();
+}
+
+function assertHookCommands(hooks: readonly HookSelection[]): void {
+  for (const hook of hooks) {
+    const expected = `bash "\${CODEX_HOME}/${hook.requiredScript}"`;
+    if (hook.renderedCommand !== expected) {
+      throw new RenderError(
+        "HOOK_COMMAND_INVALID",
+        "A rendered hook command is not an approved CODEX_HOME script invocation.",
+      );
+    }
+  }
+}
+
+function assertUniqueHookSelections(hooks: readonly HookSelection[]): void {
+  const sourceIdentities = new Set<string>();
+  const emittedIdentities = new Set<string>();
+  for (const hook of hooks) {
+    const sourceIdentity = JSON.stringify([
+      hook.event,
+      hook.matcher,
+      hook.sourceCommand,
+      hook.timeout,
+    ]);
+    const emittedIdentity = JSON.stringify([
+      hook.event,
+      hook.matcher,
+      hook.renderedCommand,
+      hook.timeout,
+    ]);
+    if (
+      sourceIdentities.has(sourceIdentity) ||
+      emittedIdentities.has(emittedIdentity)
+    ) {
+      throw new RenderError(
+        "HOOK_CARDINALITY_INVALID",
+        "Selected hooks do not have one-to-one source and emitted identities.",
+      );
+    }
+    sourceIdentities.add(sourceIdentity);
+    emittedIdentities.add(emittedIdentity);
   }
 }
 
@@ -374,37 +509,40 @@ function assertSourceHooksMatch(
   const hooksByEvent = readTable(source.hooks, "HOOKS_INVALID");
   for (const selection of hooks) {
     const eventEntries = hooksByEvent[selection.event];
-    if (
-      !Array.isArray(eventEntries) ||
-      !eventEntries.some((entry) => matchesHook(entry, selection))
-    ) {
+    const matchCount = Array.isArray(eventEntries)
+      ? eventEntries.reduce(
+          (count, entry) => count + countMatchingHooks(entry, selection),
+          0,
+        )
+      : 0;
+    if (matchCount !== 1) {
       throw new RenderError(
-        "HOOK_SOURCE_MISMATCH",
-        "A selected hook command does not match the source hook configuration.",
+        "HOOK_CARDINALITY_INVALID",
+        "A selected hook command does not have exactly one source match.",
       );
     }
   }
 }
 
-function matchesHook(value: unknown, selection: HookSelection): boolean {
+function countMatchingHooks(value: unknown, selection: HookSelection): number {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
+    return 0;
   }
   const group = value as Record<string, unknown>;
   if (group.matcher !== selection.matcher || !Array.isArray(group.hooks)) {
-    return false;
+    return 0;
   }
-  return group.hooks.some((hook) => {
+  return group.hooks.reduce((count, hook) => {
     if (typeof hook !== "object" || hook === null || Array.isArray(hook)) {
-      return false;
+      return count;
     }
     const command = hook as Record<string, unknown>;
-    return (
-      command.type === "command" &&
+    return command.type === "command" &&
       command.command === selection.sourceCommand &&
       command.timeout === selection.timeout
-    );
-  });
+      ? count + 1
+      : count;
+  }, 0);
 }
 
 function removeDisabledInstructionSections(
@@ -413,37 +551,73 @@ function removeDisabledInstructionSections(
 ): readonly ResolvedSourceFile[] {
   let remaining = [...files];
   for (const section of capability.instructionSections) {
-    let removed = false;
-    remaining = remaining.map((file) => {
-      if (!file.targetPath.endsWith(".md")) {
-        return file;
-      }
-      const content = decode(file, "INSTRUCTION_SECTION_MISSING");
-      const expression = new RegExp(
-        `^## ${escapeRegularExpression(section)}\\r?\\n[\\s\\S]*?(?=^## |(?![\\s\\S]))`,
-        "gmu",
-      );
-      if (!expression.test(content)) {
-        return file;
-      }
-      removed = true;
-      return {
-        ...file,
-        bytes: new TextEncoder().encode(content.replace(expression, "")),
-      };
-    });
-    if (!removed) {
+    const heading = `^## ${escapeRegularExpression(section)}(?:\\r?\\n|$)`;
+    const matches = remaining.reduce(
+      (count, file) =>
+        file.targetPath.endsWith(".md")
+          ? count +
+            [
+              ...decode(file, "INSTRUCTION_SECTION_MISSING").matchAll(
+                new RegExp(heading, "gmu"),
+              ),
+            ].length
+          : count,
+      0,
+    );
+    if (matches !== 1) {
       throw new RenderError(
-        "INSTRUCTION_SECTION_MISSING",
-        "A declared capability instruction section is missing.",
+        "INSTRUCTION_SECTION_CARDINALITY",
+        "A declared capability instruction section must appear exactly once.",
       );
     }
+    const expression = new RegExp(
+      `${heading}[\\s\\S]*?(?=^## |(?![\\s\\S]))`,
+      "mu",
+    );
+    remaining = remaining.map((file) =>
+      file.targetPath.endsWith(".md")
+        ? {
+            ...file,
+            bytes: new TextEncoder().encode(
+              decode(file, "INSTRUCTION_SECTION_MISSING").replace(
+                expression,
+                "",
+              ),
+            ),
+          }
+        : file,
+    );
   }
   return remaining;
 }
 
 function escapeRegularExpression(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+}
+
+function assertDisabledCapabilityTokens(
+  files: readonly ResolvedSourceFile[],
+  capabilities: readonly CapabilityDefinition[],
+  enabledCapabilities: readonly string[],
+): void {
+  for (const capability of capabilities) {
+    if (enabledCapabilities.includes(capability.name)) {
+      continue;
+    }
+    for (const token of capability.requiredTokens) {
+      const literal = `\${${token}}`;
+      if (
+        files.some((file) =>
+          new TextDecoder().decode(file.bytes).includes(literal),
+        )
+      ) {
+        throw new RenderError(
+          "DISABLED_CAPABILITY_TOKEN",
+          "A disabled capability token remains in rendered output.",
+        );
+      }
+    }
+  }
 }
 
 function createGeneratedConfig(
@@ -456,7 +630,7 @@ function createGeneratedConfig(
     setConfigValue(projected, key, readConfigValue(source, key));
   }
   for (const [key, value] of Object.entries(manifest.configOverrides)) {
-    setConfigValue(projected, key, value);
+    setConfigValue(projected, key, value, true);
   }
   for (const agent of selectedAgents(files)) {
     setConfigValue(
@@ -505,6 +679,7 @@ function setConfigValue(
   table: ConfigTable,
   key: string,
   value: ConfigScalar,
+  allowExactOverwrite = false,
 ): void {
   const segments = key.split(".");
   const finalSegment = segments.pop();
@@ -528,6 +703,15 @@ function setConfigValue(
       throw new RenderError(
         "CONFIG_INVALID",
         "Manifest config key conflicts with a scalar value.",
+      );
+    }
+  }
+  const existing = current[finalSegment];
+  if (existing !== undefined) {
+    if (isConfigTable(existing) || !allowExactOverwrite) {
+      throw new RenderError(
+        "CONFIG_INVALID",
+        "Manifest config key conflicts with an existing value.",
       );
     }
   }
