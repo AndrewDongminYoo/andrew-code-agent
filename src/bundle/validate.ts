@@ -103,6 +103,9 @@ function assertNoForbiddenContentPath(
     /(?:~\/|\/|(?:[A-Za-z0-9._-]+\/)+)[^\s"'`<>),;\]}]*/gu,
   )) {
     const path = match[0];
+    if (!isConcreteContentPath(path)) {
+      continue;
+    }
     const segments = path
       .split("/")
       .filter((segment) => segment.length > 0)
@@ -122,6 +125,27 @@ function assertNoForbiddenContentPath(
       );
     }
   }
+}
+
+function isConcreteContentPath(path: string): boolean {
+  if (
+    path.startsWith("/") ||
+    path.startsWith("~/") ||
+    path.startsWith("./") ||
+    path.startsWith("../")
+  ) {
+    return true;
+  }
+
+  const separatorCount = [...path].filter(
+    (character) => character === "/",
+  ).length;
+  if (separatorCount >= 2 || path.endsWith("/")) {
+    return true;
+  }
+
+  const finalSegment = path.split("/").at(-1) ?? "";
+  return /\.[A-Za-z0-9][A-Za-z0-9._-]*$/u.test(finalSegment);
 }
 
 function isForbiddenPathSegment(

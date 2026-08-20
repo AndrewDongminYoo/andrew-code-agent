@@ -100,6 +100,44 @@ test("rejects forbidden runtime path segments only in bounded path-like content"
   );
 });
 
+test("classifies only concrete content paths before applying forbidden segments", () => {
+  const cases = [
+    ["conceptual prose", "cache/runtime", false],
+    ["absolute", "/tmp/cache/runtime", true],
+    ["home relative", "~/cache/runtime", true],
+    ["dot relative", "./cache/runtime", true],
+    ["parent relative", "../cache/runtime", true],
+    ["trailing slash", "cache/runtime/", true],
+    ["filename extension", "cache/runtime.txt", true],
+    ["two separators", "docs/cache/runtime", true],
+    ["safe two separators", "docs/runtime/example", false],
+    ["safe filename extension", "notes/runtime.txt", false],
+    ["safe trailing slash", "runtime/", false],
+  ];
+
+  for (const [name, candidate, shouldReject] of cases) {
+    const file = portableFile(
+      "rules/path-candidate.txt",
+      `value = \"${candidate}\"\n`,
+    );
+    if (shouldReject) {
+      assert.throws(
+        () => validate([file], manifest()),
+        (error) => {
+          assert.equal(
+            assertValidationError(error, "FORBIDDEN_PATH_SEGMENT"),
+            true,
+          );
+          assert.equal(error.message.includes(candidate), false, name);
+          return true;
+        },
+      );
+    } else {
+      assert.doesNotThrow(() => validate([file], manifest()), name);
+    }
+  }
+});
+
 test("rejects forbidden literal paths and runtime-state path segments without exposing content", () => {
   const sourceHome = "/Users/dongminyu";
   const safeContent = "safe";
