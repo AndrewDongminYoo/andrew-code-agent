@@ -114,7 +114,9 @@ async function createArtifact(root, name, entries) {
 }
 
 async function withFixture(run) {
-  const root = await mkdtemp(join(tmpdir(), "andrew-agent-install-"));
+  const root = await realpath(
+    await mkdtemp(join(tmpdir(), "andrew-agent-install-")),
+  );
   const context = {
     root,
     stateRoot: join(root, "state"),
@@ -441,9 +443,13 @@ test("all journal-published ordinary failures roll back immediately", async () =
       upgradeEntries,
     );
     const checkpoints = [];
-    installer.__setInstallCheckpointHookForTests((checkpoint) =>
-      checkpoints.push(checkpoint),
-    );
+    installer.__setInstallCheckpointHookForTests((checkpoint) => {
+      if (
+        !checkpoint.startsWith("preimage:") &&
+        checkpoint !== "post-commit-cleanup"
+      )
+        checkpoints.push(checkpoint);
+    });
     await installer.installBundle(probe.stateRoot, upgrade);
     installer.__setInstallCheckpointHookForTests(undefined);
     assert.deepEqual(checkpoints, [
@@ -705,6 +711,393 @@ test("inspectInstallState is a strictly read-only stable snapshot", async () => 
     assert.deepEqual(
       await installer.inspectInstallState(context.stateRoot),
       inspection,
+    );
+    assert.deepEqual(await snapshotTree(context.stateRoot), before);
+  });
+});
+
+async function readJournalFixture(stateRoot) {
+  return JSON.parse(
+    await readFile(join(stateRoot, "install-journal.json"), "utf8"),
+  );
+}
+
+async function writeCanonicalControl(path, value, mode = 0o600) {
+  await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, { mode });
+  await chmod(path, mode);
+}
+
+test("rejects nonordinary control ancestors without chmod outside stateRoot", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    const external = join(context.root, "external-control");
+    await mkdir(external, { mode: 0o751 });
+    await mkdir(context.stateRoot);
+    await symlink(external, join(context.stateRoot, "install-preimages"));
+    const candidate = await createArtifact(
+      context.artifactsRoot,
+      "external-control",
+      firstEntries,
+    );
+    const before = await snapshotTree(context.root);
+    const externalMode = (await lstat(external)).mode & 0o777;
+
+    await assertInstallError(
+      installer.installBundle(context.stateRoot, candidate),
+      "INVALID_STATE",
+    );
+
+    assert.equal((await lstat(external)).mode & 0o777, externalMode);
+    assert.deepEqual(await snapshotTree(context.root), before);
+  });
+});
+
+test("recovery rejects forged and third-party created directories without mutation", async () => {
+  for (const scenario of ["forged-unrelated", "third-party-same-path"]) {
+    await withFixture(async (context) => {
+      const { installer } = await installBaseline(context);
+      const candidate = await createArtifact(
+        context.artifactsRoot,
+        `directory-${scenario}`,
+        [
+          ...firstEntries,
+          { path: "generated/nested/new.txt", content: "new\n" },
+        ],
+      );
+      await interruptInstall(context.stateRoot, candidate, "journal-published");
+      const journalPath = join(context.stateRoot, "install-journal.json");
+      const journal = await readJournalFixture(context.stateRoot);
+      assert.ok(Array.isArray(journal.directoryWitnesses));
+      assert.ok(
+        journal.directoryWitnesses.every(
+          (witness) =>
+            typeof witness.path === "string" &&
+            typeof witness.dev === "string" &&
+            typeof witness.ino === "string",
+        ),
+      );
+      if (scenario === "forged-unrelated") {
+        journal.createdDirectories.push("codex-home/unrelated");
+        journal.createdDirectories.sort();
+        await writeCanonicalControl(journalPath, journal);
+      } else {
+        await mkdir(join(context.stateRoot, "codex-home/generated"));
+      }
+      const before = await snapshotTree(context.stateRoot);
+
+      await assertInstallError(
+        installer.recoverInterruptedInstall(context.stateRoot),
+        scenario === "forged-unrelated" ? "INVALID_STATE" : "RECOVERY_CONFLICT",
+      );
+      assert.deepEqual(await snapshotTree(context.stateRoot), before, scenario);
+    });
+  }
+});
+
+test("preimages publish atomically and incomplete material fails closed", async () => {
+  await withFixture(async (context) => {
+    const baseline = await installBaseline(context);
+    const upgrade = await createArtifact(
+      context.artifactsRoot,
+      "preimage-publication",
+      upgradeEntries,
+    );
+    const before = await snapshotTree(context.stateRoot);
+    baseline.installer.__setInstallCheckpointHookForTests((checkpoint) => {
+      if (checkpoint === "preimage:1") throw new Error("preimage interruption");
+    });
+
+    await assertInstallError(
+      baseline.installer.installBundle(context.stateRoot, upgrade),
+      "INSTALL_FAILED",
+    );
+    assert.deepEqual(await snapshotTree(context.stateRoot), before);
+  });
+});
+
+test("nonexistent stateRoot rollback restores exact absence and journals control creation", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    const candidate = await createArtifact(
+      context.artifactsRoot,
+      "absent-state-root",
+      firstEntries,
+    );
+    installer.__setInstallCheckpointHookForTests((checkpoint) => {
+      if (checkpoint === "journal-published") {
+        return readJournalFixture(context.stateRoot).then((journal) => {
+          assert.equal(journal.stateRootCreated, true);
+          assert.equal(journal.preimagesRootCreated, true);
+          throw new Error("rollback absent root");
+        });
+      }
+    });
+
+    await assertInstallError(
+      installer.installBundle(context.stateRoot, candidate),
+      "INSTALL_FAILED",
+    );
+    await assert.rejects(lstat(context.stateRoot), { code: "ENOENT" });
+  });
+});
+
+test("post-commit cleanup failure resolves committed and leaves an inspection issue", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    await seedProtected(context.stateRoot);
+    const candidate = await createArtifact(
+      context.artifactsRoot,
+      "post-commit-cleanup",
+      firstEntries,
+    );
+    installer.__setInstallCheckpointHookForTests((checkpoint) => {
+      if (checkpoint === "post-commit-cleanup")
+        throw new Error("cleanup unavailable");
+    });
+
+    await installer.installBundle(context.stateRoot, candidate);
+    installer.__setInstallCheckpointHookForTests(undefined);
+
+    assert.equal(
+      JSON.parse(
+        await readFile(join(context.stateRoot, "active-install.json"), "utf8"),
+      ).bundleDigest,
+      candidate.metadata.bundleDigest,
+    );
+    const inspection = await installer.inspectInstallState(context.stateRoot);
+    assert.deepEqual(inspection.issues, ["ORPHAN_TRANSACTION_CONTROL"]);
+    await assertInstallError(
+      installer.installBundle(context.stateRoot, candidate),
+      "INVALID_STATE",
+    );
+  });
+});
+
+test("inspection reports drift and invalid recovery material without mutation", async () => {
+  for (const scenario of ["managed-drift", "invalid-preimage"]) {
+    await withFixture(async (context) => {
+      const { installer } = await installBaseline(context);
+      if (scenario === "managed-drift") {
+        await writeFile(
+          join(context.stateRoot, "codex-home/config.toml"),
+          "inspection drift\n",
+        );
+      } else {
+        const upgrade = await createArtifact(
+          context.artifactsRoot,
+          "inspection-preimage",
+          upgradeEntries,
+        );
+        await interruptInstall(context.stateRoot, upgrade, "operation:1");
+        const transaction = (
+          await readdir(join(context.stateRoot, "install-preimages"))
+        )[0];
+        const preimage = (
+          await readdir(
+            join(context.stateRoot, "install-preimages", transaction),
+          )
+        ).find((name) => name.endsWith(".preimage"));
+        await chmod(
+          join(context.stateRoot, "install-preimages", transaction, preimage),
+          0o644,
+        );
+      }
+      const before = await snapshotTree(context.stateRoot);
+
+      const inspection = await installer.inspectInstallState(context.stateRoot);
+
+      assert.ok(
+        inspection.issues.includes(
+          scenario === "managed-drift"
+            ? "MANAGED_STATE_DRIFT"
+            : "INVALID_RECOVERY_MATERIAL",
+        ),
+      );
+      assert.deepEqual(await snapshotTree(context.stateRoot), before, scenario);
+    });
+  }
+});
+
+test("same digest requires exact candidate active metadata", async () => {
+  await withFixture(async (context) => {
+    const { installer, first } = await installBaseline(context);
+    const activePath = join(context.stateRoot, "active-install.json");
+    const forged = {
+      schemaVersion: 1,
+      bundleDigest: first.metadata.bundleDigest,
+      files: [],
+    };
+    await writeCanonicalControl(activePath, forged);
+    const before = await snapshotTree(context.stateRoot);
+
+    await assertInstallError(
+      installer.installBundle(context.stateRoot, first),
+      "INVALID_STATE",
+    );
+    assert.deepEqual(await snapshotTree(context.stateRoot), before);
+  });
+});
+
+test("candidate paths are ASCII and case-fold unique before state mutation", async () => {
+  for (const scenario of ["case-fold", "non-ascii"]) {
+    await withFixture(async (context) => {
+      const installer = requireInstaller();
+      const entries =
+        scenario === "case-fold"
+          ? [
+              { path: "A.txt", content: "upper\n" },
+              { path: "a.txt", content: "lower\n" },
+            ]
+          : [{ path: "café.txt", content: "unicode\n" }];
+      const candidate = await createArtifact(
+        context.artifactsRoot,
+        `portable-${scenario}`,
+        entries,
+      );
+      const before = await snapshotTree(context.stateRoot);
+
+      await assertInstallError(
+        installer.installBundle(context.stateRoot, candidate),
+        "INVALID_BUNDLE",
+      );
+      assert.deepEqual(await snapshotTree(context.stateRoot), before, scenario);
+    });
+  }
+});
+
+test("control files and directories require owner-only modes", async () => {
+  for (const scenario of [
+    "journal-0644",
+    "preimages-0755",
+    "transaction-0755",
+    "staged-nested-0755",
+  ]) {
+    await withFixture(async (context) => {
+      const { installer } = await installBaseline(context);
+      const upgrade = await createArtifact(
+        context.artifactsRoot,
+        `control-mode-${scenario}`,
+        scenario === "staged-nested-0755"
+          ? [...firstEntries, { path: "generated/new.txt", content: "new\n" }]
+          : upgradeEntries,
+      );
+      await interruptInstall(context.stateRoot, upgrade, "journal-published");
+      const preimagesRoot = join(context.stateRoot, "install-preimages");
+      if (scenario === "journal-0644")
+        await chmod(join(context.stateRoot, "install-journal.json"), 0o644);
+      else if (scenario === "preimages-0755") await chmod(preimagesRoot, 0o755);
+      else {
+        const transaction = (await readdir(preimagesRoot))[0];
+        await chmod(
+          scenario === "transaction-0755"
+            ? join(preimagesRoot, transaction)
+            : join(preimagesRoot, transaction, "created", "codex-home"),
+          0o755,
+        );
+      }
+      const before = await snapshotTree(context.stateRoot);
+
+      await assertInstallError(
+        installer.recoverInterruptedInstall(context.stateRoot),
+        scenario === "staged-nested-0755"
+          ? "RECOVERY_CONFLICT"
+          : "INVALID_STATE",
+      );
+      assert.deepEqual(await snapshotTree(context.stateRoot), before, scenario);
+    });
+  }
+});
+
+test("allows a stateRoot below an external symlink alias while preserving direct-control safety", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    const realParent = join(context.root, "real-state-parent");
+    const aliasParent = join(context.root, "state-parent-alias");
+    await mkdir(realParent);
+    await symlink(realParent, aliasParent);
+    const aliasedStateRoot = join(aliasParent, "state");
+    const candidate = await createArtifact(
+      context.artifactsRoot,
+      "aliased-state-root",
+      firstEntries,
+    );
+
+    await installer.installBundle(aliasedStateRoot, candidate);
+
+    assert.equal(
+      await readFile(join(aliasedStateRoot, "codex-home/config.toml"), "utf8"),
+      "model = 'first'\n",
+    );
+    const externalControl = join(context.root, "aliased-external-control");
+    await mkdir(externalControl, { mode: 0o751 });
+    const unsafeStateRoot = join(aliasParent, "unsafe-state");
+    await mkdir(unsafeStateRoot);
+    await symlink(externalControl, join(unsafeStateRoot, "install-preimages"));
+    const externalMode = (await lstat(externalControl)).mode & 0o777;
+    const before = await snapshotTree(context.root);
+    await assertInstallError(
+      installer.installBundle(unsafeStateRoot, candidate),
+      "INVALID_STATE",
+    );
+    assert.equal((await lstat(externalControl)).mode & 0o777, externalMode);
+    assert.deepEqual(await snapshotTree(context.root), before);
+  });
+});
+
+test("accepts an empty owner-only preimages root without orphan issues", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    await mkdir(join(context.stateRoot, "install-preimages"), {
+      recursive: true,
+      mode: 0o700,
+    });
+    const candidate = await createArtifact(
+      context.artifactsRoot,
+      "empty-preimages-root",
+      firstEntries,
+    );
+
+    await installer.installBundle(context.stateRoot, candidate);
+    const beforeNoOp = await snapshotTree(context.stateRoot);
+    const inspection = await installer.inspectInstallState(context.stateRoot);
+    await installer.installBundle(context.stateRoot, candidate);
+
+    assert.deepEqual(inspection.issues, []);
+    assert.deepEqual(await snapshotTree(context.stateRoot), beforeNoOp);
+    assert.deepEqual(
+      await readdir(join(context.stateRoot, "install-preimages")),
+      [],
+    );
+  });
+});
+
+test("recovery rejects unexpected staged control directories without mutation", async () => {
+  await withFixture(async (context) => {
+    const { installer } = await installBaseline(context);
+    const candidate = await createArtifact(
+      context.artifactsRoot,
+      "unexpected-staged-directory",
+      [...firstEntries, { path: "generated/nested/new.txt", content: "new\n" }],
+    );
+    await interruptInstall(context.stateRoot, candidate, "journal-published");
+    const transaction = (
+      await readdir(join(context.stateRoot, "install-preimages"))
+    )[0];
+    await mkdir(
+      join(
+        context.stateRoot,
+        "install-preimages",
+        transaction,
+        "created",
+        "unexpected",
+      ),
+      { mode: 0o700 },
+    );
+    const before = await snapshotTree(context.stateRoot);
+
+    await assertInstallError(
+      installer.recoverInterruptedInstall(context.stateRoot),
+      "RECOVERY_CONFLICT",
     );
     assert.deepEqual(await snapshotTree(context.stateRoot), before);
   });

@@ -50,6 +50,12 @@ export interface InstallOperation {
   readonly preimage: string | null;
 }
 
+export interface DirectoryWitness {
+  readonly path: string;
+  readonly dev: string;
+  readonly ino: string;
+}
+
 export interface InstallJournal {
   readonly version: 1;
   readonly transactionId: string;
@@ -59,6 +65,9 @@ export interface InstallJournal {
   readonly candidateActive: ActiveInstallMetadata;
   readonly operations: readonly InstallOperation[];
   readonly createdDirectories: readonly string[];
+  readonly directoryWitnesses: readonly DirectoryWitness[];
+  readonly stateRootCreated: boolean;
+  readonly preimagesRootCreated: boolean;
 }
 
 export interface InstallInspection {
@@ -126,6 +135,14 @@ export async function inspectInstallState(
   const issues: string[] = [];
   let active: ActiveInstallMetadata | null = null;
   let journal: InstallJournal | null = null;
+  let layout: ControlLayout | null = null;
+  try {
+    assertStateRootArgument(stateRoot);
+    layout = await inspectControlLayout(stateRoot);
+  } catch {
+    issues.push("INVALID_CONTROL_STATE");
+    return { active: null, journal: null, issues };
+  }
   try {
     active = await readActive(stateRoot);
   } catch {
@@ -136,6 +153,22 @@ export async function inspectInstallState(
   } catch {
     issues.push("INVALID_INSTALL_JOURNAL");
   }
+  if (active !== null) {
+    try {
+      await verifyManagedState(stateRoot, active);
+    } catch {
+      issues.push("MANAGED_STATE_DRIFT");
+    }
+  }
+  if (journal !== null) {
+    try {
+      await preflightRecovery(stateRoot, journal);
+    } catch {
+      issues.push("INVALID_RECOVERY_MATERIAL");
+    }
+  }
+  if (hasOrphanTransactionControl(layout, journal))
+    issues.push("ORPHAN_TRANSACTION_CONTROL");
   return {
     active,
     journal:
@@ -157,18 +190,37 @@ export async function installBundle(
 ): Promise<void> {
   const candidate = await verifyCandidate(artifact);
   assertStateRootArgument(stateRoot);
-  if ((await readJournal(stateRoot)) !== null)
+  const layout = await inspectControlLayout(stateRoot);
+  const existingJournal = await readJournal(stateRoot);
+  if (existingJournal !== null)
     throw new InstallError(
       "RECOVERY_REQUIRED",
       "An interrupted install requires explicit recovery.",
     );
+  if (hasOrphanTransactionControl(layout, existingJournal))
+    throw new InstallError(
+      "INVALID_STATE",
+      "Orphan transaction control state requires housekeeping.",
+    );
   const previous = await readActive(stateRoot);
   await verifyManagedState(stateRoot, previous);
-  if (previous?.bundleDigest === candidate.active.bundleDigest) return;
-  const transaction = await prepareTransaction(stateRoot, previous, candidate);
+  if (previous?.bundleDigest === candidate.active.bundleDigest) {
+    if (JSON.stringify(previous) !== JSON.stringify(candidate.active))
+      throw new InstallError(
+        "INVALID_STATE",
+        "Active metadata does not match the candidate identity.",
+      );
+    return;
+  }
+  let transaction = await prepareTransaction(
+    stateRoot,
+    previous,
+    candidate,
+    layout,
+  );
   let journalPublished = false;
   try {
-    await publishTransaction(stateRoot, transaction);
+    transaction = await publishTransaction(stateRoot, transaction);
     journalPublished = true;
     await checkpointHook?.("journal-published");
     await applyOperations(stateRoot, transaction, candidate.artifactRoot);
@@ -182,11 +234,13 @@ export async function installBundle(
     await checkpointHook?.("installation-verified");
     await rm(resolve(stateRoot, journalName));
     journalPublished = false;
-    await rm(resolve(stateRoot, preimagesName, transaction.transactionId), {
-      recursive: true,
-      force: true,
-    });
-    await removeIfEmpty(resolve(stateRoot, preimagesName));
+    try {
+      await checkpointHook?.("post-commit-cleanup");
+      await cleanupCommitted(stateRoot, transaction);
+    } catch {
+      // Journal removal is the irreversible commit point. Orphan control state
+      // remains owner-only and is surfaced by inspection for later housekeeping.
+    }
   } catch (cause) {
     if (!journalPublished) {
       await cleanupUnpublished(stateRoot, transaction);
@@ -214,8 +268,21 @@ export async function recoverInterruptedInstall(
   stateRoot: string,
 ): Promise<void> {
   assertStateRootArgument(stateRoot);
+  const layout = await inspectControlLayout(stateRoot);
   const journal = await readJournal(stateRoot);
-  if (journal === null) return;
+  if (journal === null) {
+    if (hasOrphanTransactionControl(layout, null))
+      throw new InstallError(
+        "INVALID_STATE",
+        "Orphan transaction control state requires housekeeping.",
+      );
+    return;
+  }
+  if (hasOrphanTransactionControl(layout, journal))
+    throw new InstallError(
+      "INVALID_STATE",
+      "Install transaction control state is invalid.",
+    );
   await preflightRecovery(stateRoot, journal);
   await restorePreviousState(stateRoot, journal);
   await clearTransaction(stateRoot, journal);
@@ -331,6 +398,7 @@ function validateBundleMetadata(value: unknown): BundleMetadata {
     paths.push(file.path);
   }
   assertSortedUnique(paths);
+  assertCaseFoldUnique(paths);
   return value as unknown as BundleMetadata;
 }
 
@@ -354,6 +422,7 @@ function validateOwnedFile(
 function assertPortablePath(path: string): void {
   if (
     path.length === 0 ||
+    !/^[\x20-\x7e]+$/.test(path) ||
     path.includes("\\") ||
     path.includes("\0") ||
     path.startsWith("/") ||
@@ -459,7 +528,7 @@ async function readActive(
   const path = resolve(stateRoot, activeName);
   let bytes: Buffer;
   try {
-    bytes = await readRegular(path);
+    bytes = await readControlFile(path, 0o600);
   } catch (error) {
     if (isMissing(error)) return null;
     throw new InstallError(
@@ -498,6 +567,7 @@ function validateActive(value: unknown): ActiveInstallMetadata {
     paths.push(file.path);
   }
   assertSortedUnique(paths);
+  assertCaseFoldUnique(paths);
   return value as unknown as ActiveInstallMetadata;
 }
 
@@ -505,7 +575,7 @@ async function readJournal(stateRoot: string): Promise<InstallJournal | null> {
   const path = resolve(stateRoot, journalName);
   let bytes: Buffer;
   try {
-    bytes = await readRegular(path);
+    bytes = await readControlFile(path, 0o600);
   } catch (error) {
     if (isMissing(error)) return null;
     throw new InstallError("INVALID_STATE", "Install journal is invalid.", {
@@ -537,6 +607,9 @@ function validateJournal(value: unknown): InstallJournal {
       "candidateActive",
       "operations",
       "createdDirectories",
+      "directoryWitnesses",
+      "stateRootCreated",
+      "preimagesRootCreated",
     ]) ||
     value.version !== 1 ||
     typeof value.transactionId !== "string" ||
@@ -544,7 +617,10 @@ function validateJournal(value: unknown): InstallJournal {
     !(value.previousDigest === null || isDigest(value.previousDigest)) ||
     !isDigest(value.candidateDigest) ||
     !Array.isArray(value.operations) ||
-    !Array.isArray(value.createdDirectories)
+    !Array.isArray(value.createdDirectories) ||
+    !Array.isArray(value.directoryWitnesses) ||
+    typeof value.stateRootCreated !== "boolean" ||
+    typeof value.preimagesRootCreated !== "boolean"
   )
     throw new Error("journal schema");
   const previous =
@@ -599,6 +675,36 @@ function validateJournal(value: unknown): InstallJournal {
     directories.push(directory);
   }
   assertSortedUnique(directories);
+  const possibleDirectories = new Set<string>();
+  for (const operation of value.operations) {
+    if (!isRecord(operation) || operation.type !== "write") continue;
+    let parent = dirname(`codex-home/${String(operation.path)}`)
+      .split(sep)
+      .join("/");
+    while (parent === "codex-home" || parent.startsWith("codex-home/")) {
+      possibleDirectories.add(parent);
+      if (parent === "codex-home") break;
+      parent = dirname(parent).split(sep).join("/");
+    }
+  }
+  if (directories.some((directory) => !possibleDirectories.has(directory)))
+    throw new Error("journal directory is unrelated to write operations");
+  const witnesses: DirectoryWitness[] = [];
+  for (const [index, witness] of value.directoryWitnesses.entries()) {
+    if (
+      !isRecord(witness) ||
+      !onlyKeys(witness, ["path", "dev", "ino"]) ||
+      witness.path !== directories[index] ||
+      typeof witness.dev !== "string" ||
+      !/^\d+$/.test(witness.dev) ||
+      typeof witness.ino !== "string" ||
+      !/^\d+$/.test(witness.ino)
+    )
+      throw new Error("journal directory witness");
+    witnesses.push(witness as unknown as DirectoryWitness);
+  }
+  if (witnesses.length !== directories.length)
+    throw new Error("journal directory witness closure");
   return value as unknown as InstallJournal;
 }
 
@@ -644,8 +750,8 @@ async function prepareTransaction(
   stateRoot: string,
   previous: ActiveInstallMetadata | null,
   candidate: VerifiedCandidate,
+  layout: ControlLayout,
 ): Promise<InstallJournal> {
-  await validateExistingStateRoot(stateRoot);
   const managedRoot = resolve(stateRoot, managedName);
   const previousByPath = new Map(
     previous?.files.map((file) => [file.path, file]) ?? [],
@@ -697,38 +803,66 @@ async function prepareTransaction(
     candidateActive: candidate.active,
     operations,
     createdDirectories,
+    directoryWitnesses: [],
+    stateRootCreated: !layout.stateRootExists,
+    preimagesRootCreated: !layout.preimagesRootExists,
   };
 }
 
 async function publishTransaction(
   stateRoot: string,
   journal: InstallJournal,
-): Promise<void> {
+): Promise<InstallJournal> {
+  const preimagesRoot = resolve(stateRoot, preimagesName);
   const transactionRoot = resolve(
     stateRoot,
     preimagesName,
     journal.transactionId,
   );
   try {
-    await mkdir(stateRoot, { recursive: true, mode: 0o700 });
-    await mkdir(transactionRoot, { recursive: true, mode: 0o700 });
-    await chmod(resolve(stateRoot, preimagesName), 0o700);
-    await chmod(transactionRoot, 0o700);
+    if (journal.stateRootCreated) await mkdir(stateRoot, { mode: 0o700 });
+    if (journal.preimagesRootCreated)
+      await mkdir(preimagesRoot, { mode: 0o700 });
+    await mkdir(transactionRoot, { mode: 0o700 });
+    await assertOrdinaryDirectory(transactionRoot, 0o700);
+    const directoryWitnesses = await stageCreatedDirectories(
+      stateRoot,
+      transactionRoot,
+      journal.createdDirectories,
+    );
+    const publishedJournal: InstallJournal = {
+      ...journal,
+      directoryWitnesses,
+    };
     const managedRoot = resolve(stateRoot, managedName);
-    for (const operation of journal.operations) {
+    let preimageIndex = 0;
+    for (const operation of publishedJournal.operations) {
       if (operation.preimage === null) continue;
       const source = resolvePortable(managedRoot, operation.path);
       const bytes = await readRegular(source);
       if (!sameFingerprint(await fingerprintPath(source), operation.before))
         throw new Error("preimage source drift");
       const target = resolve(transactionRoot, operation.preimage);
-      await writeFile(target, bytes, { flag: "wx", mode: 0o600 });
-      await chmod(target, 0o600);
+      await atomicFile(target, bytes, 0o600);
+      if (
+        operation.before.kind !== "file" ||
+        !sameFingerprint(await fingerprintPath(target), {
+          kind: "file",
+          mode: "0600",
+          sha256: operation.before.sha256,
+        })
+      )
+        throw new Error("preimage publication mismatch");
+      preimageIndex += 1;
+      await checkpointHook?.(`preimage:${preimageIndex}`);
     }
-    await atomicJson(resolve(stateRoot, journalName), journal, 0o600);
+    await atomicJson(resolve(stateRoot, journalName), publishedJournal, 0o600);
+    await readJournal(stateRoot);
+    return publishedJournal;
   } catch (error) {
     await rm(transactionRoot, { recursive: true, force: true });
-    await removeIfEmpty(resolve(stateRoot, preimagesName));
+    if (journal.preimagesRootCreated) await removeIfEmpty(preimagesRoot);
+    if (journal.stateRootCreated) await removeIfEmpty(stateRoot);
     throw new InstallError(
       "INSTALL_FAILED",
       "Install transaction could not be published.",
@@ -742,10 +876,21 @@ async function applyOperations(
   journal: InstallJournal,
   artifactRoot: string,
 ): Promise<void> {
-  for (const directory of journal.createdDirectories) {
+  const roots = maximalCreatedDirectoryRoots(journal.createdDirectories);
+  const stagedRoot = resolve(
+    stateRoot,
+    preimagesName,
+    journal.transactionId,
+    "created",
+  );
+  for (const [index, directory] of roots.entries()) {
+    const source = resolvePortable(stagedRoot, directory);
     const target = resolvePortable(stateRoot, directory);
-    await mkdir(target, { mode: 0o700 });
-    await chmod(target, 0o700);
+    if (await pathExists(target))
+      throw new Error("created directory destination exists");
+    await assertWitnessedDirectory(source, witnessFor(journal, directory));
+    await rename(source, target);
+    await checkpointHook?.(`directory:${index + 1}`);
   }
   const managedRoot = resolve(stateRoot, managedName);
   for (const [index, operation] of journal.operations.entries()) {
@@ -768,13 +913,14 @@ async function applyOperations(
 async function preflightRecovery(
   stateRoot: string,
   journal: InstallJournal,
-): Promise<void> {
+): Promise<ReadonlyMap<string, "staged" | "live">> {
   try {
     const transactionRoot = resolve(
       stateRoot,
       preimagesName,
       journal.transactionId,
     );
+    await assertTransactionMaterial(stateRoot, journal);
     for (const operation of journal.operations) {
       const current = await fingerprintPath(
         resolvePortable(resolve(stateRoot, managedName), operation.path),
@@ -805,16 +951,7 @@ async function preflightRecovery(
       !sameFingerprint(currentActive, candidateActive)
     )
       throw new Error("active metadata conflict");
-    for (const directory of journal.createdDirectories) {
-      const target = resolvePortable(stateRoot, directory);
-      try {
-        const stat = await lstat(target);
-        if (!stat.isDirectory() || stat.isSymbolicLink())
-          throw new Error("directory conflict");
-      } catch (error) {
-        if (!isMissing(error)) throw error;
-      }
-    }
+    return await classifyDirectorySubtrees(stateRoot, journal);
   } catch (error) {
     throw new InstallError(
       "RECOVERY_CONFLICT",
@@ -828,7 +965,7 @@ async function restorePreviousState(
   stateRoot: string,
   journal: InstallJournal,
 ): Promise<void> {
-  await preflightRecovery(stateRoot, journal);
+  const directoryStates = await preflightRecovery(stateRoot, journal);
   const transactionRoot = resolve(
     stateRoot,
     preimagesName,
@@ -860,12 +997,17 @@ async function restorePreviousState(
     if (journal.previousActive === null) await rm(activePath);
     else await atomicJson(activePath, journal.previousActive, 0o600);
   }
-  for (const directory of [...journal.createdDirectories].reverse()) {
-    try {
-      await rmdir(resolvePortable(stateRoot, directory));
-    } catch (error) {
-      if (!isMissing(error) && !isNotEmpty(error)) throw error;
-    }
+  const stagedRoot = resolve(transactionRoot, "created");
+  for (const directory of [
+    ...maximalCreatedDirectoryRoots(journal.createdDirectories),
+  ].reverse()) {
+    if (directoryStates.get(directory) !== "live") continue;
+    const source = resolvePortable(stateRoot, directory);
+    const target = resolvePortable(stagedRoot, directory);
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    if (await pathExists(target))
+      throw new Error("staged rollback target exists");
+    await rename(source, target);
   }
   const active = await readActive(stateRoot);
   if (JSON.stringify(active) !== JSON.stringify(journal.previousActive))
@@ -882,7 +1024,21 @@ async function clearTransaction(
     recursive: true,
     force: true,
   });
-  await removeIfEmpty(resolve(stateRoot, preimagesName));
+  if (journal.preimagesRootCreated)
+    await removeIfEmpty(resolve(stateRoot, preimagesName));
+  if (journal.stateRootCreated) await removeIfEmpty(stateRoot);
+}
+
+async function cleanupCommitted(
+  stateRoot: string,
+  journal: InstallJournal,
+): Promise<void> {
+  await rm(resolve(stateRoot, preimagesName, journal.transactionId), {
+    recursive: true,
+    force: true,
+  });
+  if (journal.preimagesRootCreated)
+    await removeIfEmpty(resolve(stateRoot, preimagesName));
 }
 
 async function cleanupUnpublished(
@@ -893,20 +1049,118 @@ async function cleanupUnpublished(
     recursive: true,
     force: true,
   });
-  await removeIfEmpty(resolve(stateRoot, preimagesName));
+  if (journal.preimagesRootCreated)
+    await removeIfEmpty(resolve(stateRoot, preimagesName));
+  if (journal.stateRootCreated) await removeIfEmpty(stateRoot);
 }
 
-async function validateExistingStateRoot(stateRoot: string): Promise<void> {
+interface ControlLayout {
+  readonly stateRootExists: boolean;
+  readonly preimagesRootExists: boolean;
+  readonly transactionNames: readonly string[];
+}
+
+async function inspectControlLayout(stateRoot: string): Promise<ControlLayout> {
   try {
-    const stat = await lstat(stateRoot);
-    if (!stat.isDirectory() || stat.isSymbolicLink())
-      throw new Error("state root");
+    let rootStat;
+    try {
+      rootStat = await lstat(stateRoot);
+    } catch (error) {
+      if (isMissing(error))
+        return {
+          stateRootExists: false,
+          preimagesRootExists: false,
+          transactionNames: [],
+        };
+      throw error;
+    }
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink())
+      throw new Error("state root is not an ordinary directory");
+    await assertControlFileIfPresent(resolve(stateRoot, activeName), 0o600);
+    await assertControlFileIfPresent(resolve(stateRoot, journalName), 0o600);
+    const preimagesRoot = resolve(stateRoot, preimagesName);
+    try {
+      await assertOrdinaryDirectory(preimagesRoot, 0o700);
+    } catch (error) {
+      if (isMissing(error))
+        return {
+          stateRootExists: true,
+          preimagesRootExists: false,
+          transactionNames: [],
+        };
+      throw error;
+    }
+    const transactionNames = (await readdir(preimagesRoot)).sort(
+      compareCodeUnits,
+    );
+    for (const name of transactionNames) {
+      assertTransactionId(name);
+      const transactionRoot = resolve(preimagesRoot, name);
+      await assertOrdinaryDirectory(transactionRoot, 0o700);
+      const createdRoot = resolve(transactionRoot, "created");
+      try {
+        await assertOrdinaryDirectory(createdRoot, 0o700);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+      }
+    }
+    return {
+      stateRootExists: true,
+      preimagesRootExists: true,
+      transactionNames,
+    };
   } catch (error) {
-    if (isMissing(error)) return;
-    throw new InstallError("INVALID_STATE", "State root is invalid.", {
-      cause: error,
-    });
+    if (error instanceof InstallError) throw error;
+    throw new InstallError(
+      "INVALID_STATE",
+      "Install control state is invalid.",
+      {
+        cause: error,
+      },
+    );
   }
+}
+
+async function assertControlFileIfPresent(
+  path: string,
+  mode: number,
+): Promise<void> {
+  try {
+    const stat = await lstat(path);
+    if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== mode)
+      throw new Error("control file mode or type is invalid");
+  } catch (error) {
+    if (!isMissing(error)) throw error;
+  }
+}
+
+async function assertOrdinaryDirectory(
+  path: string,
+  mode: number,
+): Promise<void> {
+  const stat = await lstat(path);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    (stat.mode & 0o777) !== mode
+  )
+    throw new Error("control directory mode or type is invalid");
+}
+
+function hasOrphanTransactionControl(
+  layout: ControlLayout,
+  journal: InstallJournal | null,
+): boolean {
+  if (!layout.preimagesRootExists) return false;
+  if (journal === null) return layout.transactionNames.length > 0;
+  return (
+    layout.transactionNames.length !== 1 ||
+    layout.transactionNames[0] !== journal.transactionId
+  );
+}
+
+function assertTransactionId(value: string): void {
+  if (!/^[a-f0-9-]{36}$/.test(value)) throw new Error("invalid transaction id");
 }
 
 async function assertExistingParents(
@@ -960,6 +1214,242 @@ async function findCreatedDirectories(
   if (parents.length > 0 && !contained(stateRoot, managedRoot))
     throw new Error("managed root containment");
   return [...candidates].sort(compareCodeUnits);
+}
+
+async function stageCreatedDirectories(
+  stateRoot: string,
+  transactionRoot: string,
+  directories: readonly string[],
+): Promise<readonly DirectoryWitness[]> {
+  if (directories.length === 0) return [];
+  const createdRoot = resolve(transactionRoot, "created");
+  await mkdir(createdRoot, { mode: 0o700 });
+  for (const directory of directories)
+    await mkdir(resolvePortable(createdRoot, directory), {
+      recursive: true,
+      mode: 0o700,
+    });
+  await assertControlDirectoryTree(createdRoot, directories);
+  const witnesses: DirectoryWitness[] = [];
+  for (const directory of directories) {
+    const staged = resolvePortable(createdRoot, directory);
+    const stat = await lstat(staged);
+    witnesses.push({
+      path: directory,
+      dev: String(stat.dev),
+      ino: String(stat.ino),
+    });
+  }
+  if (directories.some((directory) => !directory.startsWith(`${managedName}`)))
+    throw new Error("created directory escapes managed root");
+  if (!contained(stateRoot, resolve(stateRoot, managedName)))
+    throw new Error("managed root containment");
+  return witnesses;
+}
+
+async function assertControlDirectoryTree(
+  root: string,
+  createdDirectories: readonly string[],
+  relativePath = "",
+): Promise<void> {
+  await assertOrdinaryDirectory(root, 0o700);
+  const allowed = createdDirectoryPrefixClosure(createdDirectories);
+  for (const entry of await readdir(root, { withFileTypes: true })) {
+    const target = resolve(root, entry.name);
+    if (entry.isSymbolicLink() || !entry.isDirectory())
+      throw new Error("staged control tree contains a non-directory");
+    const childPath =
+      relativePath === "" ? entry.name : `${relativePath}/${entry.name}`;
+    if (!allowed.has(childPath))
+      throw new Error("staged control tree contains an unexpected directory");
+    await assertControlDirectoryTree(target, createdDirectories, childPath);
+  }
+}
+
+function createdDirectoryPrefixClosure(
+  directories: readonly string[],
+): ReadonlySet<string> {
+  const allowed = new Set<string>();
+  for (const directory of directories) {
+    const parts = directory.split("/");
+    let prefix = "";
+    for (const part of parts) {
+      prefix = prefix === "" ? part : `${prefix}/${part}`;
+      allowed.add(prefix);
+    }
+  }
+  return allowed;
+}
+
+function maximalCreatedDirectoryRoots(
+  directories: readonly string[],
+): readonly string[] {
+  return directories.filter(
+    (directory) =>
+      !directories.some(
+        (candidate) =>
+          candidate !== directory && directory.startsWith(`${candidate}/`),
+      ),
+  );
+}
+
+function witnessFor(journal: InstallJournal, path: string): DirectoryWitness {
+  const witness = journal.directoryWitnesses.find(
+    (entry) => entry.path === path,
+  );
+  if (witness === undefined) throw new Error("directory witness is missing");
+  return witness;
+}
+
+async function assertWitnessedDirectory(
+  path: string,
+  witness: DirectoryWitness,
+): Promise<void> {
+  const stat = await lstat(path);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    (stat.mode & 0o777) !== 0o700 ||
+    String(stat.dev) !== witness.dev ||
+    String(stat.ino) !== witness.ino
+  )
+    throw new Error("directory witness mismatch");
+}
+
+async function assertTransactionMaterial(
+  stateRoot: string,
+  journal: InstallJournal,
+): Promise<void> {
+  const transactionRoot = resolve(
+    stateRoot,
+    preimagesName,
+    journal.transactionId,
+  );
+  await assertOrdinaryDirectory(resolve(stateRoot, preimagesName), 0o700);
+  await assertOrdinaryDirectory(transactionRoot, 0o700);
+  const expectedEntries = new Set<string>();
+  if (journal.createdDirectories.length > 0) expectedEntries.add("created");
+  for (const operation of journal.operations) {
+    if (operation.preimage === null) continue;
+    expectedEntries.add(operation.preimage);
+    const preimage = resolve(transactionRoot, operation.preimage);
+    const stat = await lstat(preimage);
+    if (
+      !stat.isFile() ||
+      stat.isSymbolicLink() ||
+      (stat.mode & 0o777) !== 0o600 ||
+      operation.before.kind !== "file" ||
+      sha256(await readFile(preimage)) !== operation.before.sha256
+    )
+      throw new Error("preimage invalid");
+  }
+  const entries = await readdir(transactionRoot);
+  if (
+    entries.length !== expectedEntries.size ||
+    entries.some((entry) => !expectedEntries.has(entry))
+  )
+    throw new Error("transaction material closure invalid");
+  if (journal.createdDirectories.length > 0)
+    await assertControlDirectoryTree(
+      resolve(transactionRoot, "created"),
+      journal.createdDirectories,
+    );
+}
+
+async function classifyDirectorySubtrees(
+  stateRoot: string,
+  journal: InstallJournal,
+): Promise<ReadonlyMap<string, "staged" | "live">> {
+  const result = new Map<string, "staged" | "live">();
+  const stagedRoot = resolve(
+    stateRoot,
+    preimagesName,
+    journal.transactionId,
+    "created",
+  );
+  for (const root of maximalCreatedDirectoryRoots(journal.createdDirectories)) {
+    const staged = resolvePortable(stagedRoot, root);
+    const live = resolvePortable(stateRoot, root);
+    const stagedExists = await pathExists(staged);
+    const liveExists = await pathExists(live);
+    if (stagedExists === liveExists)
+      throw new Error("directory placement conflict");
+    if (stagedExists) {
+      await assertWitnessClosure(stagedRoot, journal, root);
+      await assertCreatedTreeClosure(stagedRoot, journal, root, false);
+      result.set(root, "staged");
+    } else {
+      await assertWitnessClosure(stateRoot, journal, root);
+      await assertCreatedTreeClosure(stateRoot, journal, root, true);
+      result.set(root, "live");
+    }
+  }
+  return result;
+}
+
+async function assertWitnessClosure(
+  locationRoot: string,
+  journal: InstallJournal,
+  maximalRoot: string,
+): Promise<void> {
+  for (const witness of journal.directoryWitnesses) {
+    if (
+      witness.path === maximalRoot ||
+      witness.path.startsWith(`${maximalRoot}/`)
+    )
+      await assertWitnessedDirectory(
+        resolvePortable(locationRoot, witness.path),
+        witness,
+      );
+  }
+}
+
+async function assertCreatedTreeClosure(
+  locationRoot: string,
+  journal: InstallJournal,
+  maximalRoot: string,
+  live: boolean,
+): Promise<void> {
+  const expectedDirectories = new Set(
+    journal.createdDirectories.filter(
+      (path) => path === maximalRoot || path.startsWith(`${maximalRoot}/`),
+    ),
+  );
+  const operationByLivePath = new Map(
+    journal.operations.map((operation) => [
+      `${managedName}/${operation.path}`,
+      operation,
+    ]),
+  );
+  const foundDirectories = new Set<string>();
+  const root = resolvePortable(locationRoot, maximalRoot);
+  async function visit(directory: string, relativePath: string): Promise<void> {
+    foundDirectories.add(relativePath);
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const child = resolve(directory, entry.name);
+      const childPath = `${relativePath}/${entry.name}`;
+      if (entry.isSymbolicLink()) throw new Error("created tree symlink");
+      if (entry.isDirectory()) {
+        await visit(child, childPath);
+        continue;
+      }
+      if (!live || !entry.isFile()) throw new Error("created tree closure");
+      const operation = operationByLivePath.get(childPath);
+      if (operation === undefined) throw new Error("unowned created tree file");
+      const fingerprint = await fingerprintPath(child);
+      if (
+        !sameFingerprint(fingerprint, operation.before) &&
+        !sameFingerprint(fingerprint, operation.after)
+      )
+        throw new Error("created tree file conflict");
+    }
+  }
+  await visit(root, maximalRoot);
+  if (
+    foundDirectories.size !== expectedDirectories.size ||
+    [...foundDirectories].some((path) => !expectedDirectories.has(path))
+  )
+    throw new Error("created directory closure mismatch");
 }
 
 async function fingerprintPath(path: string): Promise<FileFingerprint> {
@@ -1066,6 +1556,13 @@ async function readRegular(path: string): Promise<Buffer> {
   return await readFile(path);
 }
 
+async function readControlFile(path: string, mode: number): Promise<Buffer> {
+  const stat = await lstat(path);
+  if (!stat.isFile() || stat.isSymbolicLink() || (stat.mode & 0o777) !== mode)
+    throw new Error("control file mode or type is invalid");
+  return await readFile(path);
+}
+
 async function removeIfEmpty(path: string): Promise<void> {
   try {
     await rmdir(path);
@@ -1150,6 +1647,15 @@ function assertSortedUnique(values: readonly string[]): void {
       compareCodeUnits(values[index - 1] ?? "", values[index] ?? "") >= 0
     )
       throw new Error("not sorted unique");
+  }
+}
+
+function assertCaseFoldUnique(values: readonly string[]): void {
+  const folded = new Set<string>();
+  for (const value of values) {
+    const key = value.toLowerCase();
+    if (folded.has(key)) throw new Error("case-folded path collision");
+    folded.add(key);
   }
 }
 
