@@ -1,0 +1,1 @@
+This fixture is copied into an isolated test repository before its canary content is written.
