@@ -75,6 +75,59 @@ test("rejects malformed manifest structure and unsafe paths", async () => {
   assertManifestError(valid.replace('target = "rules/default.rules"', 'target = "agents/../rules/default.rules"'), "INVALID_PATH");
 });
 
+test("rejects glob and recursive source selectors", async () => {
+  const valid = await fixture("valid");
+  const sources = [
+    "rules/*.rules",
+    "rules/**/default.rules",
+    "rules/?.rules",
+    "rules/[default].rules",
+    "rules/{default,other}.rules",
+  ];
+
+  for (const source of sources) {
+    assertManifestError(
+      valid.replace('source = "rules/default.rules"', `source = "${source}"`),
+      "INVALID_PATH",
+    );
+  }
+});
+
+test("requires each root collection", async () => {
+  const collections = ["files", "hooks", "capabilities"];
+  const base = `schema_version = 1
+config_source = "config.toml"
+config_keys = ["model"]
+files = []
+hooks = []
+capabilities = []
+
+[config_overrides]
+approval_policy = "on-request"
+
+[forbidden]
+literals = []
+path_segments = []`;
+
+  for (const collection of collections) {
+    assertManifestError(base.replace(`${collection} = []\n`, ""), "MISSING_FIELD");
+  }
+});
+
+test("sorts file targets by NFC-normalized code units", async () => {
+  const valid = await fixture("valid");
+  const source = valid
+    .replace('target = "rules/default.rules"', 'target = "unicode/e\u0301.toml"')
+    .replace('target = "hooks/safety.sh"', 'target = "unicode/f.toml"')
+    .replace('target = "agents/advisor.toml"', 'target = "unicode/g.toml"')
+    .replace('required_script = "hooks/safety.sh"', 'required_script = "unicode/f.toml"');
+
+  assert.deepEqual(
+    parse(source).files.map((file) => file.target),
+    ["unicode/f.toml", "unicode/g.toml", "unicode/e\u0301.toml"],
+  );
+});
+
 test("rejects case-folded duplicate targets before filesystem access", async () => {
   assertManifestError(await fixture("duplicate-target"), "DUPLICATE_TARGET");
 });
@@ -85,4 +138,18 @@ test("rejects undeclared capabilities, unsupported modes, and unbounded replacem
   assertManifestError(valid.replace('name = "oracle"\nrequired_tokens', 'name = "shared-memory"\nrequired_tokens'), "UNDECLARED_CAPABILITY");
   assertManifestError(valid.replace('mode = "0644"', 'mode = "0600"'), "INVALID_MODE");
   assertManifestError(valid.replace("expected_matches = 1\n", ""), "INVALID_REPLACEMENT");
+});
+
+test("rejects nested and non-finite config overrides", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace("max_depth = 3", "nested = { enabled = true }"), "INVALID_TYPE");
+  assertManifestError(valid.replace("max_depth = 3", "max_depth = nan"), "INVALID_TYPE");
+});
+
+test("rejects hooks whose required script is missing or not executable", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('required_script = "hooks/safety.sh"', 'required_script = "hooks/missing.sh"'), "UNDECLARED_REQUIRED_SCRIPT");
+  assertManifestError(valid.replace('required_script = "hooks/safety.sh"', 'required_script = "rules/default.rules"'), "UNDECLARED_REQUIRED_SCRIPT");
 });

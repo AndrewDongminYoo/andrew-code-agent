@@ -106,11 +106,11 @@ export function parseBundleManifest(source: string): BundleManifest {
   const configOverrides = readConfigOverrides(
     readRequired(root, "config_overrides", "manifest"),
   );
-  const files = readFiles(readOptionalArray(root, "files", "manifest"));
+  const files = readFiles(readRequiredArray(root, "files", "manifest"));
   const capabilities = readCapabilities(
-    readOptionalArray(root, "capabilities", "manifest"),
+    readRequiredArray(root, "capabilities", "manifest"),
   );
-  const hooks = readHooks(readOptionalArray(root, "hooks", "manifest"));
+  const hooks = readHooks(readRequiredArray(root, "hooks", "manifest"));
   const forbidden = readForbidden(readRequired(root, "forbidden", "manifest"));
 
   const declaredCapabilities = new Set(
@@ -144,9 +144,7 @@ export function parseBundleManifest(source: string): BundleManifest {
     configSource,
     configKeys,
     configOverrides,
-    files: [...files].sort((left, right) =>
-      left.target.localeCompare(right.target),
-    ),
+    files: [...files].sort(compareFileTargets),
     hooks,
     capabilities: [...capabilities].sort((left, right) =>
       left.name.localeCompare(right.name),
@@ -219,7 +217,7 @@ function readFiles(values: readonly unknown[]): readonly BundleFileEntry[] {
       readOptionalArray(table, "replacements", `files[${index}]`),
       index,
     );
-    const normalizedTarget = target.normalize("NFC").toLocaleLowerCase("en-US");
+    const normalizedTarget = normalizeTarget(target).toLowerCase();
     if (targets.has(normalizedTarget)) {
       throw new ManifestError(
         "DUPLICATE_TARGET",
@@ -440,6 +438,21 @@ function readOptionalArray(
   return value;
 }
 
+function readRequiredArray(
+  table: Record<string, unknown>,
+  key: string,
+  location: string,
+): readonly unknown[] {
+  const value = readRequired(table, key, location);
+  if (!Array.isArray(value)) {
+    throw new ManifestError(
+      "INVALID_TYPE",
+      `${location}.${key} must be an array.`,
+    );
+  }
+  return value;
+}
+
 function readString(
   table: Record<string, unknown>,
   key: string,
@@ -477,6 +490,7 @@ function readPath(value: string, location: string): string {
     value.startsWith("/") ||
     value.includes("\\") ||
     value.includes("\u0000") ||
+    /[*?\[\]{}]/u.test(value) ||
     value
       .split("/")
       .some(
@@ -490,6 +504,33 @@ function readPath(value: string, location: string): string {
     );
   }
   return value;
+}
+
+function compareFileTargets(
+  left: BundleFileEntry,
+  right: BundleFileEntry,
+): number {
+  const normalized = compareCodeUnits(
+    normalizeTarget(left.target),
+    normalizeTarget(right.target),
+  );
+  return normalized === 0
+    ? compareCodeUnits(left.target, right.target)
+    : normalized;
+}
+
+function normalizeTarget(target: string): string {
+  return target.normalize("NFC");
+}
+
+function compareCodeUnits(left: string, right: string): number {
+  if (left < right) {
+    return -1;
+  }
+  if (left > right) {
+    return 1;
+  }
+  return 0;
 }
 
 function readRequired(
