@@ -53,7 +53,7 @@ test("uses UTF-8 bounds externally and renders neutral MCP lifecycle details", (
   const state = {
     threadId: "🙂".repeat(200),
     turnId: "turn-1",
-    items: new Map([["mcp-1", { id: "mcp-1", type: "mcpToolCall", phase: "started", value: { server: "fixture", tool: "lookup", status: "inProgress", progress: "MCP progress updated", raw: "secret" } }]]),
+    items: new Map([["mcp-1", { id: "mcp-1", type: "mcpToolCall", phase: "started", value: { server: "fixture", tool: "lookup", status: "external status secret", progress: "external progress secret", raw: "secret" } }]]),
     observedCommands: [],
     diff: null,
     warnings: [],
@@ -63,7 +63,33 @@ test("uses UTF-8 bounds externally and renders neutral MCP lifecycle details", (
     terminalStatus: "running",
   };
   const lines = renderer().renderTurnState(state);
-  assert.ok(Buffer.byteLength(lines[0], "utf8") <= 512);
-  assert.match(lines.join("\n"), /inProgress|MCP progress updated/);
-  assert.doesNotMatch(lines.join("\n"), /secret/);
+  assert.ok(lines.every((line) => Buffer.byteLength(line, "utf8") <= 512));
+  assert.match(lines.join("\n"), /MCP status updated/);
+  assert.doesNotMatch(lines.join("\n"), /external status secret|external progress secret|secret/);
+});
+
+test("bounds every composed external line by UTF-8 bytes", () => {
+  const huge = "🙂".repeat(600);
+  const state = {
+    threadId: huge,
+    turnId: huge,
+    items: new Map([
+      ["agent", { id: huge, type: "agentMessage", phase: "completed", value: { text: huge } }],
+      ["command", { id: huge, type: "commandExecution", phase: "completed", value: { command: huge, cwd: huge, exitCode: 1, output: huge } }],
+      ["files", { id: huge, type: "fileChange", phase: "completed", value: { files: [{ path: huge }, { path: huge }], omittedFiles: 1 } }],
+      ["mcp", { id: huge, type: "mcpToolCall", phase: "completed", value: { server: huge, tool: huge, status: huge, progress: huge } }],
+      ["subagent", { id: huge, type: "subAgentActivity", phase: "completed", value: { label: huge } }],
+      ["future", { id: huge, type: huge, phase: "completed", value: { label: huge } }],
+    ]),
+    observedCommands: [{ command: huge, cwd: huge, exitCode: 1 }],
+    diff: huge,
+    warnings: [huge],
+    omittedItems: 1,
+    omittedCommands: 1,
+    omittedWarnings: 1,
+    terminalStatus: "completed",
+  };
+  const lines = renderer().renderTurnState(state);
+  assert.ok(lines.length >= 15);
+  for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
 });

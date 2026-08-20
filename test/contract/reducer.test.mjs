@@ -195,6 +195,9 @@ test("marks capped inventories and warnings with visible omission metadata", () 
   assert.equal(state.omittedItems, 1);
   assert.equal(state.omittedWarnings, 1);
 
+  state = api.reduceServerMessage(state, completed(item("agentMessage", "message-64", { text: "x", phase: null, memoryCitation: null })));
+  assert.equal(state.omittedItems, 1, "one omitted item ID must be counted once across lifecycle events");
+
   const fileState = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), completed(item("fileChange", "files-1", {
     changes: Array.from({ length: 65 }, (_, index) => ({ path: `file-${index}`, kind: "update" })),
     status: "completed",

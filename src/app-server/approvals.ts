@@ -111,12 +111,187 @@ function validCommandAction(value: unknown): boolean {
   );
 }
 
-function validJson(value: unknown): boolean {
+function validJson(
+  value: unknown,
+  depth = 0,
+  active = new WeakSet<object>(),
+): boolean {
+  if (depth > 32) return false;
   if (value === null || typeof value === "string" || typeof value === "boolean")
     return true;
   if (typeof value === "number") return Number.isFinite(value);
-  if (Array.isArray(value)) return value.every(validJson);
-  return isRecord(value) && Object.values(value).every(validJson);
+  if (!Array.isArray(value) && !isRecord(value)) return false;
+  if (active.has(value)) return false;
+  active.add(value);
+  const valid = Object.values(value).every((entry) =>
+    validJson(entry, depth + 1, active),
+  );
+  active.delete(value);
+  return valid;
+}
+
+function boundedSchemaString(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Buffer.byteLength(value, "utf8") <= MAX_FIELD_BYTES
+  );
+}
+
+function optionalSchemaString(value: RecordValue, key: string): boolean {
+  return !(key in value) || boundedSchemaString(value[key]);
+}
+
+function validStringList(value: unknown): value is string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= MAX_APPROVAL_LIST_ITEMS &&
+    value.every(boundedSchemaString)
+  );
+}
+
+function validConstOption(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["const", "title"]) &&
+    boundedSchemaString(value.const) &&
+    boundedSchemaString(value.title)
+  );
+}
+
+function validSchemaInteger(value: unknown): boolean {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function validMcpPrimitiveSchema(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !optionalSchemaString(value, "title") ||
+    !optionalSchemaString(value, "description")
+  )
+    return false;
+  if (value.type === "boolean")
+    return (
+      hasOnlyKeys(value, ["type", "title", "description", "default"]) &&
+      (!("default" in value) || typeof value.default === "boolean")
+    );
+  if (value.type === "number" || value.type === "integer")
+    return (
+      hasOnlyKeys(value, [
+        "type",
+        "title",
+        "description",
+        "minimum",
+        "maximum",
+        "default",
+      ]) &&
+      ["minimum", "maximum", "default"].every(
+        (key) =>
+          !(key in value) ||
+          (typeof value[key] === "number" && Number.isFinite(value[key])),
+      )
+    );
+  if (value.type === "string") {
+    if ("oneOf" in value)
+      return (
+        hasOnlyKeys(value, [
+          "type",
+          "title",
+          "description",
+          "oneOf",
+          "default",
+        ]) &&
+        Array.isArray(value.oneOf) &&
+        value.oneOf.length <= MAX_APPROVAL_LIST_ITEMS &&
+        value.oneOf.every(validConstOption) &&
+        (!("default" in value) || boundedSchemaString(value.default))
+      );
+    if ("enum" in value)
+      return (
+        hasOnlyKeys(value, [
+          "type",
+          "title",
+          "description",
+          "enum",
+          "enumNames",
+          "default",
+        ]) &&
+        validStringList(value.enum) &&
+        (!("enumNames" in value) ||
+          (validStringList(value.enumNames) &&
+            value.enumNames.length === value.enum.length)) &&
+        (!("default" in value) || boundedSchemaString(value.default))
+      );
+    return (
+      hasOnlyKeys(value, [
+        "type",
+        "title",
+        "description",
+        "minLength",
+        "maxLength",
+        "format",
+        "default",
+      ]) &&
+      (!("minLength" in value) || validSchemaInteger(value.minLength)) &&
+      (!("maxLength" in value) || validSchemaInteger(value.maxLength)) &&
+      (!("format" in value) ||
+        ["email", "uri", "date", "date-time"].includes(
+          value.format as string,
+        )) &&
+      (!("default" in value) || boundedSchemaString(value.default))
+    );
+  }
+  if (value.type !== "array") return false;
+  if (
+    !hasOnlyKeys(value, [
+      "type",
+      "title",
+      "description",
+      "minItems",
+      "maxItems",
+      "items",
+      "default",
+    ]) ||
+    ("minItems" in value && !validSchemaInteger(value.minItems)) ||
+    ("maxItems" in value && !validSchemaInteger(value.maxItems)) ||
+    ("default" in value && !validStringList(value.default)) ||
+    !isRecord(value.items)
+  )
+    return false;
+  return (
+    (hasOnlyKeys(value.items, ["type", "enum"]) &&
+      value.items.type === "string" &&
+      validStringList(value.items.enum)) ||
+    (hasOnlyKeys(value.items, ["anyOf"]) &&
+      Array.isArray(value.items.anyOf) &&
+      value.items.anyOf.length <= MAX_APPROVAL_LIST_ITEMS &&
+      value.items.anyOf.every(validConstOption))
+  );
+}
+
+function validMcpElicitationSchema(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["$schema", "type", "properties", "required"]) ||
+    value.type !== "object" ||
+    !isRecord(value.properties)
+  )
+    return false;
+  const properties = value.properties;
+  if (
+    Object.keys(properties).length > MAX_APPROVAL_LIST_ITEMS ||
+    ("$schema" in value && !boundedSchemaString(value.$schema)) ||
+    !Object.entries(properties).every(
+      ([key, schema]) =>
+        boundedSchemaString(key) && validMcpPrimitiveSchema(schema),
+    )
+  )
+    return false;
+  return (
+    !("required" in value) ||
+    (validStringList(value.required) &&
+      new Set(value.required).size === value.required.length &&
+      value.required.every((key) => key in properties))
+  );
 }
 
 function validSpecialPath(value: unknown): boolean {
@@ -341,7 +516,7 @@ function validParams(method: KnownMethod, params: RecordValue): boolean {
     !validJson(params._meta)
   )
     return false;
-  if (params.mode === "form" || params.mode === "openai/form")
+  if (params.mode === "form")
     return (
       hasOnlyKeys(params, [
         "threadId",
@@ -353,7 +528,7 @@ function validParams(method: KnownMethod, params: RecordValue): boolean {
         "requestedSchema",
       ]) &&
       "requestedSchema" in params &&
-      validJson(params.requestedSchema)
+      validMcpElicitationSchema(params.requestedSchema)
     );
   return (
     params.mode === "url" &&
@@ -432,7 +607,7 @@ function validate(request: unknown): ValidRequest | ApprovalOutcome {
     return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
   return {
     method,
-    id: boundedBytes(String(request.id), MAX_AUDIT_BYTES),
+    id: String(request.id),
     params: request.params,
     audit: auditFrom(request, ""),
   };
@@ -610,6 +785,89 @@ function hasPromptableListSizes(request: ValidRequest): boolean {
       permissions.fileSystem.entries.length <= MAX_APPROVAL_LIST_ITEMS)
   );
 }
+
+function fitsDisplayed(value: string, limit = MAX_FIELD_BYTES): boolean {
+  return Buffer.byteLength(value, "utf8") <= limit;
+}
+
+function hasCompletePromptContext(
+  request: ValidRequest,
+  available: readonly Choice[],
+): boolean {
+  if (
+    !fitsDisplayed(request.id, MAX_AUDIT_BYTES) ||
+    [request.params.threadId, request.params.turnId, request.params.itemId]
+      .filter((value): value is string => typeof value === "string")
+      .some((value) => !fitsDisplayed(value, MAX_AUDIT_BYTES)) ||
+    available.some(
+      (choice) => !fitsDisplayed(choice.label, MAX_CHOICE_LABEL_BYTES),
+    )
+  )
+    return false;
+  const params = request.params;
+  for (const key of [
+    "command",
+    "cwd",
+    "grantRoot",
+    "serverName",
+    "mode",
+    "url",
+    "reason",
+    "message",
+  ] as const)
+    if (typeof params[key] === "string" && !fitsDisplayed(params[key]))
+      return false;
+  if (
+    isRecord(params.networkApprovalContext) &&
+    [params.networkApprovalContext.protocol, params.networkApprovalContext.host]
+      .filter((value): value is string => typeof value === "string")
+      .some((value) => !fitsDisplayed(value))
+  )
+    return false;
+  if (
+    Array.isArray(params.commandActions) &&
+    params.commandActions.some((action) => {
+      if (!isRecord(action)) return true;
+      return [action.type, action.path ?? action.command]
+        .filter((value): value is string => typeof value === "string")
+        .some((value) => !fitsDisplayed(value));
+    })
+  )
+    return false;
+  const permissions = isRecord(params.permissions) ? params.permissions : null;
+  const fileSystem =
+    permissions && isRecord(permissions.fileSystem)
+      ? permissions.fileSystem
+      : null;
+  if (
+    fileSystem &&
+    [fileSystem.read, fileSystem.write]
+      .filter(Array.isArray)
+      .flat()
+      .some((value) => typeof value === "string" && !fitsDisplayed(value))
+  )
+    return false;
+  if (fileSystem && Array.isArray(fileSystem.entries))
+    for (const entry of fileSystem.entries) {
+      if (!isRecord(entry) || !isRecord(entry.path)) return false;
+      const path = entry.path;
+      const destination =
+        path.type === "path"
+          ? path.path
+          : path.type === "glob_pattern"
+            ? path.pattern
+            : isRecord(path.value)
+              ? path.value.kind === "unknown"
+                ? path.value.path
+                : path.value.kind === "project_roots"
+                  ? (path.value.subpath ?? "project roots")
+                  : path.value.kind
+              : "unknown";
+      if (typeof destination === "string" && !fitsDisplayed(destination))
+        return false;
+    }
+  return true;
+}
 function prompt(
   request: ValidRequest,
   available: readonly Choice[],
@@ -754,6 +1012,11 @@ function readLine(
         !(chunk instanceof Uint8Array)
       )
         return finish(null);
+      const chunkBytes =
+        typeof chunk === "string"
+          ? Buffer.byteLength(chunk, "utf8")
+          : chunk.byteLength;
+      if (chunkBytes > MAX_LINE_BYTES - buffered.length) return finish(null);
       buffered = Buffer.concat([
         buffered,
         typeof chunk === "string"
@@ -794,6 +1057,7 @@ export async function answerApproval(
     return safest(valid);
   const available = choices(valid);
   if (!hasPromptableListSizes(valid)) return safest(valid);
+  if (!hasCompletePromptContext(valid, available)) return safest(valid);
   const rendered = prompt(valid, available);
   if (rendered === null || !(await writePrompt(output, rendered)))
     return safest(valid);

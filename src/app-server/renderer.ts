@@ -28,14 +28,17 @@ function valueText(value: unknown, key: string): string | null {
 function renderItem(item: ItemState): string {
   const lifecycle = `${bounded(item.id, 128)} ${bounded(item.type, 128)} ${item.phase}`;
   if (item.type === "agentMessage" || item.type === "plan")
-    return `${lifecycle}: ${valueText(item.value, "text") ?? ""}`;
-  if (item.type === "reasoning") return `${lifecycle}: Reasoning updated`;
+    return bounded(`${lifecycle}: ${valueText(item.value, "text") ?? ""}`);
+  if (item.type === "reasoning")
+    return bounded(`${lifecycle}: Reasoning updated`);
   if (item.type === "commandExecution") {
     const command = valueText(item.value, "command") ?? "command";
     const cwd = valueText(item.value, "cwd") ?? "unknown cwd";
     const exitCode = record(item.value)?.exitCode;
     const output = valueText(item.value, "output");
-    return `${lifecycle}: ${command} (${cwd}), exit ${typeof exitCode === "number" ? exitCode : "pending"}${output ? `, ${output}` : ""}`;
+    return bounded(
+      `${lifecycle}: ${command} (${cwd}), exit ${typeof exitCode === "number" ? exitCode : "pending"}${output ? `, ${output}` : ""}`,
+    );
   }
   if (item.type === "fileChange") {
     const rawFiles = record(item.value)?.files;
@@ -50,16 +53,22 @@ function renderItem(item: ItemState): string {
           .join(", ")
       : "files changed";
     const omittedFiles = record(item.value)?.omittedFiles;
-    return `${lifecycle}: ${files}${typeof omittedFiles === "number" && omittedFiles > 0 ? `; ${omittedFiles} file(s) omitted` : ""}`;
+    return bounded(
+      `${lifecycle}: ${files}${typeof omittedFiles === "number" && omittedFiles > 0 ? `; ${omittedFiles} file(s) omitted` : ""}`,
+    );
   }
   if (item.type === "mcpToolCall") {
-    const status = valueText(item.value, "status") ?? "unknown";
-    const progress = valueText(item.value, "progress");
-    return `${lifecycle}: ${valueText(item.value, "server") ?? "unknown"}/${valueText(item.value, "tool") ?? "tool"} (${status})${progress ? `, ${progress}` : ""}`;
+    return bounded(
+      `${lifecycle}: ${valueText(item.value, "server") ?? "unknown"}/${valueText(item.value, "tool") ?? "tool"} (MCP status updated)`,
+    );
   }
   if (item.type === "subAgentActivity")
-    return `${lifecycle}: ${valueText(item.value, "label") ?? "Subagent activity"}`;
-  return `${lifecycle}: ${valueText(item.value, "label") ?? "Item updated"}`;
+    return bounded(
+      `${lifecycle}: ${valueText(item.value, "label") ?? "Subagent activity"}`,
+    );
+  return bounded(
+    `${lifecycle}: ${valueText(item.value, "label") ?? "Item updated"}`,
+  );
 }
 
 export function renderTurnState(state: TurnState): readonly string[] {
@@ -70,11 +79,13 @@ export function renderTurnState(state: TurnState): readonly string[] {
   for (const item of state.items.values()) lines.push(renderItem(item));
   for (const command of state.observedCommands)
     lines.push(
-      `Observed command: ${bounded(command.command)} (${bounded(command.cwd)}), exit ${command.exitCode ?? "pending"}`,
+      bounded(
+        `Observed command: ${bounded(command.command)} (${bounded(command.cwd)}), exit ${command.exitCode ?? "pending"}`,
+      ),
     );
-  if (state.diff !== null) lines.push(`Final diff: ${bounded(state.diff)}`);
+  if (state.diff !== null) lines.push(bounded(`Final diff: ${state.diff}`));
   for (const warning of state.warnings)
-    lines.push(`Warning: ${bounded(warning)}`);
+    lines.push(bounded(`Warning: ${warning}`));
   const omissions = state as TurnState & {
     readonly omittedItems?: number;
     readonly omittedCommands?: number;

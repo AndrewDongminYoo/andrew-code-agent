@@ -158,7 +158,7 @@ test("renders complete bounded approval context and waits for a newline-delimite
     path: "/repo/visible.txt",
   }];
   command.params.networkApprovalContext = { host: "example.com", protocol: "https" };
-  command.params.reason = "🙂".repeat(800);
+  command.params.reason = "Needs a visible file and network access";
   const commandSink = output();
   const commandResult = await approvals().answerApproval(command, input("1x\n"), commandSink.stream, 100);
   assert.deepEqual(commandResult.response, { decision: "decline" });
@@ -191,8 +191,8 @@ test("renders complete bounded approval context and waits for a newline-delimite
 
 test("preserves every available choice after bounding context and validates generated MCP and filesystem nesting", async () => {
   const [command, , permission, mcp] = await requests();
-  command.params.command = "command ".repeat(1000);
-  command.params.cwd = "/repo/" + "path/".repeat(1000);
+  command.params.command = "command --safe";
+  command.params.cwd = "/repo";
   command.params.proposedNetworkPolicyAmendments = Array.from(
     { length: 8 },
     (_, index) => ({ host: `host-${index}.example.com`, action: "allow" }),
@@ -236,6 +236,254 @@ test("preserves every available choice after bounding context and validates gene
   invalidDepth.params.permissions.fileSystem.globScanMaxDepth = 0;
   const invalidDepthResult = await approvals().answerApproval(invalidDepth, input("1\n"), output().stream, 100);
   assert.equal(invalidDepthResult.kind, "failClosed");
+});
+
+test("declines before prompting when any displayed approval context or policy choice would be truncated", async () => {
+  const [fixtureCommand, fixtureFile, fixturePermission, fixtureMcp] =
+    await requests();
+  const cases = [];
+  const parsedCommand = JSON.parse(JSON.stringify(fixtureCommand));
+  parsedCommand.params.command = "x".repeat(5000);
+  cases.push(parsedCommand);
+  const longRequestId = structuredClone(fixtureCommand);
+  longRequestId.id = "request-".repeat(100);
+  cases.push(longRequestId);
+  for (const [fixture, key] of [
+    [fixtureCommand, "threadId"],
+    [fixtureCommand, "turnId"],
+    [fixtureCommand, "itemId"],
+    [fixtureCommand, "cwd"],
+    [fixtureCommand, "reason"],
+    [fixtureFile, "grantRoot"],
+    [fixtureMcp, "message"],
+    [fixtureMcp, "serverName"],
+  ]) {
+    const request = structuredClone(fixture);
+    request.params[key] = "🙂".repeat(100);
+    cases.push(request);
+  }
+  const permission = structuredClone(fixturePermission);
+  permission.params.permissions.fileSystem.read = ["🙂".repeat(100)];
+  cases.push(permission);
+  const entryPermission = structuredClone(fixturePermission);
+  entryPermission.params.permissions.fileSystem.entries = [
+    {
+      path: { type: "path", path: "🙂".repeat(100) },
+      access: "read",
+    },
+  ];
+  cases.push(entryPermission);
+  const action = structuredClone(fixtureCommand);
+  action.params.commandActions = [
+    {
+      type: "read",
+      command: "cat file",
+      name: "file",
+      path: "🙂".repeat(100),
+    },
+  ];
+  cases.push(action);
+  const network = structuredClone(fixtureCommand);
+  network.params.networkApprovalContext = {
+    host: "🙂".repeat(100),
+    protocol: "https",
+  };
+  cases.push(network);
+  const policy = structuredClone(fixtureCommand);
+  policy.params.proposedNetworkPolicyAmendments = [
+    { host: "🙂".repeat(100), action: "allow" },
+  ];
+  cases.push(policy);
+
+  for (const request of cases) {
+    const sink = output();
+    const result = await approvals().answerApproval(
+      request,
+      input("1\n"),
+      sink.stream,
+      100,
+    );
+    assert.equal(result.decision, "decline");
+    assert.equal(sink.text(), "");
+  }
+});
+test("validates the generated regular MCP form schema and rejects legacy openai form without prompting", async () => {
+  const [, , , fixtureMcp] = await requests();
+  const validSchemas = [
+    {
+      type: "object",
+      properties: {
+        enabled: { type: "boolean", title: "Enabled", default: true },
+      },
+      required: ["enabled"],
+    },
+    {
+      type: "object",
+      properties: {
+        count: { type: "integer", minimum: 1, maximum: 3, default: 2 },
+      },
+    },
+    {
+      type: "object",
+      properties: {
+        email: {
+          type: "string",
+          minLength: 1,
+          maxLength: 64,
+          format: "email",
+          default: "a@example.com",
+        },
+      },
+    },
+    {
+      type: "object",
+      properties: {
+        choice: { type: "string", oneOf: [{ const: "a", title: "A" }] },
+      },
+    },
+    {
+      type: "object",
+      properties: {
+        choices: {
+          type: "array",
+          minItems: 1,
+          maxItems: 2,
+          items: { type: "string", enum: ["a", "b"] },
+          default: ["a"],
+        },
+      },
+    },
+    {
+      type: "object",
+      properties: {
+        choices: {
+          type: "array",
+          items: { anyOf: [{ const: "a", title: "A" }] },
+        },
+      },
+    },
+  ];
+  for (const requestedSchema of validSchemas) {
+    const request = structuredClone(fixtureMcp);
+    request.params.requestedSchema = requestedSchema;
+    const result = await approvals().answerApproval(
+      request,
+      input("1\n"),
+      output().stream,
+      100,
+    );
+    assert.equal(result.kind, "response");
+  }
+
+  const malformedSchemas = [
+    null,
+    {},
+    { type: "array", properties: {} },
+    { type: "object" },
+    {
+      type: "object",
+      properties: { nested: { type: "object", properties: {} } },
+    },
+    {
+      type: "object",
+      properties: { text: { type: "string", format: "password" } },
+    },
+    {
+      type: "object",
+      properties: { count: { type: "integer", minimum: "1" } },
+    },
+    {
+      type: "object",
+      properties: {
+        choice: {
+          type: "string",
+          enum: Array.from({ length: 9 }, (_, index) => String(index)),
+        },
+      },
+    },
+    {
+      type: "object",
+      properties: Object.fromEntries(
+        Array.from({ length: 9 }, (_, index) => [
+          `p${index}`,
+          { type: "boolean" },
+        ]),
+      ),
+    },
+  ];
+  for (const requestedSchema of malformedSchemas) {
+    const request = structuredClone(fixtureMcp);
+    request.params.requestedSchema = requestedSchema;
+    const sink = output();
+    const result = await approvals().answerApproval(
+      request,
+      input("1\n"),
+      sink.stream,
+      100,
+    );
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+    assert.equal(sink.text(), "");
+  }
+
+  const legacy = structuredClone(fixtureMcp);
+  legacy.params.mode = "openai/form";
+  const legacySink = output();
+  const legacyResult = await approvals().answerApproval(
+    legacy,
+    input("1\n"),
+    legacySink.stream,
+    100,
+  );
+  assert.equal(legacyResult.kind, "failClosed");
+  assert.equal(legacyResult.code, "MALFORMED_APPROVAL_REQUEST");
+  assert.equal(legacySink.text(), "");
+});
+
+test("fails cyclic and deeply nested direct JSON values safely", async () => {
+  const [, , , fixtureMcp] = await requests();
+  const cyclic = structuredClone(fixtureMcp);
+  cyclic.params._meta = {};
+  cyclic.params._meta.self = cyclic.params._meta;
+  const deep = structuredClone(fixtureMcp);
+  deep.params._meta = {};
+  let cursor = deep.params._meta;
+  for (let index = 0; index < 1000; index += 1) {
+    cursor.next = {};
+    cursor = cursor.next;
+  }
+  for (const request of [cyclic, deep]) {
+    const result = await approvals().answerApproval(
+      request,
+      input("1\n"),
+      output().stream,
+      100,
+    );
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+  }
+});
+
+test("rejects an oversized interactive chunk before concatenating it", async () => {
+  const [command] = await requests();
+  const originalConcat = Buffer.concat;
+  let concatCalls = 0;
+  Buffer.concat = function (...args) {
+    concatCalls += 1;
+    return originalConcat.apply(this, args);
+  };
+  try {
+    const result = await approvals().answerApproval(
+      command,
+      input(new Uint8Array(65)),
+      output().stream,
+      100,
+    );
+    assert.equal(result.decision, "decline");
+    assert.equal(concatCalls, 0);
+  } finally {
+    Buffer.concat = originalConcat;
+  }
 });
 
 test("declines object-mode input chunks without coercing them", async () => {

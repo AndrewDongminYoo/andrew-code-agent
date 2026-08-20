@@ -17,6 +17,7 @@ export interface TurnState {
   readonly diff: string | null;
   readonly warnings: readonly string[];
   readonly omittedItems: number;
+  readonly omittedItemIds: ReadonlySet<string>;
   readonly omittedCommands: number;
   readonly omittedWarnings: number;
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
@@ -139,8 +140,16 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
 
 function replaceItem(state: TurnState, item: ItemState): TurnState {
   const items = new Map(state.items);
-  if (!items.has(item.id) && items.size >= MAX_ITEMS)
-    return { ...state, omittedItems: state.omittedItems + 1 };
+  if (!items.has(item.id) && items.size >= MAX_ITEMS) {
+    if (state.omittedItemIds.has(item.id)) return state;
+    const omittedItemIds = new Set(state.omittedItemIds);
+    omittedItemIds.add(item.id);
+    return {
+      ...state,
+      omittedItems: omittedItemIds.size,
+      omittedItemIds,
+    };
+  }
   items.set(item.id, item);
   return { ...state, items };
 }
@@ -196,6 +205,7 @@ export function createTurnState(threadId: string, turnId: string): TurnState {
     diff: null,
     warnings: [],
     omittedItems: 0,
+    omittedItemIds: new Set(),
     omittedCommands: 0,
     omittedWarnings: 0,
     terminalStatus: "running",
@@ -380,6 +390,7 @@ export function reduceServerMessage(
     }[] = [];
     let omittedCommands = 0;
     let omittedItems = 0;
+    const omittedItemIds = new Set<string>();
     for (const raw of turn.items) {
       const safe = safeItem(raw, "completed");
       if (seenIds.has(safe.id)) throw new ReducerError("INVALID_SERVER_EVENT");
@@ -400,7 +411,8 @@ export function reduceServerMessage(
           });
       }
       if (items.size >= MAX_ITEMS) {
-        omittedItems += 1;
+        omittedItemIds.add(safe.id);
+        omittedItems = omittedItemIds.size;
         continue;
       }
       items.set(safe.id, safe);
@@ -410,6 +422,7 @@ export function reduceServerMessage(
       items,
       observedCommands,
       omittedItems,
+      omittedItemIds,
       omittedCommands,
       terminalStatus: statuses[turn.status]!,
     };
@@ -420,6 +433,8 @@ export function reduceServerMessage(
       JSON.stringify(state.observedCommands) ===
         JSON.stringify(next.observedCommands) &&
       state.omittedItems === next.omittedItems &&
+      JSON.stringify([...state.omittedItemIds]) ===
+        JSON.stringify([...next.omittedItemIds]) &&
       state.omittedCommands === next.omittedCommands
     )
       return state;
