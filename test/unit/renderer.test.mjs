@@ -93,3 +93,23 @@ test("bounds every composed external line by UTF-8 bytes", () => {
   assert.ok(lines.length >= 15);
   for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
 });
+
+test("keeps command output visible when command context is long and bounds terminal status", () => {
+  const huge = "🙂".repeat(600);
+  const state = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["command", { id: "command-1", type: "commandExecution", phase: "completed", value: { command: huge, cwd: huge, exitCode: 0, output: "real output marker" } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    omittedItems: 0,
+    omittedCommands: 0,
+    omittedWarnings: 0,
+    terminalStatus: huge,
+  };
+  const lines = renderer().renderTurnState(state);
+  assert.ok(lines.some((line) => line === "Command output: real output marker"));
+  assert.ok(lines.some((line) => line.startsWith("Terminal status: ") && line.endsWith(" [truncated]")));
+  for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+});

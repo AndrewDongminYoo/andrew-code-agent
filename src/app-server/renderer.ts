@@ -25,20 +25,24 @@ function valueText(value: unknown, key: string): string | null {
   return typeof candidate === "string" ? bounded(candidate) : null;
 }
 
-function renderItem(item: ItemState): string {
+function renderItem(item: ItemState): readonly string[] {
   const lifecycle = `${bounded(item.id, 128)} ${bounded(item.type, 128)} ${item.phase}`;
   if (item.type === "agentMessage" || item.type === "plan")
-    return bounded(`${lifecycle}: ${valueText(item.value, "text") ?? ""}`);
+    return [bounded(`${lifecycle}: ${valueText(item.value, "text") ?? ""}`)];
   if (item.type === "reasoning")
-    return bounded(`${lifecycle}: Reasoning updated`);
+    return [bounded(`${lifecycle}: Reasoning updated`)];
   if (item.type === "commandExecution") {
     const command = valueText(item.value, "command") ?? "command";
     const cwd = valueText(item.value, "cwd") ?? "unknown cwd";
     const exitCode = record(item.value)?.exitCode;
     const output = valueText(item.value, "output");
-    return bounded(
-      `${lifecycle}: ${command} (${cwd}), exit ${typeof exitCode === "number" ? exitCode : "pending"}${output ? `, ${output}` : ""}`,
-    );
+    const lines = [
+      bounded(
+        `${lifecycle}: ${command} (${cwd}), exit ${typeof exitCode === "number" ? exitCode : "pending"}`,
+      ),
+    ];
+    if (output) lines.push(bounded(`Command output: ${output}`));
+    return lines;
   }
   if (item.type === "fileChange") {
     const rawFiles = record(item.value)?.files;
@@ -53,22 +57,30 @@ function renderItem(item: ItemState): string {
           .join(", ")
       : "files changed";
     const omittedFiles = record(item.value)?.omittedFiles;
-    return bounded(
-      `${lifecycle}: ${files}${typeof omittedFiles === "number" && omittedFiles > 0 ? `; ${omittedFiles} file(s) omitted` : ""}`,
-    );
+    return [
+      bounded(
+        `${lifecycle}: ${files}${typeof omittedFiles === "number" && omittedFiles > 0 ? `; ${omittedFiles} file(s) omitted` : ""}`,
+      ),
+    ];
   }
   if (item.type === "mcpToolCall") {
-    return bounded(
-      `${lifecycle}: ${valueText(item.value, "server") ?? "unknown"}/${valueText(item.value, "tool") ?? "tool"} (MCP status updated)`,
-    );
+    return [
+      bounded(
+        `${lifecycle}: ${valueText(item.value, "server") ?? "unknown"}/${valueText(item.value, "tool") ?? "tool"} (MCP status updated)`,
+      ),
+    ];
   }
   if (item.type === "subAgentActivity")
-    return bounded(
-      `${lifecycle}: ${valueText(item.value, "label") ?? "Subagent activity"}`,
-    );
-  return bounded(
-    `${lifecycle}: ${valueText(item.value, "label") ?? "Item updated"}`,
-  );
+    return [
+      bounded(
+        `${lifecycle}: ${valueText(item.value, "label") ?? "Subagent activity"}`,
+      ),
+    ];
+  return [
+    bounded(
+      `${lifecycle}: ${valueText(item.value, "label") ?? "Item updated"}`,
+    ),
+  ];
 }
 
 export function renderTurnState(state: TurnState): readonly string[] {
@@ -76,7 +88,7 @@ export function renderTurnState(state: TurnState): readonly string[] {
     `Thread: ${bounded(state.threadId, 504)}`,
     `Turn: ${bounded(state.turnId, 506)}`,
   ];
-  for (const item of state.items.values()) lines.push(renderItem(item));
+  for (const item of state.items.values()) lines.push(...renderItem(item));
   for (const command of state.observedCommands)
     lines.push(
       bounded(
@@ -103,6 +115,6 @@ export function renderTurnState(state: TurnState): readonly string[] {
     omissions.omittedWarnings > 0
   )
     lines.push(`${omissions.omittedWarnings} warning(s) omitted`);
-  lines.push(`Terminal status: ${state.terminalStatus}`);
+  lines.push(bounded(`Terminal status: ${state.terminalStatus}`));
   return lines;
 }

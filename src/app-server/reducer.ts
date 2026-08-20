@@ -18,6 +18,7 @@ export interface TurnState {
   readonly warnings: readonly string[];
   readonly omittedItems: number;
   readonly omittedItemIds: ReadonlySet<string>;
+  readonly omittedItemTypes?: ReadonlyMap<string, string>;
   readonly omittedCommands: number;
   readonly omittedWarnings: number;
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
@@ -141,17 +142,37 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
 function replaceItem(state: TurnState, item: ItemState): TurnState {
   const items = new Map(state.items);
   if (!items.has(item.id) && items.size >= MAX_ITEMS) {
-    if (state.omittedItemIds.has(item.id)) return state;
+    const omittedType = state.omittedItemTypes?.get(item.id);
+    if (omittedType !== undefined) {
+      if (omittedType !== item.type)
+        throw new ReducerError("INVALID_SERVER_EVENT");
+      return state;
+    }
     const omittedItemIds = new Set(state.omittedItemIds);
+    const omittedItemTypes = new Map(state.omittedItemTypes ?? []);
     omittedItemIds.add(item.id);
+    omittedItemTypes.set(item.id, item.type);
     return {
       ...state,
       omittedItems: omittedItemIds.size,
       omittedItemIds,
+      omittedItemTypes,
     };
   }
   items.set(item.id, item);
   return { ...state, items };
+}
+
+function isKnownOmittedItem(
+  state: TurnState,
+  itemId: string,
+  expectedType: string,
+): boolean {
+  const omittedType = state.omittedItemTypes?.get(itemId);
+  if (omittedType === undefined) return false;
+  if (omittedType !== expectedType)
+    throw new ReducerError("INVALID_SERVER_EVENT");
+  return true;
 }
 
 function updateDelta(
@@ -163,6 +184,7 @@ function updateDelta(
   requireIdentity(state, params);
   const itemId = text(params.itemId);
   if (itemId === null) throw new ReducerError("INVALID_SERVER_EVENT");
+  if (isKnownOmittedItem(state, itemId, expectedType)) return state;
   const item = state.items.get(itemId);
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
@@ -179,6 +201,7 @@ function terminalDelta(
   requireIdentity(state, params);
   const itemId = text(params.itemId);
   if (itemId === null) throw new ReducerError("INVALID_SERVER_EVENT");
+  if (isKnownOmittedItem(state, itemId, expectedType)) return state;
   const item = state.items.get(itemId);
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
@@ -206,6 +229,7 @@ export function createTurnState(threadId: string, turnId: string): TurnState {
     warnings: [],
     omittedItems: 0,
     omittedItemIds: new Set(),
+    omittedItemTypes: new Map(),
     omittedCommands: 0,
     omittedWarnings: 0,
     terminalStatus: "running",
@@ -240,6 +264,7 @@ export function reduceServerMessage(
     requireIdentity(state, params);
     const next = safeItem(params.item, "completed");
     const previous = state.items.get(next.id);
+    if (isKnownOmittedItem(state, next.id, next.type)) return state;
     if (state.terminalStatus !== "running") {
       if (
         previous?.type !== next.type ||
@@ -391,6 +416,7 @@ export function reduceServerMessage(
     let omittedCommands = 0;
     let omittedItems = 0;
     const omittedItemIds = new Set<string>();
+    const omittedItemTypes = new Map<string, string>();
     for (const raw of turn.items) {
       const safe = safeItem(raw, "completed");
       if (seenIds.has(safe.id)) throw new ReducerError("INVALID_SERVER_EVENT");
@@ -412,6 +438,7 @@ export function reduceServerMessage(
       }
       if (items.size >= MAX_ITEMS) {
         omittedItemIds.add(safe.id);
+        omittedItemTypes.set(safe.id, safe.type);
         omittedItems = omittedItemIds.size;
         continue;
       }
@@ -423,6 +450,7 @@ export function reduceServerMessage(
       observedCommands,
       omittedItems,
       omittedItemIds,
+      omittedItemTypes,
       omittedCommands,
       terminalStatus: statuses[turn.status]!,
     };
@@ -435,6 +463,8 @@ export function reduceServerMessage(
       state.omittedItems === next.omittedItems &&
       JSON.stringify([...state.omittedItemIds]) ===
         JSON.stringify([...next.omittedItemIds]) &&
+      JSON.stringify([...(state.omittedItemTypes ?? [])]) ===
+        JSON.stringify([...(next.omittedItemTypes ?? [])]) &&
       state.omittedCommands === next.omittedCommands
     )
       return state;

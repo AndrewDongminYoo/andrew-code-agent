@@ -121,6 +121,16 @@ function validJson(
     return true;
   if (typeof value === "number") return Number.isFinite(value);
   if (!Array.isArray(value) && !isRecord(value)) return false;
+  if (
+    Array.isArray(value)
+      ? Object.keys(value).length !== value.length ||
+        Array.from({ length: value.length }, (_, index) =>
+          Object.hasOwn(value, index),
+        ).some((present) => !present)
+      : Object.getPrototypeOf(value) !== Object.prototype &&
+        Object.getPrototypeOf(value) !== null
+  )
+    return false;
   if (active.has(value)) return false;
   active.add(value);
   const valid = Object.values(value).every((entry) =>
@@ -399,8 +409,7 @@ function validCommandParams(params: RecordValue): boolean {
     !requiredString(params, "threadId") ||
     !requiredString(params, "turnId") ||
     !requiredString(params, "itemId") ||
-    typeof params.startedAtMs !== "number" ||
-    !Number.isFinite(params.startedAtMs) ||
+    !Number.isSafeInteger(params.startedAtMs) ||
     !nullableString(params.environmentId)
   )
     return false;
@@ -468,8 +477,7 @@ function validParams(method: KnownMethod, params: RecordValue): boolean {
       requiredString(params, "threadId") &&
       requiredString(params, "turnId") &&
       requiredString(params, "itemId") &&
-      typeof params.startedAtMs === "number" &&
-      Number.isFinite(params.startedAtMs) &&
+      Number.isSafeInteger(params.startedAtMs) &&
       (!("reason" in params) || nullableString(params.reason)) &&
       (!("grantRoot" in params) || nullableString(params.grantRoot))
     );
@@ -489,8 +497,7 @@ function validParams(method: KnownMethod, params: RecordValue): boolean {
       requiredString(params, "turnId") &&
       requiredString(params, "itemId") &&
       nullableString(params.environmentId) &&
-      typeof params.startedAtMs === "number" &&
-      Number.isFinite(params.startedAtMs) &&
+      Number.isSafeInteger(params.startedAtMs) &&
       requiredString(params, "cwd") &&
       nullableString(params.reason) &&
       validPermissions(params.permissions)
@@ -790,6 +797,28 @@ function fitsDisplayed(value: string, limit = MAX_FIELD_BYTES): boolean {
   return Buffer.byteLength(value, "utf8") <= limit;
 }
 
+function commandActionFields(action: RecordValue): readonly string[] {
+  return ["type", "command", "name", "query", "path"].flatMap((key) =>
+    key in action ? [`${key}=${String(action[key])}`] : [],
+  );
+}
+
+function fileSystemEntryDestination(entry: RecordValue): unknown {
+  if (!isRecord(entry.path)) return "unknown";
+  const path = entry.path;
+  return path.type === "path"
+    ? path.path
+    : path.type === "glob_pattern"
+      ? path.pattern
+      : isRecord(path.value)
+        ? path.value.kind === "unknown"
+          ? path.value.path
+          : path.value.kind === "project_roots"
+            ? (path.value.subpath ?? "project roots")
+            : path.value.kind
+        : "unknown";
+}
+
 function hasCompletePromptContext(
   request: ValidRequest,
   available: readonly Choice[],
@@ -828,10 +857,19 @@ function hasCompletePromptContext(
     Array.isArray(params.commandActions) &&
     params.commandActions.some((action) => {
       if (!isRecord(action)) return true;
-      return [action.type, action.path ?? action.command]
-        .filter((value): value is string => typeof value === "string")
-        .some((value) => !fitsDisplayed(value));
+      return commandActionFields(action).some((field) => !fitsDisplayed(field));
     })
+  )
+    return false;
+  if (
+    Array.isArray(params.proposedNetworkPolicyAmendments) &&
+    params.proposedNetworkPolicyAmendments.some(
+      (amendment) =>
+        !isRecord(amendment) ||
+        [amendment.host, amendment.action]
+          .filter((value): value is string => typeof value === "string")
+          .some((value) => !fitsDisplayed(value)),
+    )
   )
     return false;
   const permissions = isRecord(params.permissions) ? params.permissions : null;
@@ -850,20 +888,12 @@ function hasCompletePromptContext(
   if (fileSystem && Array.isArray(fileSystem.entries))
     for (const entry of fileSystem.entries) {
       if (!isRecord(entry) || !isRecord(entry.path)) return false;
-      const path = entry.path;
-      const destination =
-        path.type === "path"
-          ? path.path
-          : path.type === "glob_pattern"
-            ? path.pattern
-            : isRecord(path.value)
-              ? path.value.kind === "unknown"
-                ? path.value.path
-                : path.value.kind === "project_roots"
-                  ? (path.value.subpath ?? "project roots")
-                  : path.value.kind
-              : "unknown";
-      if (typeof destination === "string" && !fitsDisplayed(destination))
+      const destination = fileSystemEntryDestination(entry);
+      if (
+        [entry.access, destination]
+          .filter((value): value is string => typeof value === "string")
+          .some((value) => !fitsDisplayed(value))
+      )
         return false;
     }
   return true;
@@ -904,7 +934,17 @@ function prompt(
     )) {
       const value = action as RecordValue;
       context.push(
-        `command action: ${bounded(String(value.type))} ${bounded(String(value.path ?? value.command))}`,
+        `command action: ${String(value.type)} ${commandActionFields(value).slice(1).join("; ")}`,
+      );
+    }
+  if (Array.isArray(params.proposedNetworkPolicyAmendments))
+    for (const amendment of params.proposedNetworkPolicyAmendments.slice(
+      0,
+      MAX_APPROVAL_LIST_ITEMS,
+    )) {
+      const value = amendment as RecordValue;
+      context.push(
+        `network amendment: ${String(value.action)} ${String(value.host)}`,
       );
     }
   const requestedPermissions = isRecord(params.permissions)
@@ -931,20 +971,10 @@ function prompt(
       MAX_APPROVAL_LIST_ITEMS,
     )) {
       const value = entry as RecordValue;
-      const path = value.path as RecordValue;
-      const destination =
-        path.type === "path"
-          ? path.path
-          : path.type === "glob_pattern"
-            ? path.pattern
-            : isRecord(path.value)
-              ? path.value.kind === "unknown"
-                ? path.value.path
-                : path.value.kind === "project_roots"
-                  ? (path.value.subpath ?? "project roots")
-                  : path.value.kind
-              : "unknown";
-      context.push(`fileSystem entry: ${bounded(String(destination))}`);
+      const destination = fileSystemEntryDestination(value);
+      context.push(
+        `fileSystem entry: ${String(value.access)} ${String(destination)}`,
+      );
     }
   const choiceLines = available.map(
     (choice) =>
@@ -996,6 +1026,16 @@ function readLine(
   return new Promise((resolve) => {
     let settled = false;
     let buffered = Buffer.alloc(0);
+    const readable = input as NodeJS.ReadableStream & {
+      readonly readableFlowing?: boolean | null;
+      pause: () => unknown;
+      unshift?: (chunk: Buffer) => void;
+    };
+    const wasFlowing = readable.readableFlowing === true;
+    const restoreState = () => {
+      if (wasFlowing) input.resume();
+      else readable.pause();
+    };
     const finish = (line: string | null) => {
       if (settled) return;
       settled = true;
@@ -1003,6 +1043,7 @@ function readLine(
       input.removeListener("data", onData);
       input.removeListener("end", onEnd);
       input.removeListener("error", onEnd);
+      restoreState();
       resolve(line);
     };
     const onData = (chunk: unknown) => {
@@ -1017,15 +1058,27 @@ function readLine(
           ? Buffer.byteLength(chunk, "utf8")
           : chunk.byteLength;
       if (chunkBytes > MAX_LINE_BYTES - buffered.length) return finish(null);
-      buffered = Buffer.concat([
-        buffered,
+      const chunkBuffer =
         typeof chunk === "string"
           ? Buffer.from(chunk, "utf8")
-          : Buffer.from(chunk),
-      ]);
-      if (buffered.length > MAX_LINE_BYTES) return finish(null);
+          : Buffer.from(chunk);
+      const newlineInChunk = chunkBuffer.indexOf(10);
+      const lineChunk =
+        newlineInChunk < 0
+          ? chunkBuffer
+          : chunkBuffer.subarray(0, newlineInChunk + 1);
+      if (
+        lineChunk.length >
+        MAX_LINE_BYTES - buffered.length + (newlineInChunk < 0 ? 0 : 1)
+      )
+        return finish(null);
+      buffered = Buffer.concat([buffered, lineChunk]);
       const newline = buffered.indexOf(10);
       if (newline < 0) return;
+      if (newlineInChunk >= 0 && newlineInChunk + 1 < chunkBuffer.length) {
+        readable.pause();
+        readable.unshift?.(chunkBuffer.subarray(newlineInChunk + 1));
+      }
       const line = buffered
         .subarray(0, newline)
         .toString("utf8")

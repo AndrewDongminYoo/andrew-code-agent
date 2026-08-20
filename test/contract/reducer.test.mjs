@@ -223,6 +223,41 @@ test("marks capped inventories and warnings with visible omission metadata", () 
   assert.equal(warnings.omittedWarnings, 1);
 });
 
+test("ignores valid lifecycle messages for known omitted IDs and rejects unknown or conflicting IDs", () => {
+  const api = reducer();
+  let state = api.createTurnState("thread-1", "turn-1");
+  for (let index = 0; index < 64; index += 1) {
+    state = api.reduceServerMessage(state, started(item("agentMessage", `message-${index}`, { text: "x", phase: null, memoryCitation: null })));
+  }
+  state = api.reduceServerMessage(state, started(item("plan", "omitted-plan", { text: "initial" })));
+  const omitted = state;
+  state = api.reduceServerMessage(state, { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "omitted-plan", delta: " later" } });
+  assert.equal(state, omitted);
+  state = api.reduceServerMessage(state, completed(item("plan", "omitted-plan", { text: "initial later" })));
+  assert.equal(state, omitted);
+  assert.equal(state.omittedItems, 1);
+  assert.throws(
+    () => api.reduceServerMessage(state, { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "unknown-plan", delta: "later" } }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+  assert.throws(
+    () => api.reduceServerMessage(state, completed(item("agentMessage", "omitted-plan", { text: "conflict", phase: null, memoryCitation: null }))),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+
+  const terminalItems = [
+    ...Array.from({ length: 64 }, (_, index) => item("agentMessage", `message-${index}`, { text: "x", phase: null, memoryCitation: null })),
+    item("plan", "terminal-omitted-plan", { text: "final" }),
+  ];
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", items: terminalItems, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null } } });
+  assert.equal(api.reduceServerMessage(terminal, { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "terminal-omitted-plan", delta: "late" } }), terminal);
+  assert.equal(api.reduceServerMessage(terminal, completed(item("plan", "terminal-omitted-plan", { text: "final" }))), terminal);
+  assert.throws(
+    () => api.reduceServerMessage(terminal, completed(item("agentMessage", "terminal-omitted-plan", { text: "conflict", phase: null, memoryCitation: null }))),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
 test("uses UTF-8 byte bounds for protocol IDs", () => {
   const api = reducer();
   assert.throws(

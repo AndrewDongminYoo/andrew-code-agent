@@ -189,6 +189,34 @@ test("renders complete bounded approval context and waits for a newline-delimite
   assert.equal(incompleteMcpResult.kind, "failClosed");
 });
 
+test("shows every generated command, network amendment, and filesystem entry decision field", async () => {
+  const [command, , permission] = await requests();
+  command.params.commandActions = [
+    { type: "read", command: "cat /repo/read.txt", name: "read.txt", path: "/repo/read.txt" },
+    { type: "listFiles", command: "find /repo", path: "/repo" },
+    { type: "search", command: "rg needle /repo", query: "needle", path: "/repo" },
+    { type: "unknown", command: "custom --effect" },
+  ];
+  command.params.proposedNetworkPolicyAmendments = [
+    { host: "allow.example.com", action: "allow" },
+    { host: "deny.example.com", action: "deny" },
+  ];
+  const commandSink = output();
+  await approvals().answerApproval(command, input("1\n"), commandSink.stream, 100);
+  for (const effect of ["read", "cat /repo/read.txt", "read.txt", "/repo/read.txt", "listFiles", "find /repo", "search", "rg needle /repo", "needle", "unknown", "custom --effect", "allow.example.com", "allow", "deny.example.com", "deny"]) {
+    assert.ok(commandSink.text().includes(effect), effect);
+  }
+
+  permission.params.permissions.fileSystem.entries = [
+    { path: { type: "path", path: "/repo/allowed" }, access: "read" },
+    { path: { type: "glob_pattern", pattern: "/repo/blocked/**" }, access: "deny" },
+  ];
+  const permissionSink = output();
+  await approvals().answerApproval(permission, input("3\n"), permissionSink.stream, 100);
+  assert.match(permissionSink.text(), /fileSystem entry: read .*\/repo\/allowed/);
+  assert.match(permissionSink.text(), /fileSystem entry: deny .*\/repo\/blocked\/\*\*/);
+});
+
 test("preserves every available choice after bounding context and validates generated MCP and filesystem nesting", async () => {
   const [command, , permission, mcp] = await requests();
   command.params.command = "command --safe";
@@ -283,6 +311,19 @@ test("declines before prompting when any displayed approval context or policy ch
     },
   ];
   cases.push(action);
+  for (const [type, key] of [
+    ["read", "command"],
+    ["read", "name"],
+    ["search", "query"],
+    ["search", "command"],
+  ]) {
+    const generatedAction = structuredClone(fixtureCommand);
+    generatedAction.params.commandActions = [{ type, command: "safe", name: "safe", path: "/repo", query: "safe" }];
+    if (type === "search") delete generatedAction.params.commandActions[0].name;
+    else delete generatedAction.params.commandActions[0].query;
+    generatedAction.params.commandActions[0][key] = "🙂".repeat(100);
+    cases.push(generatedAction);
+  }
   const network = structuredClone(fixtureCommand);
   network.params.networkApprovalContext = {
     host: "🙂".repeat(100),
@@ -294,6 +335,9 @@ test("declines before prompting when any displayed approval context or policy ch
     { host: "🙂".repeat(100), action: "allow" },
   ];
   cases.push(policy);
+  const entryAccess = structuredClone(fixturePermission);
+  entryAccess.params.permissions.fileSystem.entries = [{ path: { type: "path", path: "/repo" }, access: "x".repeat(300) }];
+  cases.push(entryAccess);
 
   for (const request of cases) {
     const sink = output();
@@ -464,10 +508,68 @@ test("fails cyclic and deeply nested direct JSON values safely", async () => {
   }
 });
 
+test("requires safe integer timestamps and direct JSON without holes or non-plain objects", async () => {
+  const [command, file, permission, fixtureMcp] = await requests();
+  for (const fixture of [command, file, permission]) {
+    const request = structuredClone(fixture);
+    request.params.startedAtMs = 1.5;
+    const result = await approvals().answerApproval(request, input("1\n"), output().stream, 100);
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+  }
+  const sparse = structuredClone(fixtureMcp);
+  sparse.params._meta = new Array(1);
+  const disguisedSparse = structuredClone(fixtureMcp);
+  disguisedSparse.params._meta = new Array(1);
+  disguisedSparse.params._meta.extra = true;
+  const dated = structuredClone(fixtureMcp);
+  dated.params._meta = new Date(0);
+  for (const request of [sparse, disguisedSparse, dated]) {
+    const result = await approvals().answerApproval(request, input("1\n"), output().stream, 100);
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+  }
+});
+
+test("restores an initially paused input across sequential approvals without leaking listeners", async () => {
+  const [command] = await requests();
+  const stream = new PassThrough();
+  Object.defineProperty(stream, "isTTY", { value: true });
+  stream.pause();
+  stream.write("1\n2\n");
+  const first = await approvals().answerApproval(command, stream, output().stream, 100);
+  assert.deepEqual(first.response, { decision: "accept" });
+  assert.equal(stream.isPaused(), true);
+  assert.equal(stream.listenerCount("data"), 0);
+  assert.equal(stream.listenerCount("end"), 0);
+  assert.equal(stream.listenerCount("error"), 0);
+  const second = await approvals().answerApproval(command, stream, output().stream, 100);
+  assert.deepEqual(second.response, { decision: "acceptForSession" });
+  assert.equal(stream.isPaused(), true);
+  assert.equal(stream.listenerCount("data"), 0);
+  assert.equal(stream.listenerCount("end"), 0);
+  assert.equal(stream.listenerCount("error"), 0);
+  stream.destroy();
+});
+
 test("rejects an oversized interactive chunk before concatenating it", async () => {
   const [command] = await requests();
+  const oversizedInput = input(new Uint8Array(65));
+  const sink = new Writable({
+    decodeStrings: false,
+    write(_chunk, _encoding, callback) {
+      callback();
+    },
+  });
+  Object.defineProperty(sink, "isTTY", { value: true });
+  const originalFrom = Buffer.from;
   const originalConcat = Buffer.concat;
+  let fromCalls = 0;
   let concatCalls = 0;
+  Buffer.from = function (...args) {
+    fromCalls += 1;
+    return originalFrom.apply(this, args);
+  };
   Buffer.concat = function (...args) {
     concatCalls += 1;
     return originalConcat.apply(this, args);
@@ -475,13 +577,15 @@ test("rejects an oversized interactive chunk before concatenating it", async () 
   try {
     const result = await approvals().answerApproval(
       command,
-      input(new Uint8Array(65)),
-      output().stream,
+      oversizedInput,
+      sink,
       100,
     );
     assert.equal(result.decision, "decline");
+    assert.equal(fromCalls, 0);
     assert.equal(concatCalls, 0);
   } finally {
+    Buffer.from = originalFrom;
     Buffer.concat = originalConcat;
   }
 });
