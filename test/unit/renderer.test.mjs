@@ -29,3 +29,41 @@ test("renders deterministic bounded turn output without raw reasoning", () => {
   assert.doesNotMatch(lines.join("\n"), /private reasoning|credential|do-not-dump/);
   assert.ok(lines.findIndex((line) => line.includes("agent-1")) < lines.findIndex((line) => line.includes("command-1")));
 });
+
+test("bounds externally supplied IDs and types and renders projection omission metadata", () => {
+  const state = {
+    threadId: "thread".repeat(200),
+    turnId: "turn".repeat(200),
+    items: new Map([["item".repeat(200), { id: "item".repeat(200), type: "future".repeat(200), phase: "started", value: { credential: "hidden" } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    omittedItems: 1,
+    omittedCommands: 1,
+    omittedWarnings: 1,
+    terminalStatus: "completed",
+  };
+  const lines = renderer().renderTurnState(state);
+  assert.match(lines.join("\n"), /\[truncated\]/);
+  assert.match(lines.join("\n"), /1 item\(s\) omitted|1 command\(s\) omitted|1 warning\(s\) omitted/);
+  assert.doesNotMatch(lines.join("\n"), /credential|hidden/);
+});
+
+test("uses UTF-8 bounds externally and renders neutral MCP lifecycle details", () => {
+  const state = {
+    threadId: "🙂".repeat(200),
+    turnId: "turn-1",
+    items: new Map([["mcp-1", { id: "mcp-1", type: "mcpToolCall", phase: "started", value: { server: "fixture", tool: "lookup", status: "inProgress", progress: "MCP progress updated", raw: "secret" } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    omittedItems: 0,
+    omittedCommands: 0,
+    omittedWarnings: 0,
+    terminalStatus: "running",
+  };
+  const lines = renderer().renderTurnState(state);
+  assert.ok(Buffer.byteLength(lines[0], "utf8") <= 512);
+  assert.match(lines.join("\n"), /inProgress|MCP progress updated/);
+  assert.doesNotMatch(lines.join("\n"), /secret/);
+});

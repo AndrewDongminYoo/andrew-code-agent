@@ -16,6 +16,9 @@ export interface TurnState {
   }[];
   readonly diff: string | null;
   readonly warnings: readonly string[];
+  readonly omittedItems: number;
+  readonly omittedCommands: number;
+  readonly omittedWarnings: number;
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
 }
 
@@ -23,6 +26,7 @@ const MAX_TEXT_LENGTH = 512;
 const MAX_ITEMS = 64;
 const MAX_WARNINGS = 16;
 const MAX_COMMANDS = 32;
+const MAX_PROTOCOL_ID_LENGTH = 256;
 const TRUNCATION_MARKER = " [truncated]";
 
 export class ReducerError extends Error {
@@ -56,8 +60,25 @@ function requireIdentity(state: TurnState, params: RecordValue): void {
     throw new ReducerError("INVALID_SERVER_EVENT");
 }
 
+function requireProtocolId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    Buffer.byteLength(value, "utf8") <= MAX_PROTOCOL_ID_LENGTH
+  );
+}
+
+function appendWarning(state: TurnState, warning: string): TurnState {
+  if (state.warnings.length < MAX_WARNINGS)
+    return { ...state, warnings: [...state.warnings, bounded(warning)] };
+  return { ...state, omittedWarnings: state.omittedWarnings + 1 };
+}
+
 function requireItem(item: unknown): RecordValue {
-  if (!isRecord(item) || text(item.id) === null || text(item.type) === null)
+  if (
+    !isRecord(item) ||
+    !requireProtocolId(item.id) ||
+    !requireProtocolId(item.type)
+  )
     throw new ReducerError("INVALID_SERVER_EVENT");
   return item;
 }
@@ -98,6 +119,7 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
           },
         ];
       }),
+      omittedFiles: Math.max(0, changes.length - MAX_ITEMS),
       status: bounded(text(raw.status) ?? "unknown"),
     };
   } else if (type === "mcpToolCall") {
@@ -118,7 +140,7 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
 function replaceItem(state: TurnState, item: ItemState): TurnState {
   const items = new Map(state.items);
   if (!items.has(item.id) && items.size >= MAX_ITEMS)
-    throw new ReducerError("INVALID_SERVER_EVENT");
+    return { ...state, omittedItems: state.omittedItems + 1 };
   items.set(item.id, item);
   return { ...state, items };
 }
@@ -163,35 +185,9 @@ function withTextDelta(item: ItemState, delta: unknown): ItemState {
   return { ...item, value: { text: bounded(`${current}${delta}`) } };
 }
 
-function commands(
-  items: ReadonlyMap<string, ItemState>,
-): TurnState["observedCommands"] {
-  return [...items.values()]
-    .filter(
-      (item) => item.type === "commandExecution" && item.phase === "completed",
-    )
-    .slice(0, MAX_COMMANDS)
-    .flatMap((item) => {
-      if (
-        !isRecord(item.value) ||
-        typeof item.value.command !== "string" ||
-        typeof item.value.cwd !== "string"
-      )
-        return [];
-      return [
-        {
-          command: item.value.command,
-          cwd: item.value.cwd,
-          exitCode:
-            typeof item.value.exitCode === "number"
-              ? item.value.exitCode
-              : null,
-        },
-      ];
-    });
-}
-
 export function createTurnState(threadId: string, turnId: string): TurnState {
+  if (!requireProtocolId(threadId) || !requireProtocolId(turnId))
+    throw new ReducerError("INVALID_SERVER_EVENT");
   return {
     threadId,
     turnId,
@@ -199,6 +195,9 @@ export function createTurnState(threadId: string, turnId: string): TurnState {
     observedCommands: [],
     diff: null,
     warnings: [],
+    omittedItems: 0,
+    omittedCommands: 0,
+    omittedWarnings: 0,
     terminalStatus: "running",
   };
 }
@@ -232,7 +231,10 @@ export function reduceServerMessage(
     const next = safeItem(params.item, "completed");
     const previous = state.items.get(next.id);
     if (state.terminalStatus !== "running") {
-      if (previous?.type !== next.type)
+      if (
+        previous?.type !== next.type ||
+        JSON.stringify(previous) !== JSON.stringify(next)
+      )
         throw new ReducerError("INVALID_SERVER_EVENT");
       return state;
     }
@@ -279,10 +281,43 @@ export function reduceServerMessage(
     if (!params) throw new ReducerError("INVALID_SERVER_EVENT");
     const terminal = terminalDelta(state, params, "fileChange");
     if (terminal) return terminal;
+    if (message.method === "item/fileChange/patchUpdated") {
+      if (!Array.isArray(params.changes))
+        throw new ReducerError("INVALID_SERVER_EVENT");
+      return updateDelta(state, params, "fileChange", (item) =>
+        safeItem(
+          {
+            id: item.id,
+            type: "fileChange",
+            changes: params.changes,
+            status:
+              isRecord(item.value) && typeof item.value.status === "string"
+                ? item.value.status
+                : "inProgress",
+          },
+          item.phase,
+        ),
+      );
+    }
     return updateDelta(state, params, "fileChange", (item) => item);
   }
-  if (message.method === "item/reasoning/summaryTextDelta") {
+  if (
+    message.method === "item/reasoning/summaryTextDelta" ||
+    message.method === "item/reasoning/summaryPartAdded" ||
+    message.method === "item/reasoning/textDelta"
+  ) {
     if (!params) throw new ReducerError("INVALID_SERVER_EVENT");
+    if (
+      (message.method === "item/reasoning/summaryTextDelta" &&
+        (typeof params.delta !== "string" ||
+          typeof params.summaryIndex !== "number")) ||
+      (message.method === "item/reasoning/summaryPartAdded" &&
+        typeof params.summaryIndex !== "number") ||
+      (message.method === "item/reasoning/textDelta" &&
+        (typeof params.contentIndex !== "number" ||
+          typeof params.delta !== "string"))
+    )
+      throw new ReducerError("INVALID_SERVER_EVENT");
     const terminal = terminalDelta(state, params, "reasoning");
     if (terminal) return terminal;
     return updateDelta(state, params, "reasoning", (item) => ({
@@ -293,12 +328,11 @@ export function reduceServerMessage(
   if (message.method === "item/mcpToolCall/progress") {
     if (!params || typeof params.message !== "string")
       throw new ReducerError("INVALID_SERVER_EVENT");
-    const progress = params.message;
     const terminal = terminalDelta(state, params, "mcpToolCall");
     if (terminal) return terminal;
     return updateDelta(state, params, "mcpToolCall", (item) => {
       const value = isRecord(item.value) ? item.value : {};
-      return { ...item, value: { ...value, progress: bounded(progress) } };
+      return { ...item, value: { ...value, progress: "MCP progress updated" } };
     });
   }
   if (message.method === "turn/diff/updated") {
@@ -313,26 +347,22 @@ export function reduceServerMessage(
       throw new ReducerError("INVALID_SERVER_EVENT");
     if (params.threadId !== null && params.threadId !== state.threadId)
       throw new ReducerError("INVALID_SERVER_EVENT");
-    return {
-      ...state,
-      warnings: [...state.warnings, bounded(params.message)].slice(
-        -MAX_WARNINGS,
-      ),
-    };
+    return appendWarning(state, params.message);
   }
   if (message.method === "error") {
     if (!params) throw new ReducerError("INVALID_SERVER_EVENT");
     requireIdentity(state, params);
-    return {
-      ...state,
-      warnings: [...state.warnings, "Turn error"].slice(-MAX_WARNINGS),
-    };
+    return appendWarning(state, "Turn error");
   }
   if (message.method === "turn/completed") {
     if (!params || params.threadId !== state.threadId || !isRecord(params.turn))
       throw new ReducerError("INVALID_SERVER_EVENT");
     const turn = params.turn;
-    if (turn.id !== state.turnId || !Array.isArray(turn.items))
+    if (
+      turn.id !== state.turnId ||
+      turn.itemsView !== "full" ||
+      !Array.isArray(turn.items)
+    )
       throw new ReducerError("INVALID_SERVER_EVENT");
     const statuses: Record<string, TurnState["terminalStatus"]> = {
       completed: "completed",
@@ -342,17 +372,58 @@ export function reduceServerMessage(
     if (typeof turn.status !== "string" || !(turn.status in statuses))
       throw new ReducerError("INVALID_SERVER_EVENT");
     const items = new Map<string, ItemState>();
-    for (const raw of turn.items.slice(0, MAX_ITEMS)) {
+    const seenIds = new Set<string>();
+    const observedCommands: {
+      command: string;
+      cwd: string;
+      exitCode: number | null;
+    }[] = [];
+    let omittedCommands = 0;
+    let omittedItems = 0;
+    for (const raw of turn.items) {
       const safe = safeItem(raw, "completed");
-      if (items.has(safe.id)) throw new ReducerError("INVALID_SERVER_EVENT");
+      if (seenIds.has(safe.id)) throw new ReducerError("INVALID_SERVER_EVENT");
+      seenIds.add(safe.id);
+      if (safe.type === "commandExecution" && isRecord(safe.value)) {
+        if (observedCommands.length >= MAX_COMMANDS) omittedCommands += 1;
+        else if (
+          typeof safe.value.command === "string" &&
+          typeof safe.value.cwd === "string"
+        )
+          observedCommands.push({
+            command: safe.value.command,
+            cwd: safe.value.cwd,
+            exitCode:
+              typeof safe.value.exitCode === "number"
+                ? safe.value.exitCode
+                : null,
+          });
+      }
+      if (items.size >= MAX_ITEMS) {
+        omittedItems += 1;
+        continue;
+      }
       items.set(safe.id, safe);
     }
-    return {
+    const next: TurnState = {
       ...state,
       items,
-      observedCommands: commands(items),
+      observedCommands,
+      omittedItems,
+      omittedCommands,
       terminalStatus: statuses[turn.status]!,
     };
+    if (state.terminalStatus === "running") return next;
+    if (
+      state.terminalStatus === next.terminalStatus &&
+      JSON.stringify([...state.items]) === JSON.stringify([...next.items]) &&
+      JSON.stringify(state.observedCommands) ===
+        JSON.stringify(next.observedCommands) &&
+      state.omittedItems === next.omittedItems &&
+      state.omittedCommands === next.omittedCommands
+    )
+      return state;
+    throw new ReducerError("INVALID_SERVER_EVENT");
   }
   if (message.method === "turn/started") {
     if (

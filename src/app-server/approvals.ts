@@ -23,24 +23,25 @@ export type ApprovalOutcome =
       readonly audit: ApprovalAuditRecord;
     };
 
-const MAX_PROMPT_TEXT = 512;
-const MAX_LINE_LENGTH = 32;
+const MAX_AUDIT_BYTES = 256;
+const MAX_FIELD_BYTES = 256;
+const MAX_PROMPT_BYTES = 8192;
+const MAX_LINE_BYTES = 64;
+const MAX_CHOICE_LABEL_BYTES = 96;
+const MAX_APPROVAL_LIST_ITEMS = 8;
 const TRUNCATION_MARKER = " [truncated]";
-
 type RecordValue = Record<string, unknown>;
 type KnownMethod =
   | "item/commandExecution/requestApproval"
   | "item/fileChange/requestApproval"
   | "item/permissions/requestApproval"
   | "mcpServer/elicitation/request";
-
 interface ValidRequest {
   readonly method: KnownMethod;
   readonly id: string;
   readonly params: RecordValue;
   readonly audit: Omit<ApprovalAuditRecord, "decision">;
 }
-
 interface Choice {
   readonly id: string;
   readonly label: string;
@@ -52,36 +53,351 @@ interface Choice {
 function isRecord(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-
+function boundedBytes(value: string, limit: number): string {
+  if (Buffer.byteLength(value, "utf8") <= limit) return value;
+  let result = "";
+  for (const part of value) {
+    if (Buffer.byteLength(result + part + TRUNCATION_MARKER, "utf8") > limit)
+      break;
+    result += part;
+  }
+  return `${result}${TRUNCATION_MARKER}`;
+}
 function bounded(value: string): string {
-  return value.length <= MAX_PROMPT_TEXT
-    ? value
-    : `${value.slice(0, MAX_PROMPT_TEXT - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+  return boundedBytes(value, MAX_FIELD_BYTES);
+}
+function hasOnlyKeys(value: RecordValue, keys: readonly string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+function nullableString(value: unknown): boolean {
+  return value === null || typeof value === "string";
+}
+function requiredString(value: RecordValue, key: string): boolean {
+  return typeof value[key] === "string";
+}
+function validRequestId(value: unknown): value is string | number {
+  return (
+    typeof value === "string" ||
+    (typeof value === "number" && Number.isFinite(value))
+  );
 }
 
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" ? bounded(value) : null;
+function validCommandAction(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "read")
+    return (
+      hasOnlyKeys(value, ["type", "command", "name", "path"]) &&
+      requiredString(value, "command") &&
+      requiredString(value, "name") &&
+      requiredString(value, "path")
+    );
+  if (value.type === "listFiles")
+    return (
+      hasOnlyKeys(value, ["type", "command", "path"]) &&
+      requiredString(value, "command") &&
+      nullableString(value.path)
+    );
+  if (value.type === "search")
+    return (
+      hasOnlyKeys(value, ["type", "command", "query", "path"]) &&
+      requiredString(value, "command") &&
+      nullableString(value.query) &&
+      nullableString(value.path)
+    );
+  return (
+    value.type === "unknown" &&
+    hasOnlyKeys(value, ["type", "command"]) &&
+    requiredString(value, "command")
+  );
+}
+
+function validJson(value: unknown): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean")
+    return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (Array.isArray(value)) return value.every(validJson);
+  return isRecord(value) && Object.values(value).every(validJson);
+}
+
+function validSpecialPath(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.kind !== "string") return false;
+  if (["root", "minimal", "tmpdir", "slash_tmp"].includes(value.kind))
+    return hasOnlyKeys(value, ["kind"]);
+  if (value.kind === "project_roots")
+    return (
+      hasOnlyKeys(value, ["kind", "subpath"]) && nullableString(value.subpath)
+    );
+  return (
+    value.kind === "unknown" &&
+    hasOnlyKeys(value, ["kind", "path", "subpath"]) &&
+    requiredString(value, "path") &&
+    nullableString(value.subpath)
+  );
+}
+
+function validFileSystemPath(value: unknown): boolean {
+  if (!isRecord(value) || typeof value.type !== "string") return false;
+  if (value.type === "path")
+    return (
+      hasOnlyKeys(value, ["type", "path"]) && requiredString(value, "path")
+    );
+  if (value.type === "glob_pattern")
+    return (
+      hasOnlyKeys(value, ["type", "pattern"]) &&
+      requiredString(value, "pattern")
+    );
+  return (
+    value.type === "special" &&
+    hasOnlyKeys(value, ["type", "value"]) &&
+    validSpecialPath(value.value)
+  );
+}
+
+function validFileSystemEntry(value: unknown): boolean {
+  return (
+    isRecord(value) &&
+    hasOnlyKeys(value, ["path", "access"]) &&
+    validFileSystemPath(value.path) &&
+    ["read", "write", "deny"].includes(value.access as string)
+  );
+}
+
+function validPermissions(value: unknown): boolean {
+  if (
+    !isRecord(value) ||
+    !hasOnlyKeys(value, ["network", "fileSystem"]) ||
+    !("network" in value) ||
+    !("fileSystem" in value)
+  )
+    return false;
+  if (
+    value.network !== null &&
+    (!isRecord(value.network) ||
+      !hasOnlyKeys(value.network, ["enabled"]) ||
+      !("enabled" in value.network) ||
+      (value.network.enabled !== null &&
+        typeof value.network.enabled !== "boolean"))
+  )
+    return false;
+  if (value.fileSystem === null) return true;
+  const fileSystem = value.fileSystem;
+  return (
+    isRecord(fileSystem) &&
+    hasOnlyKeys(fileSystem, ["read", "write", "globScanMaxDepth", "entries"]) &&
+    "read" in fileSystem &&
+    "write" in fileSystem &&
+    (fileSystem.read === null ||
+      (Array.isArray(fileSystem.read) &&
+        fileSystem.read.every((entry) => typeof entry === "string"))) &&
+    (fileSystem.write === null ||
+      (Array.isArray(fileSystem.write) &&
+        fileSystem.write.every((entry) => typeof entry === "string"))) &&
+    (!("globScanMaxDepth" in fileSystem) ||
+      fileSystem.globScanMaxDepth === null ||
+      (typeof fileSystem.globScanMaxDepth === "number" &&
+        Number.isInteger(fileSystem.globScanMaxDepth) &&
+        fileSystem.globScanMaxDepth >= 1)) &&
+    (!("entries" in fileSystem) ||
+      fileSystem.entries === null ||
+      (Array.isArray(fileSystem.entries) &&
+        fileSystem.entries.every(validFileSystemEntry)))
+  );
+}
+
+function validCommandParams(params: RecordValue): boolean {
+  if (
+    !hasOnlyKeys(params, [
+      "threadId",
+      "turnId",
+      "itemId",
+      "startedAtMs",
+      "approvalId",
+      "environmentId",
+      "reason",
+      "networkApprovalContext",
+      "command",
+      "cwd",
+      "commandActions",
+      "proposedExecpolicyAmendment",
+      "proposedNetworkPolicyAmendments",
+    ]) ||
+    !requiredString(params, "threadId") ||
+    !requiredString(params, "turnId") ||
+    !requiredString(params, "itemId") ||
+    typeof params.startedAtMs !== "number" ||
+    !Number.isFinite(params.startedAtMs) ||
+    !nullableString(params.environmentId)
+  )
+    return false;
+  if (
+    ("approvalId" in params && !nullableString(params.approvalId)) ||
+    ("reason" in params && !nullableString(params.reason)) ||
+    ("command" in params && !nullableString(params.command)) ||
+    ("cwd" in params && !nullableString(params.cwd))
+  )
+    return false;
+  if (
+    params.networkApprovalContext !== undefined &&
+    params.networkApprovalContext !== null &&
+    (!isRecord(params.networkApprovalContext) ||
+      !hasOnlyKeys(params.networkApprovalContext, ["host", "protocol"]) ||
+      !requiredString(params.networkApprovalContext, "host") ||
+      !["http", "https", "socks5Tcp", "socks5Udp"].includes(
+        params.networkApprovalContext.protocol as string,
+      ))
+  )
+    return false;
+  if (
+    "proposedExecpolicyAmendment" in params &&
+    params.proposedExecpolicyAmendment !== null &&
+    (!Array.isArray(params.proposedExecpolicyAmendment) ||
+      !params.proposedExecpolicyAmendment.every(
+        (token) => typeof token === "string",
+      ))
+  )
+    return false;
+  if (
+    params.commandActions !== undefined &&
+    params.commandActions !== null &&
+    (!Array.isArray(params.commandActions) ||
+      !params.commandActions.every(validCommandAction))
+  )
+    return false;
+  return (
+    params.proposedNetworkPolicyAmendments === undefined ||
+    params.proposedNetworkPolicyAmendments === null ||
+    (Array.isArray(params.proposedNetworkPolicyAmendments) &&
+      params.proposedNetworkPolicyAmendments.every(
+        (amendment) =>
+          isRecord(amendment) &&
+          hasOnlyKeys(amendment, ["host", "action"]) &&
+          requiredString(amendment, "host") &&
+          (amendment.action === "allow" || amendment.action === "deny"),
+      ))
+  );
+}
+
+function validParams(method: KnownMethod, params: RecordValue): boolean {
+  if (method === "item/commandExecution/requestApproval")
+    return validCommandParams(params);
+  if (method === "item/fileChange/requestApproval")
+    return (
+      hasOnlyKeys(params, [
+        "threadId",
+        "turnId",
+        "itemId",
+        "startedAtMs",
+        "reason",
+        "grantRoot",
+      ]) &&
+      requiredString(params, "threadId") &&
+      requiredString(params, "turnId") &&
+      requiredString(params, "itemId") &&
+      typeof params.startedAtMs === "number" &&
+      Number.isFinite(params.startedAtMs) &&
+      (!("reason" in params) || nullableString(params.reason)) &&
+      (!("grantRoot" in params) || nullableString(params.grantRoot))
+    );
+  if (method === "item/permissions/requestApproval")
+    return (
+      hasOnlyKeys(params, [
+        "threadId",
+        "turnId",
+        "itemId",
+        "environmentId",
+        "startedAtMs",
+        "cwd",
+        "reason",
+        "permissions",
+      ]) &&
+      requiredString(params, "threadId") &&
+      requiredString(params, "turnId") &&
+      requiredString(params, "itemId") &&
+      nullableString(params.environmentId) &&
+      typeof params.startedAtMs === "number" &&
+      Number.isFinite(params.startedAtMs) &&
+      requiredString(params, "cwd") &&
+      nullableString(params.reason) &&
+      validPermissions(params.permissions)
+    );
+  if (
+    !hasOnlyKeys(params, [
+      "threadId",
+      "turnId",
+      "serverName",
+      "mode",
+      "_meta",
+      "message",
+      "requestedSchema",
+      "url",
+      "elicitationId",
+    ]) ||
+    !requiredString(params, "threadId") ||
+    !nullableString(params.turnId) ||
+    !requiredString(params, "serverName") ||
+    !requiredString(params, "mode") ||
+    !requiredString(params, "message") ||
+    !("_meta" in params) ||
+    !validJson(params._meta)
+  )
+    return false;
+  if (params.mode === "form" || params.mode === "openai/form")
+    return (
+      hasOnlyKeys(params, [
+        "threadId",
+        "turnId",
+        "serverName",
+        "mode",
+        "_meta",
+        "message",
+        "requestedSchema",
+      ]) &&
+      "requestedSchema" in params &&
+      validJson(params.requestedSchema)
+    );
+  return (
+    params.mode === "url" &&
+    hasOnlyKeys(params, [
+      "threadId",
+      "turnId",
+      "serverName",
+      "mode",
+      "_meta",
+      "message",
+      "url",
+      "elicitationId",
+    ]) &&
+    requiredString(params, "url") &&
+    requiredString(params, "elicitationId")
+  );
 }
 
 function auditFrom(request: unknown, decision: string): ApprovalAuditRecord {
   const envelope = isRecord(request) ? request : {};
   const params = isRecord(envelope.params) ? envelope.params : {};
   return {
-    requestId:
-      typeof envelope.id === "string" || typeof envelope.id === "number"
-        ? bounded(String(envelope.id))
-        : "<invalid>",
-    threadId: stringOrNull(params.threadId),
-    turnId: stringOrNull(params.turnId),
-    itemId: stringOrNull(params.itemId),
+    requestId: validRequestId(envelope.id)
+      ? boundedBytes(String(envelope.id), MAX_AUDIT_BYTES)
+      : "<invalid>",
+    threadId:
+      typeof params.threadId === "string"
+        ? boundedBytes(params.threadId, MAX_AUDIT_BYTES)
+        : null,
+    turnId:
+      typeof params.turnId === "string"
+        ? boundedBytes(params.turnId, MAX_AUDIT_BYTES)
+        : null,
+    itemId:
+      typeof params.itemId === "string"
+        ? boundedBytes(params.itemId, MAX_AUDIT_BYTES)
+        : null,
     method:
       typeof envelope.method === "string"
-        ? bounded(envelope.method)
+        ? boundedBytes(envelope.method, MAX_AUDIT_BYTES)
         : "<invalid>",
     decision,
   };
 }
-
 function failClosed(
   request: unknown,
   code: "UNKNOWN_SERVER_REQUEST" | "MALFORMED_APPROVAL_REQUEST",
@@ -94,12 +410,13 @@ function failClosed(
     audit: auditFrom(request, "decline"),
   };
 }
-
 function validate(request: unknown): ValidRequest | ApprovalOutcome {
   if (
     !isRecord(request) ||
+    !hasOnlyKeys(request, ["method", "id", "params"]) ||
     typeof request.method !== "string" ||
-    (typeof request.id !== "string" && typeof request.id !== "number")
+    !validRequestId(request.id) ||
+    !isRecord(request.params)
   )
     return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
   const supported: readonly KnownMethod[] = [
@@ -110,61 +427,16 @@ function validate(request: unknown): ValidRequest | ApprovalOutcome {
   ];
   if (!supported.includes(request.method as KnownMethod))
     return failClosed(request, "UNKNOWN_SERVER_REQUEST");
-  if (!isRecord(request.params))
+  const method = request.method as KnownMethod;
+  if (!validParams(method, request.params))
     return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  const params = request.params;
-  if (typeof params.threadId !== "string")
-    return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  if (
-    request.method !== "mcpServer/elicitation/request" &&
-    (typeof params.startedAtMs !== "number" ||
-      !Number.isFinite(params.startedAtMs))
-  )
-    return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  if (request.method === "mcpServer/elicitation/request") {
-    if (
-      (params.turnId !== null && typeof params.turnId !== "string") ||
-      typeof params.serverName !== "string" ||
-      typeof params.mode !== "string" ||
-      typeof params.message !== "string"
-    )
-      return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  } else if (
-    typeof params.turnId !== "string" ||
-    typeof params.itemId !== "string"
-  ) {
-    return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  } else if (
-    request.method === "item/commandExecution/requestApproval" &&
-    params.environmentId !== null &&
-    typeof params.environmentId !== "string"
-  ) {
-    return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  } else if (
-    request.method === "item/fileChange/requestApproval" &&
-    params.reason !== undefined &&
-    params.reason !== null &&
-    typeof params.reason !== "string"
-  ) {
-    return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  } else if (
-    request.method === "item/permissions/requestApproval" &&
-    (typeof params.cwd !== "string" ||
-      (params.environmentId !== null &&
-        typeof params.environmentId !== "string") ||
-      (params.reason !== null && typeof params.reason !== "string") ||
-      !isRecord(params.permissions))
-  ) {
-    return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
-  }
   return {
-    method: request.method as KnownMethod,
-    id: bounded(String(request.id)),
-    params,
+    method,
+    id: boundedBytes(String(request.id), MAX_AUDIT_BYTES),
+    params: request.params,
     audit: auditFrom(request, ""),
   };
 }
-
 function response(request: ValidRequest, choice: Choice): ApprovalOutcome {
   return {
     kind: "response",
@@ -174,9 +446,8 @@ function response(request: ValidRequest, choice: Choice): ApprovalOutcome {
     audit: { ...request.audit, decision: choice.decision },
   };
 }
-
 function safest(request: ValidRequest): ApprovalOutcome {
-  if (request.method === "mcpServer/elicitation/request") {
+  if (request.method === "mcpServer/elicitation/request")
     return response(request, {
       id: "",
       label: "",
@@ -184,8 +455,7 @@ function safest(request: ValidRequest): ApprovalOutcome {
       acceptedForSession: false,
       response: { action: "decline", content: null, _meta: null },
     });
-  }
-  if (request.method === "item/permissions/requestApproval") {
+  if (request.method === "item/permissions/requestApproval")
     return response(request, {
       id: "",
       label: "",
@@ -193,7 +463,6 @@ function safest(request: ValidRequest): ApprovalOutcome {
       acceptedForSession: false,
       response: { permissions: {}, scope: "turn" },
     });
-  }
   return response(request, {
     id: "",
     label: "",
@@ -202,148 +471,149 @@ function safest(request: ValidRequest): ApprovalOutcome {
     response: { decision: "decline" },
   });
 }
-
+function grantedPermissions(params: RecordValue): RecordValue {
+  const requested = params.permissions as RecordValue;
+  const granted: RecordValue = {};
+  if (requested.network !== null)
+    granted.network = { enabled: (requested.network as RecordValue).enabled };
+  if (requested.fileSystem !== null) {
+    const fileSystem = requested.fileSystem as RecordValue;
+    const result: RecordValue = {
+      read: fileSystem.read,
+      write: fileSystem.write,
+    };
+    if ("globScanMaxDepth" in fileSystem)
+      result.globScanMaxDepth = fileSystem.globScanMaxDepth;
+    if ("entries" in fileSystem) result.entries = fileSystem.entries;
+    granted.fileSystem = result;
+  }
+  return granted;
+}
 function choices(request: ValidRequest): readonly Choice[] {
-  if (request.method === "item/commandExecution/requestApproval") {
-    const values: Choice[] = [
-      {
-        id: "1",
-        label: "Accept",
-        decision: "accept",
-        acceptedForSession: false,
-        response: { decision: "accept" },
-      },
-      {
-        id: "2",
-        label: "Accept for session",
-        decision: "acceptForSession",
-        acceptedForSession: true,
-        response: { decision: "acceptForSession" },
-      },
-      {
-        id: "3",
-        label: "Decline",
-        decision: "decline",
-        acceptedForSession: false,
-        response: { decision: "decline" },
-      },
-    ];
-    const amendments = Array.isArray(
-      request.params.proposedNetworkPolicyAmendments,
-    )
-      ? request.params.proposedNetworkPolicyAmendments
-      : [];
-    for (const amendment of amendments.slice(0, 8)) {
-      if (
-        !isRecord(amendment) ||
-        typeof amendment.host !== "string" ||
-        (amendment.action !== "allow" && amendment.action !== "deny")
-      )
-        continue;
-      values.push({
-        id: String(values.length + 1),
-        label: `Apply supplied network policy for ${bounded(amendment.host)}`,
-        decision: "applyNetworkPolicyAmendment",
-        acceptedForSession: false,
-        response: {
-          decision: {
-            applyNetworkPolicyAmendment: {
-              network_policy_amendment: {
-                host: amendment.host,
-                action: amendment.action,
-              },
-            },
-          },
-        },
-      });
-    }
-    values.push({
-      id: String(values.length + 1),
-      label: "Cancel",
-      decision: "cancel",
-      acceptedForSession: false,
-      response: { decision: "cancel" },
-    });
-    return values;
-  }
-  if (request.method === "item/fileChange/requestApproval") {
-    return [
-      {
-        id: "1",
-        label: "Accept",
-        decision: "accept",
-        acceptedForSession: false,
-        response: { decision: "accept" },
-      },
-      {
-        id: "2",
-        label: "Accept for session",
-        decision: "acceptForSession",
-        acceptedForSession: true,
-        response: { decision: "acceptForSession" },
-      },
-      {
-        id: "3",
-        label: "Decline",
-        decision: "decline",
-        acceptedForSession: false,
-        response: { decision: "decline" },
-      },
-      {
-        id: "4",
-        label: "Cancel",
-        decision: "cancel",
-        acceptedForSession: false,
-        response: { decision: "cancel" },
-      },
-    ];
-  }
   if (request.method === "item/permissions/requestApproval") {
-    const permissions = request.params.permissions;
-    if (!isRecord(permissions)) return [];
+    const permissions = grantedPermissions(request.params);
     return [
       {
         id: "1",
-        label: "Grant requested permissions for turn",
+        label: "Grant requested permissions (scope: turn)",
         decision: "accept",
         acceptedForSession: false,
         response: { permissions, scope: "turn" },
       },
       {
         id: "2",
-        label: "Grant requested permissions for session",
+        label: "Grant requested permissions (scope: session)",
         decision: "acceptForSession",
         acceptedForSession: true,
         response: { permissions, scope: "session" },
       },
       {
         id: "3",
-        label: "Decline",
+        label: "Decline (scope: turn)",
         decision: "decline",
         acceptedForSession: false,
         response: { permissions: {}, scope: "turn" },
       },
     ];
   }
-  return [
+  if (request.method === "mcpServer/elicitation/request")
+    return [
+      {
+        id: "1",
+        label: "Decline",
+        decision: "decline",
+        acceptedForSession: false,
+        response: { action: "decline", content: null, _meta: null },
+      },
+      {
+        id: "2",
+        label: "Cancel",
+        decision: "cancel",
+        acceptedForSession: false,
+        response: { action: "cancel", content: null, _meta: null },
+      },
+    ];
+  const values: Choice[] = [
     {
       id: "1",
-      label: "Decline",
-      decision: "decline",
+      label: "Accept",
+      decision: "accept",
       acceptedForSession: false,
-      response: { action: "decline", content: null, _meta: null },
+      response: { decision: "accept" },
     },
     {
       id: "2",
-      label: "Cancel",
-      decision: "cancel",
+      label: "Accept for session",
+      decision: "acceptForSession",
+      acceptedForSession: true,
+      response: { decision: "acceptForSession" },
+    },
+    {
+      id: "3",
+      label: "Decline",
+      decision: "decline",
       acceptedForSession: false,
-      response: { action: "cancel", content: null, _meta: null },
+      response: { decision: "decline" },
     },
   ];
+  if (request.method === "item/commandExecution/requestApproval") {
+    for (const amendment of (
+      (request.params.proposedNetworkPolicyAmendments as unknown[]) ?? []
+    ).slice(0, MAX_APPROVAL_LIST_ITEMS)) {
+      const value = amendment as RecordValue;
+      values.push({
+        id: String(values.length + 1),
+        label: `Apply supplied network policy for ${boundedBytes(value.host as string, 64)}`,
+        decision: "applyNetworkPolicyAmendment",
+        acceptedForSession: false,
+        response: {
+          decision: {
+            applyNetworkPolicyAmendment: {
+              network_policy_amendment: {
+                host: value.host,
+                action: value.action,
+              },
+            },
+          },
+        },
+      });
+    }
+  }
+  values.push({
+    id: String(values.length + 1),
+    label: "Cancel",
+    decision: "cancel",
+    acceptedForSession: false,
+    response: { decision: "cancel" },
+  });
+  return values;
 }
 
-function prompt(request: ValidRequest, available: readonly Choice[]): string {
+function hasPromptableListSizes(request: ValidRequest): boolean {
+  if (request.method === "item/commandExecution/requestApproval")
+    return (
+      (!Array.isArray(request.params.commandActions) ||
+        request.params.commandActions.length <= MAX_APPROVAL_LIST_ITEMS) &&
+      (!Array.isArray(request.params.proposedNetworkPolicyAmendments) ||
+        request.params.proposedNetworkPolicyAmendments.length <=
+          MAX_APPROVAL_LIST_ITEMS)
+    );
+  if (request.method !== "item/permissions/requestApproval") return true;
+  const permissions = request.params.permissions as RecordValue;
+  if (!isRecord(permissions.fileSystem)) return true;
+  return (
+    (!Array.isArray(permissions.fileSystem.read) ||
+      permissions.fileSystem.read.length <= MAX_APPROVAL_LIST_ITEMS) &&
+    (!Array.isArray(permissions.fileSystem.write) ||
+      permissions.fileSystem.write.length <= MAX_APPROVAL_LIST_ITEMS) &&
+    (!Array.isArray(permissions.fileSystem.entries) ||
+      permissions.fileSystem.entries.length <= MAX_APPROVAL_LIST_ITEMS)
+  );
+}
+function prompt(
+  request: ValidRequest,
+  available: readonly Choice[],
+): string | null {
   const lines = [
     `Approval: ${request.method}`,
     `Request: ${request.id}`,
@@ -351,39 +621,108 @@ function prompt(request: ValidRequest, available: readonly Choice[]): string {
     `Turn: ${request.audit.turnId ?? "none"}`,
     `Item: ${request.audit.itemId ?? "none"}`,
   ];
-  for (const field of [
-    "reason",
+  const context: string[] = [];
+  const params = request.params;
+  for (const key of [
     "command",
     "cwd",
     "grantRoot",
     "serverName",
     "mode",
-    "message",
     "url",
-  ] as const) {
-    const value = stringOrNull(request.params[field]);
-    if (value !== null) lines.push(`${field}: ${value}`);
+    "reason",
+    "message",
+  ] as const)
+    if (typeof params[key] === "string")
+      context.push(`${key}: ${bounded(params[key])}`);
+  if (isRecord(params.networkApprovalContext))
+    context.push(
+      `network: ${bounded(String(params.networkApprovalContext.protocol))}://${bounded(String(params.networkApprovalContext.host))}`,
+    );
+  if (Array.isArray(params.commandActions))
+    for (const action of params.commandActions.slice(
+      0,
+      MAX_APPROVAL_LIST_ITEMS,
+    )) {
+      const value = action as RecordValue;
+      context.push(
+        `command action: ${bounded(String(value.type))} ${bounded(String(value.path ?? value.command))}`,
+      );
+    }
+  const requestedPermissions = isRecord(params.permissions)
+    ? params.permissions
+    : null;
+  if (requestedPermissions) {
+    if (
+      isRecord(requestedPermissions.network) &&
+      requestedPermissions.network.enabled === true
+    )
+      context.push("network: enabled");
+    if (isRecord(requestedPermissions.fileSystem))
+      context.push(
+        `fileSystem: read ${Array.isArray(requestedPermissions.fileSystem.read) ? requestedPermissions.fileSystem.read.map(String).map(bounded).join(", ") : "none"}; write ${Array.isArray(requestedPermissions.fileSystem.write) ? requestedPermissions.fileSystem.write.map(String).map(bounded).join(", ") : "none"}`,
+      );
   }
-  lines.push(
-    ...available.map((choice) => `${choice.id}. ${choice.label}`),
-    "Selection:",
+  if (
+    requestedPermissions &&
+    isRecord(requestedPermissions.fileSystem) &&
+    Array.isArray(requestedPermissions.fileSystem.entries)
+  )
+    for (const entry of requestedPermissions.fileSystem.entries.slice(
+      0,
+      MAX_APPROVAL_LIST_ITEMS,
+    )) {
+      const value = entry as RecordValue;
+      const path = value.path as RecordValue;
+      const destination =
+        path.type === "path"
+          ? path.path
+          : path.type === "glob_pattern"
+            ? path.pattern
+            : isRecord(path.value)
+              ? path.value.kind === "unknown"
+                ? path.value.path
+                : path.value.kind === "project_roots"
+                  ? (path.value.subpath ?? "project roots")
+                  : path.value.kind
+              : "unknown";
+      context.push(`fileSystem entry: ${bounded(String(destination))}`);
+    }
+  const choiceLines = available.map(
+    (choice) =>
+      `${choice.id}. ${boundedBytes(choice.label, MAX_CHOICE_LABEL_BYTES)}`,
   );
-  return `${lines.join("\n")} `;
+  const choiceBlock = [...choiceLines, "Selection:"].join("\n");
+  if (Buffer.byteLength(choiceBlock, "utf8") + 1 > MAX_PROMPT_BYTES)
+    return null;
+  const boundedContext = context.map((line) =>
+    boundedBytes(line, MAX_PROMPT_BYTES),
+  );
+  if (boundedContext.some((line, index) => line !== context[index]))
+    return null;
+  for (const line of boundedContext) {
+    if (
+      Buffer.byteLength([...lines, line, choiceBlock].join("\n"), "utf8") + 1 >
+      MAX_PROMPT_BYTES
+    )
+      return null;
+    lines.push(line);
+  }
+  return `${[...lines, choiceBlock].join("\n")} `;
 }
-
 function writePrompt(
   output: NodeJS.WritableStream,
   value: string,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
+    const onError = () => finish(false);
     const finish = (ok: boolean, retainErrorListener = false) => {
       if (settled) return;
       settled = true;
       if (!retainErrorListener) output.removeListener("error", onError);
       resolve(ok);
     };
-    const onError = () => finish(false);
     output.once("error", onError);
     try {
       output.write(value, (error) => finish(!error, Boolean(error)));
@@ -392,13 +731,13 @@ function writePrompt(
     }
   });
 }
-
 function readLine(
   input: NodeJS.ReadableStream,
   timeoutMs: number,
 ): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
+    let buffered = Buffer.alloc(0);
     const finish = (line: string | null) => {
       if (settled) return;
       settled = true;
@@ -409,21 +748,38 @@ function readLine(
       resolve(line);
     };
     const onData = (chunk: unknown) => {
-      const first = String(chunk).split(/\r?\n/, 1)[0] ?? "";
-      finish(first.length <= MAX_LINE_LENGTH ? first : null);
+      if (
+        typeof chunk !== "string" &&
+        !Buffer.isBuffer(chunk) &&
+        !(chunk instanceof Uint8Array)
+      )
+        return finish(null);
+      buffered = Buffer.concat([
+        buffered,
+        typeof chunk === "string"
+          ? Buffer.from(chunk, "utf8")
+          : Buffer.from(chunk),
+      ]);
+      if (buffered.length > MAX_LINE_BYTES) return finish(null);
+      const newline = buffered.indexOf(10);
+      if (newline < 0) return;
+      const line = buffered
+        .subarray(0, newline)
+        .toString("utf8")
+        .replace(/\r$/, "");
+      finish(Buffer.byteLength(line, "utf8") <= MAX_LINE_BYTES ? line : null);
     };
     const onEnd = () => finish(null);
     const timer = setTimeout(
       () => finish(null),
       Math.max(1, Math.min(timeoutMs, 60_000)),
     );
-    input.once("data", onData);
+    input.on("data", onData);
     input.once("end", onEnd);
     input.once("error", onEnd);
     input.resume();
   });
 }
-
 export async function answerApproval(
   request: unknown,
   input: NodeJS.ReadableStream,
@@ -437,8 +793,9 @@ export async function answerApproval(
   if (terminalInput.isTTY !== true || terminalOutput.isTTY !== true)
     return safest(valid);
   const available = choices(valid);
-  if (available.length === 0) return safest(valid);
-  if (!(await writePrompt(output, prompt(valid, available))))
+  if (!hasPromptableListSizes(valid)) return safest(valid);
+  const rendered = prompt(valid, available);
+  if (rendered === null || !(await writePrompt(output, rendered)))
     return safest(valid);
   const selected = await readLine(input, timeoutMs);
   const choice = available.find((candidate) => candidate.id === selected);

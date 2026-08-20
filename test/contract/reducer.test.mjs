@@ -112,7 +112,8 @@ test("validates active lifecycle messages and freezes a terminal turn", () => {
   let state = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/started", params: { threadId: "thread-1", turn: activeTurn } });
   state = api.reduceServerMessage(state, started(item("mcpToolCall", "mcp-1", { server: "fixture", tool: "lookup", status: "inProgress", arguments: {}, appContext: null, pluginId: null, readOnlyHint: null, result: null, error: null, durationMs: null })));
   const progressed = api.reduceServerMessage(state, { method: "item/mcpToolCall/progress", params: { threadId: "thread-1", turnId: "turn-1", itemId: "mcp-1", message: "working" } });
-  assert.match(JSON.stringify(progressed.items.get("mcp-1")), /working/);
+  assert.match(JSON.stringify(progressed.items.get("mcp-1")), /MCP progress updated/);
+  assert.doesNotMatch(JSON.stringify(progressed.items.get("mcp-1")), /working/);
   const terminal = api.reduceServerMessage(progressed, { method: "turn/completed", params: { threadId: "thread-1", turn: { ...activeTurn, status: "interrupted" } } });
   assert.equal(api.reduceServerMessage(terminal, { method: "turn/diff/updated", params: { threadId: "thread-1", turnId: "turn-1", diff: "late" } }), terminal);
   assert.equal(api.reduceServerMessage(terminal, started(item("plan", "late", { text: "late" }))), terminal);
@@ -122,9 +123,133 @@ test("validates active lifecycle messages and freezes a terminal turn", () => {
 
 test("keeps active identifiers exact while bounding only presentation fields", () => {
   const api = reducer();
-  const threadId = "t".repeat(600);
-  const turnId = "u".repeat(600);
-  const state = api.createTurnState(threadId, turnId);
-  assert.equal(state.threadId, threadId);
-  assert.equal(state.turnId, turnId);
+  assert.throws(
+    () => api.createTurnState("t".repeat(600), "turn-1"),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+  assert.throws(
+    () => api.createTurnState("thread-1", "u".repeat(600)),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("rejects terminal conflicts, safely projects patch updates, and discards raw known reasoning and MCP progress", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "final", phase: null, memoryCitation: null });
+  const completedTurn = {
+    id: "turn-1",
+    items: [message],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: completedTurn },
+  });
+  assert.equal(api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: completedTurn } }), terminal);
+  assert.throws(
+    () => api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: { ...completedTurn, items: [item("agentMessage", "message-1", { text: "changed", phase: null, memoryCitation: null })] } } }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+  assert.throws(
+    () => api.reduceServerMessage(terminal, completed(item("agentMessage", "message-1", { text: "changed", phase: null, memoryCitation: null }))),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+
+  let state = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), started(item("fileChange", "files-1", { changes: [{ path: "before.txt", kind: "update" }], status: "inProgress" })));
+  state = api.reduceServerMessage(state, { method: "item/fileChange/patchUpdated", params: { threadId: "thread-1", turnId: "turn-1", itemId: "files-1", changes: [{ path: "after.txt", kind: "add", diff: "raw patch" }] } });
+  assert.match(JSON.stringify(state.items.get("files-1")), /after\.txt/);
+  assert.doesNotMatch(JSON.stringify(state.items.get("files-1")), /raw patch/);
+
+  state = api.reduceServerMessage(state, started(item("reasoning", "reasoning-1", { summary: [], content: ["raw reasoning"] })));
+  state = api.reduceServerMessage(state, { method: "item/reasoning/summaryPartAdded", params: { threadId: "thread-1", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: 0 } });
+  assert.throws(
+    () => api.reduceServerMessage(state, { method: "item/reasoning/summaryTextDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "reasoning-1", summaryIndex: "bad", delta: "raw" } }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+  state = api.reduceServerMessage(state, { method: "item/reasoning/textDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "reasoning-1", contentIndex: 0, delta: "raw reasoning delta" } });
+  assert.doesNotMatch(JSON.stringify(state.items.get("reasoning-1")), /raw reasoning/);
+  assert.throws(
+    () => api.reduceServerMessage(state, { method: "item/reasoning/textDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "missing", contentIndex: 0, delta: "raw" } }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+
+  state = api.reduceServerMessage(state, started(item("mcpToolCall", "mcp-1", { server: "fixture", tool: "lookup", status: "inProgress", arguments: {}, appContext: null, pluginId: null, readOnlyHint: null, result: null, error: null, durationMs: null })));
+  state = api.reduceServerMessage(state, { method: "item/mcpToolCall/progress", params: { threadId: "thread-1", turnId: "turn-1", itemId: "mcp-1", message: "raw mcp progress" } });
+  assert.doesNotMatch(JSON.stringify(state.items.get("mcp-1")), /raw mcp progress/);
+});
+
+test("marks capped inventories and warnings with visible omission metadata", () => {
+  const api = reducer();
+  let state = api.createTurnState("thread-1", "turn-1");
+  for (let index = 0; index < 65; index += 1) {
+    state = api.reduceServerMessage(state, started(item("agentMessage", `message-${index}`, { text: "x", phase: null, memoryCitation: null })));
+  }
+  for (let index = 0; index < 17; index += 1) {
+    state = api.reduceServerMessage(state, { method: "warning", params: { threadId: "thread-1", message: `warning-${index}` } });
+  }
+  assert.equal(state.omittedItems, 1);
+  assert.equal(state.omittedWarnings, 1);
+
+  const fileState = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), completed(item("fileChange", "files-1", {
+    changes: Array.from({ length: 65 }, (_, index) => ({ path: `file-${index}`, kind: "update" })),
+    status: "completed",
+  })));
+  assert.equal(fileState.items.get("files-1")?.value.omittedFiles, 1);
+
+  const commands = Array.from({ length: 33 }, (_, index) => item("commandExecution", `command-${index}`, {
+    command: `command-${index}`,
+    cwd: "/repo",
+    exitCode: 0,
+    aggregatedOutput: null,
+  }));
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: { id: "turn-1", items: commands, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null } },
+  });
+  assert.equal(terminal.omittedCommands, 1);
+
+  let warnings = api.createTurnState("thread-1", "turn-1");
+  for (let index = 0; index < 17; index += 1) {
+    warnings = api.reduceServerMessage(warnings, { method: "error", params: { threadId: "thread-1", turnId: "turn-1" } });
+  }
+  assert.equal(warnings.omittedWarnings, 1);
+});
+
+test("uses UTF-8 byte bounds for protocol IDs", () => {
+  const api = reducer();
+  assert.throws(
+    () => api.createTurnState("🙂".repeat(100), "turn-1"),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("requires a full terminal inventory and summarizes commands beyond the item projection cap", () => {
+  const api = reducer();
+  const turn = {
+    id: "turn-1",
+    items: [],
+    itemsView: "summary",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  assert.throws(
+    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/completed", params: { threadId: "thread-1", turn } }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+  const items = [
+    ...Array.from({ length: 64 }, (_, index) => item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null })),
+    ...Array.from({ length: 33 }, (_, index) => item("commandExecution", `command-${index}`, { command: `command-${index}`, cwd: "/repo", exitCode: 0, aggregatedOutput: null })),
+  ];
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/completed", params: { threadId: "thread-1", turn: { ...turn, items, itemsView: "full" } } });
+  assert.equal(terminal.omittedItems, 33);
+  assert.equal(terminal.observedCommands.length, 32);
+  assert.equal(terminal.omittedCommands, 1);
 });

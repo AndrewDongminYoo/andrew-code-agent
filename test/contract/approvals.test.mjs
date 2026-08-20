@@ -18,7 +18,7 @@ async function requests() {
 }
 
 function input(line, tty = true) {
-  const stream = Readable.from(line === null ? [] : [line]);
+  const stream = Readable.from(line === null ? [] : Array.isArray(line) ? line : [line]);
   Object.defineProperty(stream, "isTTY", { value: tty });
   return stream;
 }
@@ -104,4 +104,199 @@ test("fails closed or safely declines for noninteractive and malformed input pat
   const unsupported = await approvals().answerApproval({ method: "item/tool/requestUserInput", id: "x", params: { threadId: "thread-1", turnId: "turn-1", itemId: "tool-1" } }, input("1\n"), output().stream, 100);
   assert.equal(unsupported.kind, "failClosed");
   assert.equal(unsupported.code, "UNKNOWN_SERVER_REQUEST");
+});
+
+test("rejects extra generated-request keys and grants a fresh non-null permission subset", async () => {
+  const [, file, permission, mcp] = await requests();
+  const command = (await requests())[0];
+  for (const request of [command, file, permission, mcp]) {
+    const malformed = structuredClone(request);
+    malformed.params.unexpected = true;
+    const result = await approvals().answerApproval(malformed, input("1\n"), output().stream, 100);
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+  }
+  const malformedExecpolicy = structuredClone(command);
+  malformedExecpolicy.params.proposedExecpolicyAmendment = { command: "unsafe" };
+  const malformedExecpolicyResult = await approvals().answerApproval(
+    malformedExecpolicy,
+    input("1\n"),
+    output().stream,
+    100,
+  );
+  assert.equal(malformedExecpolicyResult.kind, "failClosed");
+
+  const granted = await approvals().answerApproval(permission, input("1\n"), output().stream, 100);
+  assert.deepEqual(granted.response, {
+    permissions: {
+      network: { enabled: true },
+      fileSystem: { read: ["/repo"], write: ["/repo"], entries: [] },
+    },
+    scope: "turn",
+  });
+  assert.notStrictEqual(granted.response.permissions, permission.params.permissions);
+  assert.equal("network" in granted.response.permissions, true);
+  assert.equal("fileSystem" in granted.response.permissions, true);
+
+  const noPermissions = structuredClone(permission);
+  noPermissions.params.permissions = { network: null, fileSystem: null };
+  const normalized = await approvals().answerApproval(noPermissions, input("1\n"), output().stream, 100);
+  assert.deepEqual(normalized.response, { permissions: {}, scope: "turn" });
+
+  const injected = structuredClone(permission);
+  injected.params.permissions.shell = { enabled: true };
+  const injectedResult = await approvals().answerApproval(injected, input("1\n"), output().stream, 100);
+  assert.equal(injectedResult.kind, "failClosed");
+});
+
+test("renders complete bounded approval context and waits for a newline-delimited selection", async () => {
+  const [command, , permission] = await requests();
+  command.params.commandActions = [{
+    type: "read",
+    command: "cat /repo/visible.txt",
+    name: "visible.txt",
+    path: "/repo/visible.txt",
+  }];
+  command.params.networkApprovalContext = { host: "example.com", protocol: "https" };
+  command.params.reason = "🙂".repeat(800);
+  const commandSink = output();
+  const commandResult = await approvals().answerApproval(command, input("1x\n"), commandSink.stream, 100);
+  assert.deepEqual(commandResult.response, { decision: "decline" });
+  assert.match(commandSink.text(), /command action: read .*visible\.txt/);
+  assert.match(commandSink.text(), /network: https:\/\/example\.com/);
+  assert.match(commandSink.text(), /Accept|Decline|Cancel/);
+  assert.ok(Buffer.byteLength(commandSink.text(), "utf8") <= 2048);
+
+  const permissionSink = output();
+  await approvals().answerApproval(permission, input("3\n"), permissionSink.stream, 100);
+  assert.match(permissionSink.text(), /network: enabled/);
+  assert.match(permissionSink.text(), /fileSystem: read \/repo; write \/repo/);
+  assert.match(permissionSink.text(), /scope: turn|scope: session/);
+
+  const splitInvalid = await approvals().answerApproval((await requests())[0], input(["1", "x\n"]), output().stream, 100);
+  assert.deepEqual(splitInvalid.response, { decision: "decline" });
+  const unterminated = await approvals().answerApproval((await requests())[0], input("1"), output().stream, 100);
+  assert.deepEqual(unterminated.response, { decision: "decline" });
+
+  const [, , , mcp] = await requests();
+  const invalidMode = structuredClone(mcp);
+  invalidMode.params.mode = "unknown";
+  const invalidModeResult = await approvals().answerApproval(invalidMode, input("1\n"), output().stream, 100);
+  assert.equal(invalidModeResult.kind, "failClosed");
+  const incompleteMcp = structuredClone(mcp);
+  delete incompleteMcp.params.requestedSchema;
+  const incompleteMcpResult = await approvals().answerApproval(incompleteMcp, input("1\n"), output().stream, 100);
+  assert.equal(incompleteMcpResult.kind, "failClosed");
+});
+
+test("preserves every available choice after bounding context and validates generated MCP and filesystem nesting", async () => {
+  const [command, , permission, mcp] = await requests();
+  command.params.command = "command ".repeat(1000);
+  command.params.cwd = "/repo/" + "path/".repeat(1000);
+  command.params.proposedNetworkPolicyAmendments = Array.from(
+    { length: 8 },
+    (_, index) => ({ host: `host-${index}.example.com`, action: "allow" }),
+  );
+  const commandSink = output();
+  const cancelled = await approvals().answerApproval(
+    command,
+    input("12\n"),
+    commandSink.stream,
+    100,
+  );
+  assert.deepEqual(cancelled.response, { decision: "cancel" });
+  assert.match(commandSink.text(), /1\. Accept/);
+  assert.match(commandSink.text(), /12\. Cancel/);
+  assert.ok(Buffer.byteLength(commandSink.text(), "utf8") <= 2048);
+
+  const missingMeta = structuredClone(mcp);
+  delete missingMeta.params._meta;
+  const missingMetaResult = await approvals().answerApproval(
+    missingMeta,
+    input("1\n"),
+    output().stream,
+    100,
+  );
+  assert.equal(missingMetaResult.kind, "failClosed");
+
+  const entryPermission = structuredClone(permission);
+  entryPermission.params.permissions.fileSystem.entries = [{
+    path: { type: "path", path: "/repo/entry" },
+    access: "read",
+  }];
+  entryPermission.params.permissions.fileSystem.globScanMaxDepth = 1;
+  const entrySink = output();
+  await approvals().answerApproval(entryPermission, input("3\n"), entrySink.stream, 100);
+  assert.match(entrySink.text(), /\/repo\/entry/);
+  const malformedEntry = structuredClone(entryPermission);
+  malformedEntry.params.permissions.fileSystem.entries[0].path.extra = true;
+  const malformedEntryResult = await approvals().answerApproval(malformedEntry, input("1\n"), output().stream, 100);
+  assert.equal(malformedEntryResult.kind, "failClosed");
+  const invalidDepth = structuredClone(entryPermission);
+  invalidDepth.params.permissions.fileSystem.globScanMaxDepth = 0;
+  const invalidDepthResult = await approvals().answerApproval(invalidDepth, input("1\n"), output().stream, 100);
+  assert.equal(invalidDepthResult.kind, "failClosed");
+});
+
+test("declines object-mode input chunks without coercing them", async () => {
+  const [command] = await requests();
+  let converted = false;
+  const stream = Readable.from([
+    {
+      toString() {
+        converted = true;
+        return "1\n";
+      },
+    },
+  ]);
+  Object.defineProperty(stream, "isTTY", { value: true });
+  const result = await approvals().answerApproval(command, stream, output().stream, 100);
+  assert.deepEqual(result.response, { decision: "decline" });
+  assert.equal(converted, false);
+});
+
+test("declines without prompting when a complete approval context exceeds its list caps", async () => {
+  const [command, , permission] = await requests();
+  command.params.proposedNetworkPolicyAmendments = Array.from(
+    { length: 9 },
+    (_, index) => ({ host: `host-${index}.example.com`, action: "allow" }),
+  );
+  const commandSink = output();
+  const commandResult = await approvals().answerApproval(
+    command,
+    input("1\n"),
+    commandSink.stream,
+    100,
+  );
+  assert.deepEqual(commandResult.response, { decision: "decline" });
+  assert.equal(commandSink.text(), "");
+
+  for (const permissions of [
+    {
+      network: null,
+      fileSystem: {
+        read: Array.from({ length: 9 }, (_, index) => `/repo/read-${index}`),
+        write: [],
+        entries: [],
+      },
+    },
+    {
+      network: null,
+      fileSystem: {
+        read: [],
+        write: [],
+        entries: Array.from({ length: 9 }, (_, index) => ({
+          path: { type: "path", path: `/repo/entry-${index}` },
+          access: "read",
+        })),
+      },
+    },
+  ]) {
+    const request = structuredClone(permission);
+    request.params.permissions = permissions;
+    const sink = output();
+    const result = await approvals().answerApproval(request, input("1\n"), sink.stream, 100);
+    assert.deepEqual(result.response, { permissions: {}, scope: "turn" });
+    assert.equal(sink.text(), "");
+  }
 });

@@ -3,10 +3,15 @@ import type { ItemState, TurnState } from "./reducer.js";
 const MAX_RENDERED_VALUE = 512;
 const TRUNCATION_MARKER = " [truncated]";
 
-function bounded(value: string): string {
-  return value.length <= MAX_RENDERED_VALUE
-    ? value
-    : `${value.slice(0, MAX_RENDERED_VALUE - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
+  if (Buffer.byteLength(value, "utf8") <= limit) return value;
+  let result = "";
+  for (const part of value) {
+    if (Buffer.byteLength(result + part + TRUNCATION_MARKER, "utf8") > limit)
+      break;
+    result += part;
+  }
+  return `${result}${TRUNCATION_MARKER}`;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -21,7 +26,7 @@ function valueText(value: unknown, key: string): string | null {
 }
 
 function renderItem(item: ItemState): string {
-  const lifecycle = `${item.id} ${item.type} ${item.phase}`;
+  const lifecycle = `${bounded(item.id, 128)} ${bounded(item.type, 128)} ${item.phase}`;
   if (item.type === "agentMessage" || item.type === "plan")
     return `${lifecycle}: ${valueText(item.value, "text") ?? ""}`;
   if (item.type === "reasoning") return `${lifecycle}: Reasoning updated`;
@@ -44,10 +49,14 @@ function renderItem(item: ItemState): string {
           })
           .join(", ")
       : "files changed";
-    return `${lifecycle}: ${files}`;
+    const omittedFiles = record(item.value)?.omittedFiles;
+    return `${lifecycle}: ${files}${typeof omittedFiles === "number" && omittedFiles > 0 ? `; ${omittedFiles} file(s) omitted` : ""}`;
   }
-  if (item.type === "mcpToolCall")
-    return `${lifecycle}: ${valueText(item.value, "server") ?? "unknown"}/${valueText(item.value, "tool") ?? "tool"}`;
+  if (item.type === "mcpToolCall") {
+    const status = valueText(item.value, "status") ?? "unknown";
+    const progress = valueText(item.value, "progress");
+    return `${lifecycle}: ${valueText(item.value, "server") ?? "unknown"}/${valueText(item.value, "tool") ?? "tool"} (${status})${progress ? `, ${progress}` : ""}`;
+  }
   if (item.type === "subAgentActivity")
     return `${lifecycle}: ${valueText(item.value, "label") ?? "Subagent activity"}`;
   return `${lifecycle}: ${valueText(item.value, "label") ?? "Item updated"}`;
@@ -55,8 +64,8 @@ function renderItem(item: ItemState): string {
 
 export function renderTurnState(state: TurnState): readonly string[] {
   const lines = [
-    `Thread: ${bounded(state.threadId)}`,
-    `Turn: ${bounded(state.turnId)}`,
+    `Thread: ${bounded(state.threadId, 504)}`,
+    `Turn: ${bounded(state.turnId, 506)}`,
   ];
   for (const item of state.items.values()) lines.push(renderItem(item));
   for (const command of state.observedCommands)
@@ -66,6 +75,23 @@ export function renderTurnState(state: TurnState): readonly string[] {
   if (state.diff !== null) lines.push(`Final diff: ${bounded(state.diff)}`);
   for (const warning of state.warnings)
     lines.push(`Warning: ${bounded(warning)}`);
+  const omissions = state as TurnState & {
+    readonly omittedItems?: number;
+    readonly omittedCommands?: number;
+    readonly omittedWarnings?: number;
+  };
+  if (typeof omissions.omittedItems === "number" && omissions.omittedItems > 0)
+    lines.push(`${omissions.omittedItems} item(s) omitted`);
+  if (
+    typeof omissions.omittedCommands === "number" &&
+    omissions.omittedCommands > 0
+  )
+    lines.push(`${omissions.omittedCommands} command(s) omitted`);
+  if (
+    typeof omissions.omittedWarnings === "number" &&
+    omissions.omittedWarnings > 0
+  )
+    lines.push(`${omissions.omittedWarnings} warning(s) omitted`);
   lines.push(`Terminal status: ${state.terminalStatus}`);
   return lines;
 }
