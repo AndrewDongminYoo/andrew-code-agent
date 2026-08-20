@@ -370,3 +370,60 @@ test("requires a full terminal inventory and summarizes commands beyond the item
   assert.equal(terminal.observedCommands.length, 32);
   assert.equal(terminal.omittedCommands, 1);
 });
+
+test("fails closed when active omitted-item authority exceeds its deterministic bound", () => {
+  const api = reducer();
+  let state = api.createTurnState("thread-1", "turn-1");
+  for (let index = 0; index < 128; index += 1) {
+    state = api.reduceServerMessage(state, started(item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null })));
+  }
+  assert.equal(state.items.size, 64);
+  assert.equal(state.omittedItemStates.size, 64);
+  assert.throws(
+    () => api.reduceServerMessage(state, started(item("agentMessage", "message-overflow", { text: "message", phase: null, memoryCitation: null }))),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("fails closed when terminal omitted-item authority exceeds its deterministic bound", () => {
+  const api = reducer();
+  const items = Array.from({ length: 129 }, (_, index) => item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null }));
+  assert.throws(
+    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: { id: "turn-1", items, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null },
+      },
+    }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("rejects inherited root and nested accessors without invoking them", () => {
+  const api = reducer();
+  const state = api.createTurnState("thread-1", "turn-1");
+  let getterCalls = 0;
+  const installGetter = (key) => Object.defineProperty(Object.prototype, key, {
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error(`inherited ${key} getter invoked`);
+    },
+  });
+
+  try {
+    installGetter("method");
+    assert.throws(() => api.reduceServerMessage(state, {}), { code: "INVALID_SERVER_EVENT" });
+    delete Object.prototype.method;
+    installGetter("turn");
+    assert.throws(
+      () => api.reduceServerMessage(state, { method: "turn/started", params: { threadId: "thread-1" } }),
+      { code: "INVALID_SERVER_EVENT" },
+    );
+  } finally {
+    delete Object.prototype.method;
+    delete Object.prototype.turn;
+  }
+  assert.equal(getterCalls, 0);
+});

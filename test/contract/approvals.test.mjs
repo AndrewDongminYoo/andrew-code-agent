@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { PassThrough, Readable, Writable } from "node:stream";
 import test from "node:test";
@@ -147,6 +148,78 @@ test("bounds a stalled prompt write by the approval timeout and removes its erro
   assert.deepEqual(result.response, { decision: "decline" });
   assert.equal(sink.listenerCount("error"), 0);
   sink.destroy();
+});
+
+test("settles and removes listeners when a stalled prompt stream suppresses close", async () => {
+  const [command] = await requests();
+  const sink = new Writable({
+    emitClose: false,
+    write() {},
+  });
+  Object.defineProperty(sink, "isTTY", { value: true });
+
+  const result = await Promise.race([
+    approvals().answerApproval(command, input("1\n"), sink, 5),
+    new Promise((resolve) => setTimeout(() => resolve(null), 100)),
+  ]);
+
+  assert.notEqual(result, null, "a destroyed prompt write must settle without a close event");
+  assert.deepEqual(result.response, { decision: "decline" });
+  assert.equal(sink.destroyed, true);
+  assert.equal(sink.listenerCount("error"), 0);
+  assert.equal(sink.listenerCount("close"), 0);
+});
+
+test("absorbs a late prompt write error after timeout and removes terminal listeners", async () => {
+  const script = String.raw`
+    import { readFile } from "node:fs/promises";
+    import { Readable, Writable } from "node:stream";
+    import { answerApproval } from "./dist/app-server/approvals.js";
+
+    const request = JSON.parse((await readFile("test/fixtures/protocol/approval-requests.jsonl", "utf8")).split("\n")[0]);
+    const source = Readable.from(["1\n"]);
+    Object.defineProperty(source, "isTTY", { value: true });
+    const sink = new Writable({
+      write(_chunk, _encoding, callback) {
+        setTimeout(() => callback(new Error("late write failure")), 40);
+      },
+    });
+    Object.defineProperty(sink, "isTTY", { value: true });
+    let uncaught = null;
+    process.once("uncaughtException", (error) => {
+      uncaught = error.message;
+    });
+
+    const result = await answerApproval(request, source, sink, 5);
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    console.log(JSON.stringify({
+      decision: result.decision,
+      errorListeners: sink.listenerCount("error"),
+      closeListeners: sink.listenerCount("close"),
+      uncaught,
+    }));
+  `;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.setEncoding("utf8").on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding("utf8").on("data", (chunk) => {
+    stderr += chunk;
+  });
+  const exitCode = await new Promise((resolve) => child.once("close", resolve));
+
+  assert.equal(exitCode, 0, stderr);
+  assert.deepEqual(JSON.parse(stdout), {
+    decision: "decline",
+    errorListeners: 0,
+    closeListeners: 0,
+    uncaught: null,
+  });
 });
 
 test("rejects extra generated-request keys and grants a fresh non-null permission subset", async () => {

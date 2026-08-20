@@ -27,6 +27,7 @@ export interface TurnState {
 
 const MAX_TEXT_LENGTH = 512;
 const MAX_ITEMS = 64;
+const MAX_OMITTED_ITEM_AUTHORITY = 64;
 const MAX_WARNINGS = 16;
 const MAX_COMMANDS = 32;
 const MAX_PROTOCOL_ID_LENGTH = 256;
@@ -48,21 +49,24 @@ function isRecord(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isPlainJsonData(
+const INVALID_JSON_DATA = Symbol("INVALID_JSON_DATA");
+
+function descriptorSafeJsonData(
   value: unknown,
   depth = 0,
   active = new WeakSet<object>(),
-): boolean {
+): unknown | typeof INVALID_JSON_DATA {
   try {
-    if (depth > 32) return false;
+    if (depth > 32) return INVALID_JSON_DATA;
     if (
       value === null ||
       typeof value === "string" ||
       typeof value === "boolean"
     )
-      return true;
-    if (typeof value === "number") return Number.isFinite(value);
-    if (typeof value !== "object") return false;
+      return value;
+    if (typeof value === "number")
+      return Number.isFinite(value) ? value : INVALID_JSON_DATA;
+    if (typeof value !== "object") return INVALID_JSON_DATA;
     const array = Array.isArray(value);
     if (
       (array && Object.getPrototypeOf(value) !== Array.prototype) ||
@@ -72,7 +76,7 @@ function isPlainJsonData(
       Object.getOwnPropertySymbols(value).length > 0 ||
       active.has(value)
     )
-      return false;
+      return INVALID_JSON_DATA;
     const descriptors = Object.getOwnPropertyDescriptors(value);
     const names = Object.getOwnPropertyNames(value);
     if (
@@ -88,23 +92,30 @@ function isPlainJsonData(
           )
         : names.some((name) => !descriptors[name]?.enumerable)
     )
-      return false;
+      return INVALID_JSON_DATA;
     active.add(value);
     try {
-      return names.every((name) => {
-        if (name === "length") return true;
+      const result: unknown[] | RecordValue = array ? [] : Object.create(null);
+      for (const name of names) {
+        if (name === "length") continue;
         const descriptor = descriptors[name];
-        return (
-          descriptor !== undefined &&
-          "value" in descriptor &&
-          isPlainJsonData(descriptor.value, depth + 1, active)
+        if (descriptor === undefined || !("value" in descriptor))
+          return INVALID_JSON_DATA;
+        const child = descriptorSafeJsonData(
+          descriptor.value,
+          depth + 1,
+          active,
         );
-      });
+        if (child === INVALID_JSON_DATA) return INVALID_JSON_DATA;
+        if (array) (result as unknown[])[Number(name)] = child;
+        else (result as RecordValue)[name] = child;
+      }
+      return result;
     } finally {
       active.delete(value);
     }
   } catch {
-    return false;
+    return INVALID_JSON_DATA;
   }
 }
 
@@ -222,6 +233,8 @@ function replaceItem(state: TurnState, item: ItemState): TurnState {
         throw new ReducerError("INVALID_SERVER_EVENT");
       return state;
     }
+    if ((state.omittedItemStates?.size ?? 0) >= MAX_OMITTED_ITEM_AUTHORITY)
+      throw new ReducerError("INVALID_SERVER_EVENT");
     const omittedItemIds = new Set(state.omittedItemIds);
     const omittedItemTypes = new Map(state.omittedItemTypes ?? []);
     const omittedItemStates = new Map(state.omittedItemStates ?? []);
@@ -334,7 +347,9 @@ export function reduceServerMessage(
   state: TurnState,
   message: unknown,
 ): TurnState {
-  if (!isPlainJsonData(message)) throw new ReducerError("INVALID_SERVER_EVENT");
+  message = descriptorSafeJsonData(message);
+  if (message === INVALID_JSON_DATA)
+    throw new ReducerError("INVALID_SERVER_EVENT");
   if (!isRecord(message) || typeof message.method !== "string")
     throw new ReducerError("INVALID_SERVER_EVENT");
   if (Object.hasOwn(message, "id"))
@@ -534,6 +549,8 @@ export function reduceServerMessage(
           });
       }
       if (items.size >= MAX_ITEMS) {
+        if (omittedItemStates.size >= MAX_OMITTED_ITEM_AUTHORITY)
+          throw new ReducerError("INVALID_SERVER_EVENT");
         omittedItemIds.add(safe.id);
         omittedItemTypes.set(safe.id, safe.type);
         omittedItemStates.set(safe.id, safe);

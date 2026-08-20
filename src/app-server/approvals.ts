@@ -1104,21 +1104,35 @@ function writePrompt(
   value: string,
   timeoutMs: number,
 ): Promise<boolean> {
+  const destroyable = output as NodeJS.WritableStream & {
+    destroy?: () => unknown;
+  };
+  const destroy = destroyable.destroy;
+  if (typeof destroy !== "function") return Promise.resolve(false);
   return new Promise((resolve) => {
     let settled = false;
     const onError = () => finish(false);
+    const onClose = () => finish(false);
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       output.removeListener("error", onError);
+      output.removeListener("close", onClose);
       resolve(ok);
     };
     const timer = setTimeout(
-      () => finish(false),
+      () => {
+        try {
+          destroy.call(output);
+        } finally {
+          finish(false);
+        }
+      },
       Math.max(1, Math.min(timeoutMs, 60_000)),
     );
     output.once("error", onError);
+    output.once("close", onClose);
     try {
       output.write(value, (error) => {
         if (!error) finish(true);
