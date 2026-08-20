@@ -21,6 +21,7 @@ import type { ResolvedSourceFile } from "./source-tree.js";
 
 const metadataPath = "bundle-metadata.json";
 const stagingPrefix = ".bundle-staging-";
+const lockSuffix = ".lock";
 const execFile = promisify(execFileCallback);
 
 export interface BundleMetadata {
@@ -64,7 +65,8 @@ export type ArtifactErrorCode =
   | "ARTIFACT_ROOT_INVALID"
   | "UNDECLARED_OUTPUT"
   | "OUTPUT_CLOSURE_INVALID"
-  | "ARTIFACT_COLLISION";
+  | "ARTIFACT_COLLISION"
+  | "ARTIFACT_LOCKED";
 
 export class ArtifactError extends Error {
   readonly code: ArtifactErrorCode;
@@ -78,12 +80,21 @@ export class ArtifactError extends Error {
 
 type ArtifactTestHook = (stagingRoot: string) => void | Promise<void>;
 let artifactTestHook: ArtifactTestHook | undefined;
+type ArtifactPublicationTestHook = () => void | Promise<void>;
+let artifactPublicationTestHook: ArtifactPublicationTestHook | undefined;
 
 /** Test-only deterministic failure injection that is intentionally outside BuildBundleInput. */
 export function __setArtifactTestHookForTests(
   hook: ArtifactTestHook | undefined,
 ): void {
   artifactTestHook = hook;
+}
+
+/** Test-only deterministic publication injection that is intentionally outside BuildBundleInput. */
+export function __setArtifactPublicationTestHookForTests(
+  hook: ArtifactPublicationTestHook | undefined,
+): void {
+  artifactPublicationTestHook = hook;
 }
 
 export async function buildBundle(
@@ -99,12 +110,11 @@ export async function buildBundle(
   const requestedCapabilities = normalizeRequestedCapabilities(
     input.requestedCapabilities,
   );
-  assertCapabilityInputs(requestedCapabilities, input.capabilityInputs);
-  const rendered = await renderBundle(
-    sourceRoot,
-    manifest,
+  const capabilityInputs = normalizeCapabilityInputs(
+    requestedCapabilities,
     input.capabilityInputs,
   );
+  const rendered = await renderBundle(sourceRoot, manifest, capabilityInputs);
   await assertSourceUnchanged(sourceRoot, sourceRevision);
 
   const files = normalizeFiles(rendered.files);
@@ -134,16 +144,18 @@ export async function buildBundle(
     );
   }
   const metadataBytes = metadataFileBytes(metadata);
-
-  if (await pathExists(publishedRoot)) {
-    await assertPublishedArtifact(publishedRoot, files, metadataBytes);
-    await assertSourceUnchanged(sourceRoot, sourceRevision);
-    return { artifactRoot: publishedRoot, metadata };
-  }
-
-  const stagingRoot = await mkdtemp(resolve(artifactRoot, stagingPrefix));
+  const lockPath = artifactLockPath(artifactRoot, metadata.bundleDigest);
+  await acquireArtifactLock(lockPath);
+  let stagingRoot: string | undefined;
   let published = false;
   try {
+    if (await pathExists(publishedRoot)) {
+      await assertPublishedArtifact(publishedRoot, files, metadataBytes);
+      await assertSourceUnchanged(sourceRoot, sourceRevision);
+      return { artifactRoot: publishedRoot, metadata };
+    }
+
+    stagingRoot = await mkdtemp(resolve(artifactRoot, stagingPrefix));
     await chmod(stagingRoot, 0o700);
     await writeFiles(stagingRoot, files);
     await artifactTestHook?.(stagingRoot);
@@ -160,10 +172,18 @@ export async function buildBundle(
       await assertSourceUnchanged(sourceRoot, sourceRevision);
       return { artifactRoot: publishedRoot, metadata };
     }
+    await artifactPublicationTestHook?.();
+    if (await pathExists(publishedRoot)) {
+      throw new ArtifactError(
+        "ARTIFACT_COLLISION",
+        "An artifact target already exists.",
+      );
+    }
     try {
       await assertSourceUnchanged(sourceRoot, sourceRevision);
       await rename(stagingRoot, publishedRoot);
       published = true;
+      await assertPublishedArtifact(publishedRoot, files, metadataBytes);
     } catch (error) {
       if (!(await pathExists(publishedRoot))) {
         throw error;
@@ -172,8 +192,12 @@ export async function buildBundle(
     }
     return { artifactRoot: publishedRoot, metadata };
   } finally {
-    if (!published) {
-      await rm(stagingRoot, { recursive: true, force: true });
+    try {
+      if (!published && stagingRoot !== undefined) {
+        await rm(stagingRoot, { recursive: true, force: true });
+      }
+    } finally {
+      await rm(lockPath, { recursive: true, force: true });
     }
   }
 }
@@ -222,19 +246,45 @@ function normalizeRequestedCapabilities(
   return normalized;
 }
 
-function assertCapabilityInputs(
+function normalizeCapabilityInputs(
   requestedCapabilities: readonly "oracle"[],
   capabilityInputs: CapabilityInputs,
-): void {
+): CapabilityInputs {
+  const candidate = capabilityInputs as unknown;
+  if (typeof candidate !== "object" || candidate === null) {
+    throw new ArtifactError("INVALID_INPUT", "Bundle input is invalid.");
+  }
+  const record = candidate as Record<PropertyKey, unknown>;
+  const hasOwnOracle = Object.hasOwn(record, "oracle");
+  if (!hasOwnOracle && "oracle" in record) {
+    if (!requestedCapabilities.includes("oracle")) {
+      throw new ArtifactError(
+        "UNREQUESTED_CAPABILITY_INPUT",
+        "Capability inputs include a capability that was not requested.",
+      );
+    }
+    throw new ArtifactError("INVALID_INPUT", "Bundle input is invalid.");
+  }
   if (
-    Object.hasOwn(capabilityInputs, "oracle") &&
-    !requestedCapabilities.includes("oracle")
+    (Object.getPrototypeOf(record) !== Object.prototype &&
+      Object.getPrototypeOf(record) !== null) ||
+    Reflect.ownKeys(record).some((key) => key !== "oracle")
   ) {
+    throw new ArtifactError("INVALID_INPUT", "Bundle input is invalid.");
+  }
+  if (hasOwnOracle && !requestedCapabilities.includes("oracle")) {
     throw new ArtifactError(
       "UNREQUESTED_CAPABILITY_INPUT",
       "Capability inputs include a capability that was not requested.",
     );
   }
+  if (!hasOwnOracle) {
+    return {};
+  }
+  return Object.defineProperty({}, "oracle", {
+    enumerable: true,
+    value: record.oracle,
+  }) as CapabilityInputs;
 }
 
 async function resolveGitRoot(sourceRoot: string): Promise<string> {
@@ -462,11 +512,40 @@ async function resolveArtifactsRoot(artifactsRoot: string): Promise<string> {
     if (!(await lstat(canonicalRoot)).isDirectory()) {
       throw new Error("not a directory");
     }
+    await chmod(canonicalRoot, 0o700);
     return canonicalRoot;
   } catch {
     throw new ArtifactError(
       "ARTIFACT_ROOT_INVALID",
       "Artifact root is invalid.",
+    );
+  }
+}
+
+function artifactLockPath(artifactRoot: string, digest: string): string {
+  const lockPath = resolve(artifactRoot, `.${digest}${lockSuffix}`);
+  if (!isContainedBy(artifactRoot, lockPath)) {
+    throw new ArtifactError(
+      "ARTIFACT_ROOT_INVALID",
+      "Artifact root is invalid.",
+    );
+  }
+  return lockPath;
+}
+
+async function acquireArtifactLock(lockPath: string): Promise<void> {
+  let acquired = false;
+  try {
+    await mkdir(lockPath, { mode: 0o700 });
+    acquired = true;
+    await chmod(lockPath, 0o700);
+  } catch {
+    if (acquired) {
+      await rm(lockPath, { recursive: true, force: true });
+    }
+    throw new ArtifactError(
+      "ARTIFACT_LOCKED",
+      "Artifact publication is already locked.",
     );
   }
 }

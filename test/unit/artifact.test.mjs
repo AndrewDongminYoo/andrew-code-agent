@@ -140,9 +140,18 @@ async function withArtifactsRoot(run) {
     join(tmpdir(), "andrew-code-agent-artifacts-"),
   );
   try {
-    await run(artifactsRoot);
+    return await run(artifactsRoot);
   } finally {
     await rm(artifactsRoot, { recursive: true, force: true });
+  }
+}
+
+async function withWikiRoot(run) {
+  const wikiRoot = await mkdtemp(join(tmpdir(), "andrew-code-agent-wiki-"));
+  try {
+    await run(wikiRoot);
+  } finally {
+    await rm(wikiRoot, { recursive: true, force: true });
   }
 }
 
@@ -205,6 +214,21 @@ async function commitChange(repository, path, contents) {
 
 function assertArtifactError(error, code) {
   return error instanceof artifactModule.ArtifactError && error.code === code;
+}
+
+function setPublicationHook(hook) {
+  assert.equal(
+    typeof artifactModule.__setArtifactPublicationTestHookForTests,
+    "function",
+    "the built artifact module must expose the publication test hook",
+  );
+  artifactModule.__setArtifactPublicationTestHookForTests(hook);
+}
+
+async function expectedMetadata(sourceRoot) {
+  return withArtifactsRoot(async (artifactsRoot) =>
+    buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+  );
 }
 
 test("builds byte-identical immutable artifacts from the same committed source", async () => {
@@ -421,6 +445,202 @@ test("rechecks that the source is still clean immediately before publication", a
         artifactModule.__setArtifactTestHookForTests(undefined);
       }
       assert.deepEqual(await readdir(artifactsRoot), []);
+    });
+  });
+});
+
+test("fails closed without changing pre-existing empty or sentinel digest targets", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    const expected = await expectedMetadata(sourceRoot);
+    await withArtifactsRoot(async (artifactsRoot) => {
+      for (const sentinel of [undefined, "sentinel\n"]) {
+        const target = join(artifactsRoot, expected.metadata.bundleDigest);
+        await mkdir(target);
+        if (sentinel !== undefined) {
+          await writeFile(join(target, "sentinel.txt"), sentinel);
+        }
+        const before = await lstat(target);
+        await assert.rejects(
+          buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+          (error) => assertArtifactError(error, "ARTIFACT_COLLISION"),
+        );
+        assert.equal((await lstat(target)).ino, before.ino);
+        assert.deepEqual(
+          await readdir(target),
+          sentinel === undefined ? [] : ["sentinel.txt"],
+        );
+        if (sentinel !== undefined) {
+          assert.equal(
+            await readFile(join(target, "sentinel.txt"), "utf8"),
+            sentinel,
+          );
+        }
+        await rm(target, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+test("fails closed when an existing cooperative lock is present without removing it", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    const expected = await expectedMetadata(sourceRoot);
+    await withArtifactsRoot(async (artifactsRoot) => {
+      const lock = join(
+        artifactsRoot,
+        `.${expected.metadata.bundleDigest}.lock`,
+      );
+      await mkdir(lock);
+      await writeFile(join(lock, "owner"), "foreign\n");
+      const before = await lstat(lock);
+
+      await assert.rejects(
+        buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+        (error) => assertArtifactError(error, "ARTIFACT_LOCKED"),
+      );
+      assert.equal((await lstat(lock)).ino, before.ino);
+      assert.equal(await readFile(join(lock, "owner"), "utf8"), "foreign\n");
+    });
+  });
+});
+
+test("rejects a digest target injected after the final publication check without changing it", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    const expected = await expectedMetadata(sourceRoot);
+    await withArtifactsRoot(async (artifactsRoot) => {
+      const target = join(artifactsRoot, expected.metadata.bundleDigest);
+      let before;
+      setPublicationHook(async () => {
+        await mkdir(target);
+        await writeFile(join(target, "sentinel.txt"), "injected\n");
+        before = await lstat(target);
+      });
+      try {
+        await assert.rejects(
+          buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+          (error) => assertArtifactError(error, "ARTIFACT_COLLISION"),
+        );
+      } finally {
+        setPublicationHook(undefined);
+      }
+      assert.equal((await lstat(target)).ino, before.ino);
+      assert.equal(
+        await readFile(join(target, "sentinel.txt"), "utf8"),
+        "injected\n",
+      );
+      assert.deepEqual(await readdir(artifactsRoot), [
+        expected.metadata.bundleDigest,
+      ]);
+    });
+  });
+});
+
+test("allows only one cooperating builder to publish while holding the digest lock", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await withArtifactsRoot(async (artifactsRoot) => {
+      assert.deepEqual(await readdir(artifactsRoot), []);
+      let releaseFirst;
+      const firstPaused = new Promise((resolve) => {
+        releaseFirst = resolve;
+      });
+      let releasePause;
+      const firstReady = new Promise((resolve) => {
+        releasePause = resolve;
+      });
+      let calls = 0;
+      artifactModule.__setArtifactTestHookForTests(async () => {
+        calls += 1;
+        if (calls === 1) {
+          releasePause();
+          await firstPaused;
+        }
+      });
+      try {
+        const first = buildBundle(bundleInput(sourceRoot, artifactsRoot));
+        await firstReady;
+        await assert.rejects(
+          buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+          (error) => assertArtifactError(error, "ARTIFACT_LOCKED"),
+        );
+        releaseFirst();
+        const result = await first;
+        assert.equal(
+          await readFile(
+            join(result.artifactRoot, "bundle-metadata.json"),
+            "utf8",
+          ),
+          `${JSON.stringify(result.metadata, null, 2)}\n`,
+        );
+        assert.deepEqual(await readdir(artifactsRoot), [
+          result.metadata.bundleDigest,
+        ]);
+      } finally {
+        artifactModule.__setArtifactTestHookForTests(undefined);
+      }
+    });
+  });
+});
+
+test("rejects inherited and unrequested Oracle capability inputs", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await withArtifactsRoot(async (artifactsRoot) => {
+      const inherited = Object.create({ oracle: { llmWikiRoot: "/tmp" } });
+      await assert.rejects(
+        buildBundle(
+          bundleInput(sourceRoot, artifactsRoot, {
+            requestedCapabilities: [],
+            capabilityInputs: inherited,
+          }),
+        ),
+        (error) => assertArtifactError(error, "UNREQUESTED_CAPABILITY_INPUT"),
+      );
+      await assert.rejects(
+        buildBundle(
+          bundleInput(sourceRoot, artifactsRoot, {
+            capabilityInputs: inherited,
+          }),
+        ),
+        (error) => assertArtifactError(error, "INVALID_INPUT"),
+      );
+      await assert.rejects(
+        buildBundle(
+          bundleInput(sourceRoot, artifactsRoot, {
+            requestedCapabilities: [],
+            capabilityInputs: { oracle: { llmWikiRoot: "/tmp" } },
+          }),
+        ),
+        (error) => assertArtifactError(error, "UNREQUESTED_CAPABILITY_INPUT"),
+      );
+    });
+  });
+});
+
+test("rejects symbol and extra capability input keys while accepting null-prototype Oracle input", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await withArtifactsRoot(async (artifactsRoot) => {
+      const symbolInput = { [Symbol("oracle")]: { llmWikiRoot: "/tmp" } };
+      for (const capabilityInputs of [symbolInput, { extra: true }]) {
+        await assert.rejects(
+          buildBundle(
+            bundleInput(sourceRoot, artifactsRoot, { capabilityInputs }),
+          ),
+          (error) => assertArtifactError(error, "INVALID_INPUT"),
+        );
+      }
+      await withWikiRoot(async (llmWikiRoot) => {
+        const capabilityInputs = Object.assign(Object.create(null), {
+          oracle: { llmWikiRoot },
+        });
+        const result = await buildBundle(
+          bundleInput(sourceRoot, artifactsRoot, { capabilityInputs }),
+        );
+        assert.deepEqual(result.metadata.enabledCapabilities, ["oracle"]);
+        assert.equal(
+          result.metadata.files.some(
+            (file) => file.path === "agents/oracle.toml",
+          ),
+          true,
+        );
+      });
     });
   });
 });
