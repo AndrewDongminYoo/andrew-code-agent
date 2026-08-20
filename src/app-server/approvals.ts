@@ -116,28 +116,59 @@ function validJson(
   depth = 0,
   active = new WeakSet<object>(),
 ): boolean {
-  if (depth > 32) return false;
-  if (value === null || typeof value === "string" || typeof value === "boolean")
-    return true;
-  if (typeof value === "number") return Number.isFinite(value);
-  if (!Array.isArray(value) && !isRecord(value)) return false;
-  if (
-    Array.isArray(value)
-      ? Object.keys(value).length !== value.length ||
-        Array.from({ length: value.length }, (_, index) =>
-          Object.hasOwn(value, index),
-        ).some((present) => !present)
-      : Object.getPrototypeOf(value) !== Object.prototype &&
-        Object.getPrototypeOf(value) !== null
-  )
+  try {
+    if (depth > 32) return false;
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "boolean"
+    )
+      return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (typeof value !== "object") return false;
+    const array = Array.isArray(value);
+    if (
+      (array && Object.getPrototypeOf(value) !== Array.prototype) ||
+      (!array &&
+        Object.getPrototypeOf(value) !== Object.prototype &&
+        Object.getPrototypeOf(value) !== null) ||
+      Object.getOwnPropertySymbols(value).length > 0 ||
+      active.has(value)
+    )
+      return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(value);
+    if (
+      array
+        ? names.length !== value.length + 1 ||
+          names.some(
+            (name) =>
+              name !== "length" &&
+              (!Number.isSafeInteger(Number(name)) ||
+                Number(name) < 0 ||
+                Number(name) >= value.length ||
+                String(Number(name)) !== name),
+          )
+        : names.some((name) => !descriptors[name]?.enumerable)
+    )
+      return false;
+    active.add(value);
+    try {
+      return names.every((name) => {
+        if (name === "length") return true;
+        const descriptor = descriptors[name];
+        return (
+          descriptor !== undefined &&
+          "value" in descriptor &&
+          validJson(descriptor.value, depth + 1, active)
+        );
+      });
+    } finally {
+      active.delete(value);
+    }
+  } catch {
     return false;
-  if (active.has(value)) return false;
-  active.add(value);
-  const valid = Object.values(value).every((entry) =>
-    validJson(entry, depth + 1, active),
-  );
-  active.delete(value);
-  return valid;
+  }
 }
 
 function boundedSchemaString(value: unknown): value is string {
@@ -378,9 +409,8 @@ function validPermissions(value: unknown): boolean {
       (Array.isArray(fileSystem.write) &&
         fileSystem.write.every((entry) => typeof entry === "string"))) &&
     (!("globScanMaxDepth" in fileSystem) ||
-      fileSystem.globScanMaxDepth === null ||
       (typeof fileSystem.globScanMaxDepth === "number" &&
-        Number.isInteger(fileSystem.globScanMaxDepth) &&
+        Number.isSafeInteger(fileSystem.globScanMaxDepth) &&
         fileSystem.globScanMaxDepth >= 1)) &&
     (!("entries" in fileSystem) ||
       fileSystem.entries === null ||
@@ -803,20 +833,33 @@ function commandActionFields(action: RecordValue): readonly string[] {
   );
 }
 
-function fileSystemEntryDestination(entry: RecordValue): unknown {
-  if (!isRecord(entry.path)) return "unknown";
-  const path = entry.path;
-  return path.type === "path"
-    ? path.path
-    : path.type === "glob_pattern"
-      ? path.pattern
-      : isRecord(path.value)
-        ? path.value.kind === "unknown"
-          ? path.value.path
-          : path.value.kind === "project_roots"
-            ? (path.value.subpath ?? "project roots")
-            : path.value.kind
-        : "unknown";
+function fileSystemEntryFields(entry: RecordValue): readonly string[] {
+  const path = entry.path as RecordValue;
+  const fields = [
+    `access=${String(entry.access)}`,
+    `type=${String(path.type)}`,
+  ];
+  if (path.type === "path") return [...fields, `path=${String(path.path)}`];
+  if (path.type === "glob_pattern")
+    return [...fields, `pattern=${String(path.pattern)}`];
+  const special = path.value as RecordValue;
+  const specialFields = [...fields, `kind=${String(special.kind)}`];
+  if (special.kind === "project_roots")
+    return [...specialFields, `subpath=${String(special.subpath)}`];
+  if (special.kind === "unknown")
+    return [
+      ...specialFields,
+      `path=${String(special.path)}`,
+      `subpath=${String(special.subpath)}`,
+    ];
+  return specialFields;
+}
+
+function fileSystemEntryDestination(entry: RecordValue): string {
+  const path = entry.path as RecordValue;
+  if (path.type === "path") return String(path.path);
+  if (path.type === "glob_pattern") return String(path.pattern);
+  return fileSystemEntryFields(entry).slice(1).join("; ");
 }
 
 function hasCompletePromptContext(
@@ -888,14 +931,15 @@ function hasCompletePromptContext(
   if (fileSystem && Array.isArray(fileSystem.entries))
     for (const entry of fileSystem.entries) {
       if (!isRecord(entry) || !isRecord(entry.path)) return false;
-      const destination = fileSystemEntryDestination(entry);
-      if (
-        [entry.access, destination]
-          .filter((value): value is string => typeof value === "string")
-          .some((value) => !fitsDisplayed(value))
-      )
+      if (fileSystemEntryFields(entry).some((field) => !fitsDisplayed(field)))
         return false;
     }
+  if (
+    fileSystem &&
+    "globScanMaxDepth" in fileSystem &&
+    !fitsDisplayed(String(fileSystem.globScanMaxDepth))
+  )
+    return false;
   return true;
 }
 function prompt(
@@ -951,14 +995,20 @@ function prompt(
     ? params.permissions
     : null;
   if (requestedPermissions) {
-    if (
-      isRecord(requestedPermissions.network) &&
-      requestedPermissions.network.enabled === true
-    )
-      context.push("network: enabled");
+    if (isRecord(requestedPermissions.network))
+      context.push(
+        `network: enabled ${String(requestedPermissions.network.enabled)}`,
+      );
     if (isRecord(requestedPermissions.fileSystem))
       context.push(
-        `fileSystem: read ${Array.isArray(requestedPermissions.fileSystem.read) ? requestedPermissions.fileSystem.read.map(String).map(bounded).join(", ") : "none"}; write ${Array.isArray(requestedPermissions.fileSystem.write) ? requestedPermissions.fileSystem.write.map(String).map(bounded).join(", ") : "none"}`,
+        `fileSystem: read ${Array.isArray(requestedPermissions.fileSystem.read) ? requestedPermissions.fileSystem.read.map(String).map(bounded).join(", ") : "null"}; write ${Array.isArray(requestedPermissions.fileSystem.write) ? requestedPermissions.fileSystem.write.map(String).map(bounded).join(", ") : "null"}`,
+      );
+    if (
+      isRecord(requestedPermissions.fileSystem) &&
+      "globScanMaxDepth" in requestedPermissions.fileSystem
+    )
+      context.push(
+        `globScanMaxDepth: ${String(requestedPermissions.fileSystem.globScanMaxDepth)}`,
       );
   }
   if (
@@ -971,9 +1021,8 @@ function prompt(
       MAX_APPROVAL_LIST_ITEMS,
     )) {
       const value = entry as RecordValue;
-      const destination = fileSystemEntryDestination(value);
       context.push(
-        `fileSystem entry: ${String(value.access)} ${String(destination)}`,
+        `fileSystem entry: ${String(value.access)} ${fileSystemEntryDestination(value)}; ${fileSystemEntryFields(value).join("; ")}`,
       );
     }
   const choiceLines = available.map(
@@ -1102,19 +1151,38 @@ export async function answerApproval(
   output: NodeJS.WritableStream,
   timeoutMs: number,
 ): Promise<ApprovalOutcome> {
-  const valid = validate(request);
-  if ("kind" in valid) return valid;
-  const terminalInput = input as NodeJS.ReadableStream & { isTTY?: boolean };
-  const terminalOutput = output as NodeJS.WritableStream & { isTTY?: boolean };
-  if (terminalInput.isTTY !== true || terminalOutput.isTTY !== true)
-    return safest(valid);
-  const available = choices(valid);
-  if (!hasPromptableListSizes(valid)) return safest(valid);
-  if (!hasCompletePromptContext(valid, available)) return safest(valid);
-  const rendered = prompt(valid, available);
-  if (rendered === null || !(await writePrompt(output, rendered)))
-    return safest(valid);
-  const selected = await readLine(input, timeoutMs);
-  const choice = available.find((candidate) => candidate.id === selected);
-  return choice ? response(valid, choice) : safest(valid);
+  try {
+    const valid = validate(request);
+    if ("kind" in valid) return valid;
+    const terminalInput = input as NodeJS.ReadableStream & { isTTY?: boolean };
+    const terminalOutput = output as NodeJS.WritableStream & {
+      isTTY?: boolean;
+    };
+    if (terminalInput.isTTY !== true || terminalOutput.isTTY !== true)
+      return safest(valid);
+    const available = choices(valid);
+    if (!hasPromptableListSizes(valid)) return safest(valid);
+    if (!hasCompletePromptContext(valid, available)) return safest(valid);
+    const rendered = prompt(valid, available);
+    if (rendered === null || !(await writePrompt(output, rendered)))
+      return safest(valid);
+    const selected = await readLine(input, timeoutMs);
+    const choice = available.find((candidate) => candidate.id === selected);
+    return choice ? response(valid, choice) : safest(valid);
+  } catch {
+    return {
+      kind: "failClosed",
+      decision: "decline",
+      acceptedForSession: false,
+      code: "MALFORMED_APPROVAL_REQUEST",
+      audit: {
+        requestId: "<invalid>",
+        threadId: null,
+        turnId: null,
+        itemId: null,
+        method: "<invalid>",
+        decision: "decline",
+      },
+    };
+  }
 }

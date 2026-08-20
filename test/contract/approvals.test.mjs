@@ -169,7 +169,7 @@ test("renders complete bounded approval context and waits for a newline-delimite
 
   const permissionSink = output();
   await approvals().answerApproval(permission, input("3\n"), permissionSink.stream, 100);
-  assert.match(permissionSink.text(), /network: enabled/);
+  assert.match(permissionSink.text(), /network: enabled true/);
   assert.match(permissionSink.text(), /fileSystem: read \/repo; write \/repo/);
   assert.match(permissionSink.text(), /scope: turn|scope: session/);
 
@@ -651,4 +651,151 @@ test("declines without prompting when a complete approval context exceeds its li
     assert.deepEqual(result.response, { permissions: {}, scope: "turn" });
     assert.equal(sink.text(), "");
   }
+});
+
+test("renders every granted permission effect, including nullable network and special path components", async () => {
+  const [, , fixturePermission] = await requests();
+  const complete = structuredClone(fixturePermission);
+  complete.params.permissions = {
+    network: { enabled: false },
+    fileSystem: {
+      read: ["/repo/read"],
+      write: ["/repo/write"],
+      globScanMaxDepth: 3,
+      entries: [
+        { path: { type: "special", value: { kind: "root" } }, access: "read" },
+        { path: { type: "special", value: { kind: "minimal" } }, access: "write" },
+        { path: { type: "special", value: { kind: "project_roots", subpath: "/project" } }, access: "deny" },
+        { path: { type: "special", value: { kind: "tmpdir" } }, access: "read" },
+        { path: { type: "special", value: { kind: "slash_tmp" } }, access: "write" },
+        { path: { type: "special", value: { kind: "unknown", path: "/unknown", subpath: "/nested" } }, access: "deny" },
+      ],
+    },
+  };
+  const completeSink = output();
+  const completeResult = await approvals().answerApproval(complete, input("1\n"), completeSink.stream, 100);
+  assert.deepEqual(completeResult.response, {
+    permissions: complete.params.permissions,
+    scope: "turn",
+  });
+  for (const effect of [
+    "network: enabled false",
+    "read /repo/read",
+    "write /repo/write",
+    "globScanMaxDepth: 3",
+    "access=read; type=special; kind=root",
+    "access=write; type=special; kind=minimal",
+    "access=deny; type=special; kind=project_roots; subpath=/project",
+    "access=read; type=special; kind=tmpdir",
+    "access=write; type=special; kind=slash_tmp",
+    "access=deny; type=special; kind=unknown; path=/unknown; subpath=/nested",
+  ]) assert.ok(completeSink.text().includes(effect), effect);
+
+  const nullable = structuredClone(fixturePermission);
+  nullable.params.permissions = {
+    network: { enabled: null },
+    fileSystem: {
+      read: null,
+      write: null,
+      entries: [
+        { path: { type: "special", value: { kind: "project_roots", subpath: null } }, access: "read" },
+        { path: { type: "special", value: { kind: "unknown", path: "/unknown-null", subpath: null } }, access: "write" },
+      ],
+    },
+  };
+  const nullableSink = output();
+  const nullableResult = await approvals().answerApproval(nullable, input("1\n"), nullableSink.stream, 100);
+  assert.deepEqual(nullableResult.response, {
+    permissions: nullable.params.permissions,
+    scope: "turn",
+  });
+  for (const effect of [
+    "network: enabled null",
+    "read null",
+    "write null",
+    "access=read; type=special; kind=project_roots; subpath=null",
+    "access=write; type=special; kind=unknown; path=/unknown-null; subpath=null",
+  ]) assert.ok(nullableSink.text().includes(effect), effect);
+
+  for (const entry of [
+    { path: { type: "special", value: { kind: "project_roots", subpath: "🙂".repeat(100) } }, access: "read" },
+    { path: { type: "special", value: { kind: "unknown", path: "🙂".repeat(100), subpath: null } }, access: "read" },
+    { path: { type: "special", value: { kind: "unknown", path: "/safe", subpath: "🙂".repeat(100) } }, access: "read" },
+  ]) {
+    const oversized = structuredClone(fixturePermission);
+    oversized.params.permissions.fileSystem.entries = [entry];
+    const sink = output();
+    const result = await approvals().answerApproval(oversized, input("1\n"), sink.stream, 100);
+    assert.equal(result.decision, "decline");
+    assert.equal(sink.text(), "");
+  }
+});
+
+test("fails closed without evaluating hostile direct JSON properties", async () => {
+  const [, , , fixtureMcp] = await requests();
+  let getterCalls = 0;
+  const accessor = {};
+  Object.defineProperty(accessor, "trap", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error("must not run");
+    },
+  });
+  class JsonArray extends Array {}
+  const arraySubclass = new JsonArray("safe");
+  const arrayWithExtra = ["safe"];
+  Object.defineProperty(arrayWithExtra, "hidden", { value: "no", enumerable: false });
+  const arrayWithEnumerableExtra = ["safe"];
+  arrayWithEnumerableExtra.extra = "no";
+  const setterOnly = {};
+  Object.defineProperty(setterOnly, "trap", {
+    enumerable: true,
+    set() {
+      getterCalls += 1;
+    },
+  });
+  const symbolKey = { safe: true };
+  symbolKey[Symbol("hidden")] = "no";
+  const cyclic = {};
+  cyclic.self = cyclic;
+  const deep = {};
+  let cursor = deep;
+  for (let index = 0; index < 33; index += 1) {
+    cursor.next = {};
+    cursor = cursor.next;
+  }
+  for (const meta of [
+    accessor,
+    arraySubclass,
+    arrayWithExtra,
+    arrayWithEnumerableExtra,
+    symbolKey,
+    setterOnly,
+    new Array(1),
+    new Date(0),
+    cyclic,
+    deep,
+  ]) {
+    const request = structuredClone(fixtureMcp);
+    request.params._meta = meta;
+    const sink = output();
+    const result = await approvals().answerApproval(request, input("1\n"), sink.stream, 100);
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+    assert.equal(sink.text(), "");
+  }
+  assert.equal(getterCalls, 0);
+
+  const nullPrototype = Object.create(null);
+  nullPrototype.safe = true;
+  const accepted = structuredClone(fixtureMcp);
+  accepted.params._meta = nullPrototype;
+  const acceptedResult = await approvals().answerApproval(
+    accepted,
+    input("1\n"),
+    output().stream,
+    100,
+  );
+  assert.equal(acceptedResult.kind, "response");
 });
