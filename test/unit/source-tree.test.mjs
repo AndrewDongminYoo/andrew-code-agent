@@ -9,9 +9,11 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { once } from "node:events";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
@@ -71,6 +73,10 @@ const sourceFixture = new URL(
   "../fixtures/source-codex/clean/",
   import.meta.url,
 );
+const pathCanaryFixture = new URL(
+  "../fixtures/source-codex/path-canary/",
+  import.meta.url,
+);
 
 async function createSourceRepository() {
   const repository = await mkdtemp(join(tmpdir(), "andrew-code-agent-source-"));
@@ -106,6 +112,49 @@ async function withSourceRepository(run) {
   }
 }
 
+async function withMutatingGitShim(repository, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-code-agent-git-"));
+  const markerPath = join(shimDirectory, "mutated");
+  const shimPath = join(shimDirectory, "git");
+  const { stdout } = await execFile("which", ["git"]);
+  const gitPath = stdout.trim();
+  await writeFile(
+    shimPath,
+    `#!/bin/sh
+if [ "$3" = "rev-parse" ] && [ "$4" = "HEAD" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
+  "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
+  printf '%s\\n' 'changed after source snapshot' > "$ANDREW_AGENT_TEST_MUTATE_PATH"
+  : > "$ANDREW_AGENT_TEST_GIT_MARKER"
+  exit 0
+fi
+exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
+`,
+  );
+  await chmod(shimPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
+  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
+  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
+  process.env.ANDREW_AGENT_TEST_MUTATE_PATH = join(
+    repository,
+    "rules/default.rules",
+  );
+  try {
+    await run();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
+    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
+    delete process.env.ANDREW_AGENT_TEST_MUTATE_PATH;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
 function resolveSourceFiles(sourceRoot, manifest) {
   assert.notEqual(
     sourceTreeModule,
@@ -121,52 +170,16 @@ function assertSourceTreeError(error, code) {
   );
 }
 
-test("resolves only declared regular files in stable target order", async () => {
-  await withSourceRepository(async (repository) => {
-    await writeFile(
-      join(repository, "unlisted.txt"),
-      "committed but unlisted\n",
-    );
-    await execFile("git", ["-C", repository, "add", "unlisted.txt"]);
-    await execFile("git", [
-      "-C",
-      repository,
-      "commit",
-      "--quiet",
-      "-m",
-      "unlisted",
-    ]);
-
-    const files = await resolveSourceFiles(
-      repository,
-      baseManifest(cleanFiles()),
-    );
-
-    assert.deepEqual(
-      files.map((file) => [file.targetPath, file.mode, file.capability]),
-      [
-        ["agents/advisor.toml", 0o644, undefined],
-        ["hooks/safety.sh", 0o755, "oracle"],
-        ["rules/default.rules", 0o644, undefined],
-      ],
-    );
-    assert.deepEqual(
-      files.map((file) => new TextDecoder().decode(file.bytes)),
-      [
-        'name = "advisor"\nmodel = "gpt-5"\n',
-        "#!/bin/sh\nexit 0\n",
-        "Always preserve the source boundary.\n",
-      ],
-    );
-  });
-});
-
 test("rejects an exact manifest source that escapes through a symlink", async () => {
   await withSourceRepository(async (repository) => {
     const outside = await mkdtemp(join(tmpdir(), "andrew-code-agent-outside-"));
     try {
       await writeFile(join(outside, "secret.rules"), "outside\n");
       await mkdir(join(repository, "rules"), { recursive: true });
+      await cp(pathCanaryFixture, join(repository, "rules"), {
+        recursive: true,
+      });
+      await rm(join(repository, "rules", "escaped.rules"));
       await symlink(
         join(outside, "secret.rules"),
         join(repository, "rules", "escaped.rules"),
@@ -198,6 +211,15 @@ test("rejects an exact manifest source that escapes through a symlink", async ()
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+test("rejects a nested directory instead of discovering its parent Git worktree", async () => {
+  await withSourceRepository(async (repository) => {
+    await assert.rejects(
+      resolveSourceFiles(join(repository, "rules"), baseManifest(cleanFiles())),
+      (error) => assertSourceTreeError(error, "SOURCE_ROOT_NOT_GIT_ROOT"),
+    );
   });
 });
 
@@ -260,6 +282,54 @@ test("rejects output escapes, case collisions, and duplicate targets even for co
   });
 });
 
+test("rejects non-ASCII portable targets, including NFC and NFD case-fold canaries", async () => {
+  await withSourceRepository(async (repository) => {
+    const targets = [
+      "unicode/caf\u00e9.toml",
+      "unicode/cafe\u0301.toml",
+      "unicode/\u00df.toml",
+    ];
+
+    for (const target of targets) {
+      await assert.rejects(
+        resolveSourceFiles(
+          repository,
+          baseManifest([
+            {
+              source: "rules/default.rules",
+              target,
+              mode: "0644",
+              replacements: [],
+            },
+          ]),
+        ),
+        (error) => assertSourceTreeError(error, "NON_PORTABLE_TARGET"),
+      );
+    }
+
+    await assert.rejects(
+      resolveSourceFiles(
+        repository,
+        baseManifest([
+          {
+            source: "rules/default.rules",
+            target: targets[0],
+            mode: "0644",
+            replacements: [],
+          },
+          {
+            source: "agents/advisor.toml",
+            target: targets[1],
+            mode: "0644",
+            replacements: [],
+          },
+        ]),
+      ),
+      (error) => assertSourceTreeError(error, "NON_PORTABLE_TARGET"),
+    );
+  });
+});
+
 test("rejects FIFO sources and source modes that do not exactly match the manifest", async () => {
   await withSourceRepository(async (repository) => {
     const fifoPath = join(repository, "rules", "canary.fifo");
@@ -308,7 +378,38 @@ test("rejects FIFO sources and source modes that do not exactly match the manife
   });
 });
 
-test("rejects tracked and untracked source dirt before reading source files", async () => {
+test("rejects Unix socket sources without creating a device node", async () => {
+  await withSourceRepository(async (repository) => {
+    const socketPath = join(repository, "rules", "canary.socket");
+    const server = createServer();
+    server.listen(socketPath);
+    await once(server, "listening");
+    try {
+      await assert.rejects(
+        resolveSourceFiles(
+          repository,
+          baseManifest([
+            {
+              source: "rules/canary.socket",
+              target: "rules/canary.socket",
+              mode: "0644",
+              replacements: [],
+            },
+          ]),
+        ),
+        (error) => assertSourceTreeError(error, "NON_REGULAR_SOURCE"),
+      );
+    } finally {
+      await new Promise((resolve, reject) => {
+        server.close((error) =>
+          error === undefined ? resolve() : reject(error),
+        );
+      });
+    }
+  });
+});
+
+test("rejects unstaged, staged-only, and untracked source dirt before reading source files", async () => {
   await withSourceRepository(async (repository) => {
     await writeFile(join(repository, "rules/default.rules"), "changed\n");
     await assert.rejects(
@@ -323,10 +424,79 @@ test("rejects tracked and untracked source dirt before reading source files", as
       "--",
       "rules/default.rules",
     ]);
+    await writeFile(join(repository, "rules/default.rules"), "staged only\n");
+    await execFile("git", ["-C", repository, "add", "rules/default.rules"]);
+    await assert.rejects(
+      resolveSourceFiles(repository, baseManifest(cleanFiles())),
+      (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+    );
+
+    await execFile("git", ["-C", repository, "reset", "--hard", "HEAD"]);
     await writeFile(join(repository, "untracked.txt"), "untracked\n");
     await assert.rejects(
       resolveSourceFiles(repository, baseManifest(cleanFiles())),
       (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+    );
+  });
+});
+
+test("rejects a selected file changed after the initial clean source snapshot", async () => {
+  await withSourceRepository(async (repository) => {
+    await withMutatingGitShim(repository, async () => {
+      await assert.rejects(
+        resolveSourceFiles(
+          repository,
+          baseManifest([
+            {
+              source: "rules/default.rules",
+              target: "rules/default.rules",
+              mode: "0644",
+              replacements: [],
+            },
+          ]),
+        ),
+        (error) => assertSourceTreeError(error, "SOURCE_CHANGED_DURING_READ"),
+      );
+    });
+  });
+});
+
+test("resolves only declared regular files in stable target order", async () => {
+  await withSourceRepository(async (repository) => {
+    await writeFile(
+      join(repository, "unlisted.txt"),
+      "committed but unlisted\n",
+    );
+    await execFile("git", ["-C", repository, "add", "unlisted.txt"]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "unlisted",
+    ]);
+
+    const files = await resolveSourceFiles(
+      repository,
+      baseManifest(cleanFiles()),
+    );
+
+    assert.deepEqual(
+      files.map((file) => [file.targetPath, file.mode, file.capability]),
+      [
+        ["agents/advisor.toml", 0o644, undefined],
+        ["hooks/safety.sh", 0o755, "oracle"],
+        ["rules/default.rules", 0o644, undefined],
+      ],
+    );
+    assert.deepEqual(
+      files.map((file) => new TextDecoder().decode(file.bytes)),
+      [
+        'name = "advisor"\nmodel = "gpt-5"\n',
+        "#!/bin/sh\nexit 0\n",
+        "Always preserve the source boundary.\n",
+      ],
     );
   });
 });

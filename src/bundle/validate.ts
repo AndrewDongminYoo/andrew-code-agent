@@ -7,6 +7,7 @@ export type ValidationErrorCode =
   | "TRUSTED_HOOK_HASH"
   | "RUNTIME_IDENTIFIER"
   | "UNRESOLVED_TOKEN"
+  | "INVALID_UTF8"
   | "PRIVATE_KEY"
   | "CREDENTIAL_ASSIGNMENT"
   | "GITHUB_TOKEN"
@@ -22,11 +23,10 @@ export class ValidationError extends Error {
   }
 }
 
-const tokenSyntax = /\$\{([^}\r\n]*)\}/gu;
 const trustedHookHash =
   /\b(?:trusted[_-]?hook[_-]?hash|hook[_-]?trust(?:ed)?[_-]?hash)\s*["']?\s*(?:=|:)/iu;
 const runtimeIdentifier =
-  /\b(?:thread|rollout)(?:[_-]?id)?\s*["']?\s*(?:=|:)\s*["']?(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9_-]{12,})\b/iu;
+  /\b(?:session|thread|rollout)(?:[_-]?id)?\s*["']?\s*(?:=|:)\s*["']?(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9_-]{12,})\b/iu;
 
 export function validatePortableFiles(
   files: readonly ResolvedSourceFile[],
@@ -40,15 +40,24 @@ export function validatePortableFiles(
 
   for (const file of files) {
     assertSafePath(file.targetPath, forbiddenSegments);
-    const content = new TextDecoder().decode(file.bytes);
+    const content = decodePortableContent(file);
     assertNoForbiddenLiteral(
       file.targetPath,
       content,
       manifest.forbiddenLiterals,
     );
+    assertNoForbiddenContentPath(file.targetPath, content, forbiddenSegments);
     assertNoRuntimeState(file.targetPath, content);
     assertResolvedTokens(file.targetPath, content, allowedTokens);
     assertNoSecretPattern(file.targetPath, content, declaredPatterns);
+  }
+}
+
+function decodePortableContent(file: ResolvedSourceFile): string {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(file.bytes);
+  } catch {
+    throw new ValidationError("INVALID_UTF8", file.targetPath, "invalid-utf8");
   }
 }
 
@@ -57,7 +66,7 @@ function assertSafePath(
   forbiddenSegments: ReadonlySet<string>,
 ): void {
   for (const segment of targetPath.split("/")) {
-    if (forbiddenSegments.has(normalizeSegment(segment))) {
+    if (isForbiddenPathSegment(segment, forbiddenSegments)) {
       throw new ValidationError(
         "FORBIDDEN_PATH_SEGMENT",
         targetPath,
@@ -85,6 +94,49 @@ function assertNoForbiddenLiteral(
   }
 }
 
+function assertNoForbiddenContentPath(
+  targetPath: string,
+  content: string,
+  forbiddenSegments: ReadonlySet<string>,
+): void {
+  for (const match of content.matchAll(
+    /(?:~\/|\/|(?:[A-Za-z0-9._-]+\/)+)[^\s"'`<>),;\]}]*/gu,
+  )) {
+    const path = match[0];
+    const segments = path
+      .split("/")
+      .filter((segment) => segment.length > 0)
+      .map(normalizeSegment);
+    const lastSegment = segments.at(-1);
+    if (
+      segments.some((segment) =>
+        isForbiddenPathSegment(segment, forbiddenSegments),
+      ) ||
+      (lastSegment !== undefined &&
+        isForbiddenPathSegment(lastSegment, forbiddenSegments))
+    ) {
+      throw new ValidationError(
+        "FORBIDDEN_PATH_SEGMENT",
+        targetPath,
+        "forbidden-path-segment",
+      );
+    }
+  }
+}
+
+function isForbiddenPathSegment(
+  segment: string,
+  forbiddenSegments: ReadonlySet<string>,
+): boolean {
+  const normalizedSegment = normalizeSegment(segment);
+  return (
+    forbiddenSegments.has(normalizedSegment) ||
+    [...forbiddenSegments].some(
+      (marker) => marker.startsWith(".") && normalizedSegment.endsWith(marker),
+    )
+  );
+}
+
 function assertNoRuntimeState(targetPath: string, content: string): void {
   if (trustedHookHash.test(content)) {
     throw new ValidationError(
@@ -107,8 +159,7 @@ function assertResolvedTokens(
   content: string,
   allowedTokens: ReadonlySet<string>,
 ): void {
-  let match: RegExpExecArray | null;
-  while ((match = tokenSyntax.exec(content)) !== null) {
+  for (const match of content.matchAll(/\$\{([^}\r\n]*)\}/gu)) {
     if (!allowedTokens.has(match[1] ?? "")) {
       throw new ValidationError(
         "UNRESOLVED_TOKEN",
@@ -117,16 +168,13 @@ function assertResolvedTokens(
       );
     }
   }
-  tokenSyntax.lastIndex = 0;
-  if (content.replace(tokenSyntax, "").includes("${")) {
-    tokenSyntax.lastIndex = 0;
+  if (content.replace(/\$\{([^}\r\n]*)\}/gu, "").includes("${")) {
     throw new ValidationError(
       "UNRESOLVED_TOKEN",
       targetPath,
       "unresolved-token",
     );
   }
-  tokenSyntax.lastIndex = 0;
 }
 
 function assertNoSecretPattern(
@@ -155,12 +203,12 @@ const secretPatterns: readonly {
     id: "credential-assignment",
     code: "CREDENTIAL_ASSIGNMENT",
     expression:
-      /\b(?:credential|password|secret|api[_-]?key|token)\b\s*(?:=|:)\s*["']?[^\s"']{8,}/iu,
+      /\b(?:(?:[a-z0-9]+[_-])*(?:credential|password|passwd|pwd|secret|token|api[_-]?key)|aws_secret_access_key)\b\s*["']?\s*(?:=|:)\s*["']?[^\s"']{8,}/iu,
   },
   {
     id: "github-token",
     code: "GITHUB_TOKEN",
-    expression: /\bgh[psour]_[A-Za-z0-9_]{20,}\b/u,
+    expression: /\b(?:gh[psour]_|github_pat_)[A-Za-z0-9_]{20,}\b/u,
   },
   {
     id: "openai-api-key",

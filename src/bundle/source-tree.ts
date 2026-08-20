@@ -20,13 +20,16 @@ export interface ResolvedSourceFile {
 
 export type SourceTreeErrorCode =
   | "SOURCE_ROOT_NOT_FOUND"
+  | "SOURCE_ROOT_NOT_GIT_ROOT"
   | "SOURCE_PATH_ESCAPE"
   | "OUTPUT_PATH_ESCAPE"
   | "DUPLICATE_TARGET"
   | "CASE_COLLIDING_TARGET"
+  | "NON_PORTABLE_TARGET"
   | "NON_REGULAR_SOURCE"
   | "UNEXPECTED_MODE"
   | "DIRTY_SOURCE"
+  | "SOURCE_CHANGED_DURING_READ"
   | "SOURCE_GIT_ERROR";
 
 export class SourceTreeError extends Error {
@@ -49,8 +52,9 @@ export async function resolveSourceFiles(
   manifest: BundleManifest,
 ): Promise<readonly ResolvedSourceFile[]> {
   const canonicalSourceRoot = await resolveSourceRoot(sourceRoot);
+  await assertGitWorktreeRoot(canonicalSourceRoot);
   const entries = await resolveEntries(canonicalSourceRoot, manifest.files);
-  await assertCleanGitSource(canonicalSourceRoot);
+  const initialRevision = await readCleanGitSnapshot(canonicalSourceRoot);
 
   const resolvedFiles = await Promise.all(
     entries.map(async ({ entry, sourcePath }) => {
@@ -82,9 +86,50 @@ export async function resolveSourceFiles(
     }),
   );
 
+  const finalRevision = await readFinalGitSnapshot(canonicalSourceRoot);
+  if (finalRevision !== initialRevision) {
+    throw new SourceTreeError(
+      "SOURCE_CHANGED_DURING_READ",
+      "Source repository changed while selected files were read.",
+    );
+  }
+
   return resolvedFiles.sort((left, right) =>
     compareCodeUnits(left.targetPath, right.targetPath),
   );
+}
+
+async function assertGitWorktreeRoot(sourceRoot: string): Promise<void> {
+  let topLevel: string;
+  try {
+    ({ stdout: topLevel } = await execFile("git", [
+      "-C",
+      sourceRoot,
+      "rev-parse",
+      "--show-toplevel",
+    ]));
+  } catch {
+    throw new SourceTreeError(
+      "SOURCE_ROOT_NOT_GIT_ROOT",
+      "Source root is not a Git worktree root.",
+    );
+  }
+
+  let canonicalTopLevel: string;
+  try {
+    canonicalTopLevel = await realpath(topLevel.trim());
+  } catch {
+    throw new SourceTreeError(
+      "SOURCE_ROOT_NOT_GIT_ROOT",
+      "Source root is not a Git worktree root.",
+    );
+  }
+  if (canonicalTopLevel !== sourceRoot) {
+    throw new SourceTreeError(
+      "SOURCE_ROOT_NOT_GIT_ROOT",
+      "Source root is not a Git worktree root.",
+    );
+  }
 }
 
 async function resolveSourceRoot(sourceRoot: string): Promise<string> {
@@ -146,6 +191,12 @@ function assertOutputTarget(
   target: string,
   targets: Map<string, string>,
 ): void {
+  if (!/^[\x20-\x7e]+$/u.test(target)) {
+    throw new SourceTreeError(
+      "NON_PORTABLE_TARGET",
+      "Manifest output target is not ASCII portable.",
+    );
+  }
   const resolvedTarget = resolve(outputRoot, target);
   if (!isContainedBy(outputRoot, resolvedTarget)) {
     throw new SourceTreeError(
@@ -179,7 +230,7 @@ function readExpectedMode(entry: BundleFileEntry): 0o644 | 0o755 {
   );
 }
 
-async function assertCleanGitSource(sourceRoot: string): Promise<void> {
+async function readCleanGitSnapshot(sourceRoot: string): Promise<string> {
   const checkedCommands = [
     ["diff", "--quiet", "--ignore-submodules", "--"],
     ["diff", "--cached", "--quiet", "--ignore-submodules", "--"],
@@ -216,8 +267,21 @@ async function assertCleanGitSource(sourceRoot: string): Promise<void> {
     throw new SourceTreeError("DIRTY_SOURCE", "Source repository is dirty.");
   }
 
-  const revision = await runGitRevision(sourceRoot);
-  void revision;
+  return runGitRevision(sourceRoot);
+}
+
+async function readFinalGitSnapshot(sourceRoot: string): Promise<string> {
+  try {
+    return await readCleanGitSnapshot(sourceRoot);
+  } catch (error) {
+    if (error instanceof SourceTreeError && error.code === "DIRTY_SOURCE") {
+      throw new SourceTreeError(
+        "SOURCE_CHANGED_DURING_READ",
+        "Source repository changed while selected files were read.",
+      );
+    }
+    throw error;
+  }
 }
 
 async function runGit(
