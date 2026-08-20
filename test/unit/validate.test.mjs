@@ -281,7 +281,54 @@ test("rejects invalid UTF-8 without exposing bytes", () => {
   );
 });
 
-test("rejects unresolved token syntax while allowing only manifest-declared tokens", () => {
+test("preserves shell runtime expansion syntax without installer-token classification", () => {
+  const runtimeForms = [
+    "$" + "{TMPDIR:-/tmp}",
+    "$" + "{target}",
+    "$" + "{!argument}",
+    "$" + "{UNKNOWN}",
+  ];
+
+  assert.doesNotThrow(() =>
+    validate(
+      [
+        portableFile(
+          "hooks/runtime.sh",
+          runtimeForms.map((form) => `printf '%s\\n' \"${form}\"`).join("\n"),
+          0o755,
+        ),
+        portableFile(
+          "hooks/runtime.bash",
+          `value=\"${runtimeForms[0]}\"`,
+          0o755,
+        ),
+      ],
+      manifest(),
+    ),
+  );
+});
+
+test("preserves complete non-shell runtime and example expansions", () => {
+  const runtimeForms = [
+    "$" + "{TMPDIR:-/tmp}",
+    "$" + "{target}",
+    "$" + "{!argument}",
+  ];
+
+  assert.doesNotThrow(() =>
+    validate(
+      [
+        portableFile(
+          "rules/examples.txt",
+          runtimeForms.map((form) => `example = \"${form}\"`).join("\n"),
+        ),
+      ],
+      manifest(),
+    ),
+  );
+});
+
+test("rejects simple unknown non-shell placeholders and unclosed syntax", () => {
   const home = "$" + "{HOME}";
   const codexHome = "$" + "{CODEX_HOME}";
   assert.doesNotThrow(() =>
