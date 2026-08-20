@@ -1,0 +1,28 @@
+{
+  "name": "andrew-code-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.22.0",
+  "engines": {
+    "node": "24.19.0",
+    "pnpm": "11.22.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test:unit": "pnpm build && node --test test/unit/*.test.mjs",
+    "test:integration": "pnpm build && { test -d test/integration || exit 0; test_files=$(find test/integration -type f -name '*.test.mjs'); test -z \"$test_files\" || node --test $test_files; }",
+    "test:contract": "pnpm build && { test -d test/contract || exit 0; test_files=$(find test/contract -type f -name '*.test.mjs'); test -z \"$test_files\" || node --test $test_files; }",
+    "test:e2e": "pnpm build && { test -d test/e2e || exit 0; test_files=$(find test/e2e -type f -name '*.test.mjs'); test -z \"$test_files\" || node --test $test_files; }",
+    "test": "pnpm test:unit && pnpm test:integration && pnpm test:contract && pnpm test:e2e",
+    "check": "pnpm typecheck && pnpm test"
+  },
+  "dependencies": {
+    "smol-toml": "1.8.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
+  }
+}

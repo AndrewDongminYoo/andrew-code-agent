@@ -1,0 +1,10 @@
+version: 0.1
+cli:
+  version: 1.25.0
+lint:
+  enabled:
+    - prettier
+    - markdownlint
+    - shellcheck
+    - trufflehog
+    - osv-scanner
