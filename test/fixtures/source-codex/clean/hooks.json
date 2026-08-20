@@ -1,0 +1,35 @@
+{
+  "description": "Fixture hook state that must not be copied.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.codex/hooks/safety.sh\"",
+            "timeout": 5,
+            "statusMessage": "Checking fixture safety"
+          },
+          {
+            "type": "command",
+            "command": "cd \"/Users/dongminyu/.codex\" && /usr/bin/python3 -m shared_memory_bridge session-start",
+            "timeout": 10,
+            "statusMessage": "Loading shared memory"
+          }
+        ]
+      },
+      {
+        "matcher": "^startup$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$HOME/.codex/hooks/xcodebuildmcp-purge.sh\"",
+            "timeout": 10,
+            "statusMessage": "Reclaiming Xcode storage"
+          }
+        ]
+      }
+    ]
+  }
+}

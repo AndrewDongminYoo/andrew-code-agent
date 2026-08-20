@@ -1,0 +1,34 @@
+model = "gpt-5.6-terra"
+model_reasoning_effort = "high"
+personality = "pragmatic"
+service_tier = "default"
+notify = ["/Users/dongminyu/.codex/bin/notify", "turn-ended"]
+
+[agents]
+max_depth = 2
+
+[agents.advisor]
+config_file = "./agents/advisor.toml"
+
+[agents.legacy]
+config_file = "./agents/legacy.toml"
+
+[apps.example.tools."approve"]
+approval_mode = "approve"
+
+[desktop]
+locale = "en-US"
+
+[features]
+goals = true
+hooks = true
+multi_agent = true
+
+[hooks.state]
+trusted_hash = "sha256:fixture"
+
+[mcp_servers.example]
+command = "/Applications/Example.app/bin/example"
+
+[project_trust]
+"/Users/dongminyu/project" = "trusted"
