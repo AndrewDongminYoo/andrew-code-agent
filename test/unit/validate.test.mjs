@@ -313,6 +313,7 @@ test("preserves complete non-shell runtime and example expansions", () => {
     "$" + "{TMPDIR:-/tmp}",
     "$" + "{target}",
     "$" + "{!argument}",
+    "$" + "{CODEX_HOME${HOME}}",
   ];
 
   assert.doesNotThrow(() =>
@@ -325,6 +326,40 @@ test("preserves complete non-shell runtime and example expansions", () => {
       ],
       manifest(),
     ),
+  );
+});
+
+test("rejects unclosed shell token syntax without exposing source text", () => {
+  const malformedToken = "$" + "{TMPDIR:-/tmp";
+
+  assert.throws(
+    () =>
+      validate(
+        [portableFile("hooks/runtime.sh", malformedToken, 0o755)],
+        manifest(),
+      ),
+    (error) => {
+      assert.equal(assertValidationError(error, "UNRESOLVED_TOKEN"), true);
+      assert.equal(error.message.includes(malformedToken), false);
+      return true;
+    },
+  );
+});
+
+test("rejects unclosed nested non-shell token syntax without exposing source text", () => {
+  const malformedToken = "$" + "{CODEX_HOME${CODEX_HOME}";
+
+  assert.throws(
+    () =>
+      validate(
+        [portableFile("rules/tokens.rules", malformedToken)],
+        manifest(),
+      ),
+    (error) => {
+      assert.equal(assertValidationError(error, "UNRESOLVED_TOKEN"), true);
+      assert.equal(error.message.includes(malformedToken), false);
+      return true;
+    },
   );
 });
 

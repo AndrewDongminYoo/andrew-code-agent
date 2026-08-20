@@ -159,6 +159,13 @@ function assertResolvedTokens(
   content: string,
   allowedTokens: ReadonlySet<string>,
 ): void {
+  if (hasUnclosedTokenSyntax(content)) {
+    throw new ValidationError(
+      "UNRESOLVED_TOKEN",
+      targetPath,
+      "unresolved-token",
+    );
+  }
   if (targetPath.endsWith(".sh") || targetPath.endsWith(".bash")) {
     return;
   }
@@ -172,24 +179,19 @@ function assertResolvedTokens(
       );
     }
   }
-  if (hasUnclosedTokenSyntax(content)) {
-    throw new ValidationError(
-      "UNRESOLVED_TOKEN",
-      targetPath,
-      "unresolved-token",
-    );
-  }
 }
 
 function hasUnclosedTokenSyntax(content: string): boolean {
-  let start = content.indexOf("${");
-  while (start !== -1) {
-    if (content.indexOf("}", start + 2) === -1) {
-      return true;
+  let depth = 0;
+  for (let index = 0; index < content.length; index += 1) {
+    if (content[index] === "$" && content[index + 1] === "{") {
+      depth += 1;
+      index += 1;
+    } else if (content[index] === "}" && depth > 0) {
+      depth -= 1;
     }
-    start = content.indexOf("${", start + 2);
   }
-  return false;
+  return depth > 0;
 }
 
 function assertNoSecretPattern(
