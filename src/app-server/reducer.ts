@@ -19,6 +19,7 @@ export interface TurnState {
   readonly omittedItems: number;
   readonly omittedItemIds: ReadonlySet<string>;
   readonly omittedItemTypes?: ReadonlyMap<string, string>;
+  readonly omittedItemStates?: ReadonlyMap<string, ItemState>;
   readonly omittedCommands: number;
   readonly omittedWarnings: number;
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
@@ -45,6 +46,66 @@ type RecordValue = Record<string, unknown>;
 
 function isRecord(value: unknown): value is RecordValue {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isPlainJsonData(
+  value: unknown,
+  depth = 0,
+  active = new WeakSet<object>(),
+): boolean {
+  try {
+    if (depth > 32) return false;
+    if (
+      value === null ||
+      typeof value === "string" ||
+      typeof value === "boolean"
+    )
+      return true;
+    if (typeof value === "number") return Number.isFinite(value);
+    if (typeof value !== "object") return false;
+    const array = Array.isArray(value);
+    if (
+      (array && Object.getPrototypeOf(value) !== Array.prototype) ||
+      (!array &&
+        Object.getPrototypeOf(value) !== Object.prototype &&
+        Object.getPrototypeOf(value) !== null) ||
+      Object.getOwnPropertySymbols(value).length > 0 ||
+      active.has(value)
+    )
+      return false;
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const names = Object.getOwnPropertyNames(value);
+    if (
+      array
+        ? names.length !== value.length + 1 ||
+          names.some(
+            (name) =>
+              name !== "length" &&
+              (!Number.isSafeInteger(Number(name)) ||
+                Number(name) < 0 ||
+                Number(name) >= value.length ||
+                String(Number(name)) !== name),
+          )
+        : names.some((name) => !descriptors[name]?.enumerable)
+    )
+      return false;
+    active.add(value);
+    try {
+      return names.every((name) => {
+        if (name === "length") return true;
+        const descriptor = descriptors[name];
+        return (
+          descriptor !== undefined &&
+          "value" in descriptor &&
+          isPlainJsonData(descriptor.value, depth + 1, active)
+        );
+      });
+    } finally {
+      active.delete(value);
+    }
+  } catch {
+    return false;
+  }
 }
 
 function text(value: unknown): string | null {
@@ -141,6 +202,19 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
 
 function replaceItem(state: TurnState, item: ItemState): TurnState {
   const items = new Map(state.items);
+  const omitted = state.omittedItemStates?.get(item.id);
+  if (omitted !== undefined) {
+    if (omitted.type !== item.type)
+      throw new ReducerError("INVALID_SERVER_EVENT");
+    if (omitted.phase === "completed") {
+      if (item.phase === "started") return state;
+      if (JSON.stringify(omitted) === JSON.stringify(item)) return state;
+      throw new ReducerError("INVALID_SERVER_EVENT");
+    }
+    const omittedItemStates = new Map(state.omittedItemStates);
+    omittedItemStates.set(item.id, item);
+    return { ...state, omittedItemStates };
+  }
   if (!items.has(item.id) && items.size >= MAX_ITEMS) {
     const omittedType = state.omittedItemTypes?.get(item.id);
     if (omittedType !== undefined) {
@@ -150,13 +224,16 @@ function replaceItem(state: TurnState, item: ItemState): TurnState {
     }
     const omittedItemIds = new Set(state.omittedItemIds);
     const omittedItemTypes = new Map(state.omittedItemTypes ?? []);
+    const omittedItemStates = new Map(state.omittedItemStates ?? []);
     omittedItemIds.add(item.id);
     omittedItemTypes.set(item.id, item.type);
+    omittedItemStates.set(item.id, item);
     return {
       ...state,
       omittedItems: omittedItemIds.size,
       omittedItemIds,
       omittedItemTypes,
+      omittedItemStates,
     };
   }
   items.set(item.id, item);
@@ -175,6 +252,18 @@ function isKnownOmittedItem(
   return true;
 }
 
+function knownOmittedItem(
+  state: TurnState,
+  itemId: string,
+  expectedType: string,
+): ItemState | undefined {
+  if (!isKnownOmittedItem(state, itemId, expectedType)) return undefined;
+  const item = state.omittedItemStates?.get(itemId);
+  if (!item || item.type !== expectedType)
+    throw new ReducerError("INVALID_SERVER_EVENT");
+  return item;
+}
+
 function updateDelta(
   state: TurnState,
   params: RecordValue,
@@ -184,7 +273,11 @@ function updateDelta(
   requireIdentity(state, params);
   const itemId = text(params.itemId);
   if (itemId === null) throw new ReducerError("INVALID_SERVER_EVENT");
-  if (isKnownOmittedItem(state, itemId, expectedType)) return state;
+  const omitted = knownOmittedItem(state, itemId, expectedType);
+  if (omitted) {
+    if (omitted.phase === "completed") return state;
+    return replaceItem(state, update(omitted));
+  }
   const item = state.items.get(itemId);
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
@@ -230,6 +323,7 @@ export function createTurnState(threadId: string, turnId: string): TurnState {
     omittedItems: 0,
     omittedItemIds: new Set(),
     omittedItemTypes: new Map(),
+    omittedItemStates: new Map(),
     omittedCommands: 0,
     omittedWarnings: 0,
     terminalStatus: "running",
@@ -240,6 +334,7 @@ export function reduceServerMessage(
   state: TurnState,
   message: unknown,
 ): TurnState {
+  if (!isPlainJsonData(message)) throw new ReducerError("INVALID_SERVER_EVENT");
   if (!isRecord(message) || typeof message.method !== "string")
     throw new ReducerError("INVALID_SERVER_EVENT");
   if (Object.hasOwn(message, "id"))
@@ -250,7 +345,8 @@ export function reduceServerMessage(
     if (!params) throw new ReducerError("INVALID_SERVER_EVENT");
     requireIdentity(state, params);
     const next = safeItem(params.item, "started");
-    const previous = state.items.get(next.id);
+    const previous =
+      state.items.get(next.id) ?? state.omittedItemStates?.get(next.id);
     if (previous?.phase === "completed") {
       if (previous.type !== next.type)
         throw new ReducerError("INVALID_SERVER_EVENT");
@@ -263,8 +359,8 @@ export function reduceServerMessage(
     if (!params) throw new ReducerError("INVALID_SERVER_EVENT");
     requireIdentity(state, params);
     const next = safeItem(params.item, "completed");
-    const previous = state.items.get(next.id);
-    if (isKnownOmittedItem(state, next.id, next.type)) return state;
+    const previous =
+      state.items.get(next.id) ?? state.omittedItemStates?.get(next.id);
     if (state.terminalStatus !== "running") {
       if (
         previous?.type !== next.type ||
@@ -417,6 +513,7 @@ export function reduceServerMessage(
     let omittedItems = 0;
     const omittedItemIds = new Set<string>();
     const omittedItemTypes = new Map<string, string>();
+    const omittedItemStates = new Map<string, ItemState>();
     for (const raw of turn.items) {
       const safe = safeItem(raw, "completed");
       if (seenIds.has(safe.id)) throw new ReducerError("INVALID_SERVER_EVENT");
@@ -439,6 +536,7 @@ export function reduceServerMessage(
       if (items.size >= MAX_ITEMS) {
         omittedItemIds.add(safe.id);
         omittedItemTypes.set(safe.id, safe.type);
+        omittedItemStates.set(safe.id, safe);
         omittedItems = omittedItemIds.size;
         continue;
       }
@@ -451,6 +549,7 @@ export function reduceServerMessage(
       omittedItems,
       omittedItemIds,
       omittedItemTypes,
+      omittedItemStates,
       omittedCommands,
       terminalStatus: statuses[turn.status]!,
     };
@@ -465,6 +564,8 @@ export function reduceServerMessage(
         JSON.stringify([...next.omittedItemIds]) &&
       JSON.stringify([...(state.omittedItemTypes ?? [])]) ===
         JSON.stringify([...(next.omittedItemTypes ?? [])]) &&
+      JSON.stringify([...(state.omittedItemStates ?? [])]) ===
+        JSON.stringify([...(next.omittedItemStates ?? [])]) &&
       state.omittedCommands === next.omittedCommands
     )
       return state;

@@ -106,6 +106,49 @@ test("fails closed or safely declines for noninteractive and malformed input pat
   assert.equal(unsupported.code, "UNKNOWN_SERVER_REQUEST");
 });
 
+test("declines when either terminal loses TTY authority after the prompt callback", async () => {
+  const [command] = await requests();
+  for (const lost of ["input", "output"]) {
+    const source = new PassThrough();
+    Object.defineProperty(source, "isTTY", { value: true, writable: true });
+    const sink = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+        setImmediate(() => {
+          if (lost === "input") source.isTTY = false;
+          else sink.isTTY = false;
+          source.write("1\n");
+        });
+      },
+    });
+    Object.defineProperty(sink, "isTTY", { value: true, writable: true });
+
+    const result = await approvals().answerApproval(command, source, sink, 100);
+
+    assert.deepEqual(result.response, { decision: "decline" });
+    source.destroy();
+    sink.destroy();
+  }
+});
+
+test("bounds a stalled prompt write by the approval timeout and removes its error listener", async () => {
+  const [command] = await requests();
+  const sink = new Writable({
+    write() {},
+  });
+  Object.defineProperty(sink, "isTTY", { value: true });
+
+  const result = await Promise.race([
+    approvals().answerApproval(command, input("1\n"), sink, 10),
+    new Promise((resolve) => setTimeout(() => resolve(null), 250)),
+  ]);
+
+  assert.notEqual(result, null, "a stalled prompt write must settle within the bounded margin");
+  assert.deepEqual(result.response, { decision: "decline" });
+  assert.equal(sink.listenerCount("error"), 0);
+  sink.destroy();
+});
+
 test("rejects extra generated-request keys and grants a fresh non-null permission subset", async () => {
   const [, file, permission, mcp] = await requests();
   const command = (await requests())[0];

@@ -1102,19 +1102,27 @@ function prompt(
 function writePrompt(
   output: NodeJS.WritableStream,
   value: string,
+  timeoutMs: number,
 ): Promise<boolean> {
   return new Promise((resolve) => {
     let settled = false;
     const onError = () => finish(false);
-    const finish = (ok: boolean, retainErrorListener = false) => {
+    const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
-      if (!retainErrorListener) output.removeListener("error", onError);
+      clearTimeout(timer);
+      output.removeListener("error", onError);
       resolve(ok);
     };
+    const timer = setTimeout(
+      () => finish(false),
+      Math.max(1, Math.min(timeoutMs, 60_000)),
+    );
     output.once("error", onError);
     try {
-      output.write(value, (error) => finish(!error, Boolean(error)));
+      output.write(value, (error) => {
+        if (!error) finish(true);
+      });
     } catch {
       finish(false);
     }
@@ -1216,9 +1224,16 @@ export async function answerApproval(
     if (!hasPromptableListSizes(valid)) return safest(valid);
     if (!hasCompletePromptContext(valid, available)) return safest(valid);
     const rendered = prompt(valid, available);
-    if (rendered === null || !(await writePrompt(output, rendered)))
+    if (
+      rendered === null ||
+      !(await writePrompt(output, rendered, timeoutMs)) ||
+      terminalInput.isTTY !== true ||
+      terminalOutput.isTTY !== true
+    )
       return safest(valid);
     const selected = await readLine(input, timeoutMs);
+    if (terminalInput.isTTY !== true || terminalOutput.isTTY !== true)
+      return safest(valid);
     const choice = available.find((candidate) => candidate.id === selected);
     return choice ? response(valid, choice) : safest(valid);
   } catch {

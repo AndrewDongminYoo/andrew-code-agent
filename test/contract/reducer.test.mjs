@@ -223,7 +223,7 @@ test("marks capped inventories and warnings with visible omission metadata", () 
   assert.equal(warnings.omittedWarnings, 1);
 });
 
-test("ignores valid lifecycle messages for known omitted IDs and rejects unknown or conflicting IDs", () => {
+test("tracks valid lifecycle messages for known omitted IDs and rejects unknown or conflicting IDs", () => {
   const api = reducer();
   let state = api.createTurnState("thread-1", "turn-1");
   for (let index = 0; index < 64; index += 1) {
@@ -232,9 +232,12 @@ test("ignores valid lifecycle messages for known omitted IDs and rejects unknown
   state = api.reduceServerMessage(state, started(item("plan", "omitted-plan", { text: "initial" })));
   const omitted = state;
   state = api.reduceServerMessage(state, { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "omitted-plan", delta: " later" } });
-  assert.equal(state, omitted);
+  assert.notEqual(state, omitted);
+  assert.equal(state.omittedItemStates.get("omitted-plan")?.value.text, "initial later");
+  const updated = state;
   state = api.reduceServerMessage(state, completed(item("plan", "omitted-plan", { text: "initial later" })));
-  assert.equal(state, omitted);
+  assert.notEqual(state, updated);
+  assert.equal(state.omittedItemStates.get("omitted-plan")?.phase, "completed");
   assert.equal(state.omittedItems, 1);
   assert.throws(
     () => api.reduceServerMessage(state, { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "unknown-plan", delta: "later" } }),
@@ -256,6 +259,82 @@ test("ignores valid lifecycle messages for known omitted IDs and rejects unknown
     () => api.reduceServerMessage(terminal, completed(item("agentMessage", "terminal-omitted-plan", { text: "conflict", phase: null, memoryCitation: null }))),
     { code: "INVALID_SERVER_EVENT" },
   );
+});
+
+test("makes the first omitted completion authoritative and rejects later same-type conflicts", () => {
+  const api = reducer();
+  let state = api.createTurnState("thread-1", "turn-1");
+  for (let index = 0; index < 64; index += 1) {
+    state = api.reduceServerMessage(state, started(item("agentMessage", `message-${index}`, { text: "x", phase: null, memoryCitation: null })));
+  }
+  state = api.reduceServerMessage(state, started(item("plan", "omitted-plan", { text: "initial", raw: "do not retain" })));
+  state = api.reduceServerMessage(state, { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "omitted-plan", delta: " later" } });
+  state = api.reduceServerMessage(state, completed(item("plan", "omitted-plan", { text: "initial later", raw: "still do not retain" })));
+
+  assert.deepEqual(state.omittedItemStates.get("omitted-plan"), {
+    id: "omitted-plan",
+    type: "plan",
+    phase: "completed",
+    value: { text: "initial later" },
+  });
+  assert.doesNotMatch(JSON.stringify([...state.omittedItemStates]), /do not retain/);
+  const duplicate = api.reduceServerMessage(state, completed(item("plan", "omitted-plan", { text: "initial later" })));
+  assert.equal(duplicate, state);
+  assert.throws(
+    () => api.reduceServerMessage(state, completed(item("plan", "omitted-plan", { text: "changed" }))),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("includes bounded omitted projections in duplicate terminal inventory authority", () => {
+  const api = reducer();
+  const terminalItems = [
+    ...Array.from({ length: 64 }, (_, index) => item("agentMessage", `message-${index}`, { text: "x", phase: null, memoryCitation: null })),
+    item("plan", "omitted-plan", { text: "final", raw: "do not retain" }),
+  ];
+  const completedTurn = { id: "turn-1", items: terminalItems, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null };
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/completed", params: { threadId: "thread-1", turn: completedTurn } });
+
+  assert.equal(terminal.omittedItemStates.get("omitted-plan")?.phase, "completed");
+  assert.doesNotMatch(JSON.stringify([...terminal.omittedItemStates]), /do not retain/);
+  assert.equal(api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: completedTurn } }), terminal);
+  assert.throws(
+    () => api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: { ...completedTurn, items: [...terminalItems.slice(0, -1), item("plan", "omitted-plan", { text: "changed" })] } } }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("rejects hostile direct server-message data without invoking accessors", () => {
+  const api = reducer();
+  const state = api.createTurnState("thread-1", "turn-1");
+  let getterCalls = 0;
+  const accessorAt = (target, key) => Object.defineProperty(target, key, {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error(`${key} getter must not run`);
+    },
+  });
+  const hostileMethod = accessorAt({}, "method");
+  const hostileParams = accessorAt({ method: "warning" }, "params");
+  const nestedParams = accessorAt({ threadId: "thread-1" }, "turn");
+  const hostileNested = { method: "turn/started", params: nestedParams };
+  const symbolMessage = { method: "unknown/optional", params: {} };
+  symbolMessage[Symbol("hidden")] = true;
+  const cyclicMessage = { method: "unknown/optional", params: {} };
+  cyclicMessage.params.self = cyclicMessage.params;
+  const datedParams = { method: "unknown/optional", params: new Date(0) };
+  const deepMessage = { method: "unknown/optional", params: {} };
+  let cursor = deepMessage.params;
+  for (let index = 0; index < 33; index += 1) {
+    cursor.next = {};
+    cursor = cursor.next;
+  }
+
+  for (const message of [hostileMethod, hostileParams, hostileNested, symbolMessage, cyclicMessage, datedParams, deepMessage]) {
+    assert.throws(() => api.reduceServerMessage(state, message), { code: "INVALID_SERVER_EVENT" });
+  }
+  assert.equal(getterCalls, 0);
 });
 
 test("uses UTF-8 byte bounds for protocol IDs", () => {
