@@ -209,6 +209,27 @@ test("rejects invalid requirement records", async () => {
   assertManifestError(valid.replace('capability = "oracle"', 'capability = "shared-memory"'), "UNDECLARED_CAPABILITY");
 });
 
+test("rejects non-canonical executable paths", async () => {
+  const valid = await fixture("valid");
+  const executables = [
+    "/bin/../sh",
+    "/bin//sh",
+    "/./bin/sh",
+    "/",
+    "/bin/",
+    "/bin/*.sh",
+    "/bin/\\u0001sh",
+    "/bin/\\u007fsh",
+  ];
+
+  for (const executable of executables) {
+    assertManifestError(
+      valid.replace('executable = "/bin/sh"', `executable = "${executable}"`),
+      "INVALID_REQUIREMENT",
+    );
+  }
+});
+
 test("rejects unsupported and duplicate forbidden pattern IDs", async () => {
   const valid = await fixture("valid");
 
@@ -220,6 +241,10 @@ test("rejects invalid capability instruction sections", async () => {
   const valid = await fixture("valid");
 
   assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = ["# Invalid"]'), "INVALID_INSTRUCTION_SECTION");
+  assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = [""]'), "INVALID_INSTRUCTION_SECTION");
+  assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = ["Line\\nBreak"]'), "INVALID_INSTRUCTION_SECTION");
+  assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = ["Line\\rBreak"]'), "INVALID_INSTRUCTION_SECTION");
+  assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = ["Line\\u0000Break"]'), "INVALID_INSTRUCTION_SECTION");
   assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = ["Consult the Oracle", "Consult the Oracle"]'), "DUPLICATE_INSTRUCTION_SECTION");
   assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]\n', ""), "MISSING_FIELD");
 });

@@ -483,8 +483,17 @@ function readRequirements(
 function readExecutable(value: string, index: number): string {
   if (
     !value.startsWith("/") ||
+    value === "/" ||
     value.includes("\\") ||
-    value.includes("\u0000")
+    /[*?\[\]{}]/u.test(value) ||
+    /[\u0000-\u001f\u007f]/u.test(value) ||
+    value
+      .slice(1)
+      .split("/")
+      .some(
+        (segment) =>
+          segment.length === 0 || segment === "." || segment === "..",
+      )
   ) {
     throw new ManifestError(
       "INVALID_REQUIREMENT",
