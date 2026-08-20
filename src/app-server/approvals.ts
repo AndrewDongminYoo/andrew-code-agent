@@ -178,8 +178,13 @@ function boundedSchemaString(value: unknown): value is string {
   );
 }
 
-function optionalSchemaString(value: RecordValue, key: string): boolean {
-  return !(key in value) || boundedSchemaString(value[key]);
+function optionalNullableSchemaString(
+  value: RecordValue,
+  key: string,
+): boolean {
+  return (
+    !(key in value) || value[key] === null || boundedSchemaString(value[key])
+  );
 }
 
 function validStringList(value: unknown): value is string[] {
@@ -206,14 +211,16 @@ function validSchemaInteger(value: unknown): boolean {
 function validMcpPrimitiveSchema(value: unknown): boolean {
   if (
     !isRecord(value) ||
-    !optionalSchemaString(value, "title") ||
-    !optionalSchemaString(value, "description")
+    !optionalNullableSchemaString(value, "title") ||
+    !optionalNullableSchemaString(value, "description")
   )
     return false;
   if (value.type === "boolean")
     return (
       hasOnlyKeys(value, ["type", "title", "description", "default"]) &&
-      (!("default" in value) || typeof value.default === "boolean")
+      (!("default" in value) ||
+        value.default === null ||
+        typeof value.default === "boolean")
     );
   if (value.type === "number" || value.type === "integer")
     return (
@@ -228,6 +235,7 @@ function validMcpPrimitiveSchema(value: unknown): boolean {
       ["minimum", "maximum", "default"].every(
         (key) =>
           !(key in value) ||
+          value[key] === null ||
           (typeof value[key] === "number" && Number.isFinite(value[key])),
       )
     );
@@ -244,7 +252,9 @@ function validMcpPrimitiveSchema(value: unknown): boolean {
         Array.isArray(value.oneOf) &&
         value.oneOf.length <= MAX_APPROVAL_LIST_ITEMS &&
         value.oneOf.every(validConstOption) &&
-        (!("default" in value) || boundedSchemaString(value.default))
+        (!("default" in value) ||
+          value.default === null ||
+          boundedSchemaString(value.default))
       );
     if ("enum" in value)
       return (
@@ -258,9 +268,12 @@ function validMcpPrimitiveSchema(value: unknown): boolean {
         ]) &&
         validStringList(value.enum) &&
         (!("enumNames" in value) ||
+          value.enumNames === null ||
           (validStringList(value.enumNames) &&
             value.enumNames.length === value.enum.length)) &&
-        (!("default" in value) || boundedSchemaString(value.default))
+        (!("default" in value) ||
+          value.default === null ||
+          boundedSchemaString(value.default))
       );
     return (
       hasOnlyKeys(value, [
@@ -272,13 +285,20 @@ function validMcpPrimitiveSchema(value: unknown): boolean {
         "format",
         "default",
       ]) &&
-      (!("minLength" in value) || validSchemaInteger(value.minLength)) &&
-      (!("maxLength" in value) || validSchemaInteger(value.maxLength)) &&
+      (!("minLength" in value) ||
+        value.minLength === null ||
+        validSchemaInteger(value.minLength)) &&
+      (!("maxLength" in value) ||
+        value.maxLength === null ||
+        validSchemaInteger(value.maxLength)) &&
       (!("format" in value) ||
+        value.format === null ||
         ["email", "uri", "date", "date-time"].includes(
           value.format as string,
         )) &&
-      (!("default" in value) || boundedSchemaString(value.default))
+      (!("default" in value) ||
+        value.default === null ||
+        boundedSchemaString(value.default))
     );
   }
   if (value.type !== "array") return false;
@@ -292,9 +312,15 @@ function validMcpPrimitiveSchema(value: unknown): boolean {
       "items",
       "default",
     ]) ||
-    ("minItems" in value && !validSchemaInteger(value.minItems)) ||
-    ("maxItems" in value && !validSchemaInteger(value.maxItems)) ||
-    ("default" in value && !validStringList(value.default)) ||
+    ("minItems" in value &&
+      value.minItems !== null &&
+      !validSchemaInteger(value.minItems)) ||
+    ("maxItems" in value &&
+      value.maxItems !== null &&
+      !validSchemaInteger(value.maxItems)) ||
+    ("default" in value &&
+      value.default !== null &&
+      !validStringList(value.default)) ||
     !isRecord(value.items)
   )
     return false;
@@ -320,7 +346,9 @@ function validMcpElicitationSchema(value: unknown): boolean {
   const properties = value.properties;
   if (
     Object.keys(properties).length > MAX_APPROVAL_LIST_ITEMS ||
-    ("$schema" in value && !boundedSchemaString(value.$schema)) ||
+    ("$schema" in value &&
+      value.$schema !== null &&
+      !boundedSchemaString(value.$schema)) ||
     !Object.entries(properties).every(
       ([key, schema]) =>
         boundedSchemaString(key) && validMcpPrimitiveSchema(schema),
@@ -329,6 +357,7 @@ function validMcpElicitationSchema(value: unknown): boolean {
     return false;
   return (
     !("required" in value) ||
+    value.required === null ||
     (validStringList(value.required) &&
       new Set(value.required).size === value.required.length &&
       value.required.every((key) => key in properties))
@@ -409,6 +438,7 @@ function validPermissions(value: unknown): boolean {
       (Array.isArray(fileSystem.write) &&
         fileSystem.write.every((entry) => typeof entry === "string"))) &&
     (!("globScanMaxDepth" in fileSystem) ||
+      fileSystem.globScanMaxDepth === null ||
       (typeof fileSystem.globScanMaxDepth === "number" &&
         Number.isSafeInteger(fileSystem.globScanMaxDepth) &&
         fileSystem.globScanMaxDepth >= 1)) &&
@@ -622,7 +652,24 @@ function failClosed(
     audit: auditFrom(request, "decline"),
   };
 }
+function malformedApprovalRequest(): ApprovalOutcome {
+  return {
+    kind: "failClosed",
+    decision: "decline",
+    acceptedForSession: false,
+    code: "MALFORMED_APPROVAL_REQUEST",
+    audit: {
+      requestId: "<invalid>",
+      threadId: null,
+      turnId: null,
+      itemId: null,
+      method: "<invalid>",
+      decision: "decline",
+    },
+  };
+}
 function validate(request: unknown): ValidRequest | ApprovalOutcome {
+  if (!validJson(request)) return malformedApprovalRequest();
   if (
     !isRecord(request) ||
     !hasOnlyKeys(request, ["method", "id", "params"]) ||
@@ -1008,23 +1055,28 @@ function prompt(
       "globScanMaxDepth" in requestedPermissions.fileSystem
     )
       context.push(
-        `globScanMaxDepth: ${String(requestedPermissions.fileSystem.globScanMaxDepth)}`,
+        requestedPermissions.fileSystem.globScanMaxDepth === null
+          ? "globScanMaxDepth null"
+          : `globScanMaxDepth: ${String(requestedPermissions.fileSystem.globScanMaxDepth)}`,
       );
   }
   if (
     requestedPermissions &&
     isRecord(requestedPermissions.fileSystem) &&
-    Array.isArray(requestedPermissions.fileSystem.entries)
+    "entries" in requestedPermissions.fileSystem
   )
-    for (const entry of requestedPermissions.fileSystem.entries.slice(
-      0,
-      MAX_APPROVAL_LIST_ITEMS,
-    )) {
-      const value = entry as RecordValue;
-      context.push(
-        `fileSystem entry: ${String(value.access)} ${fileSystemEntryDestination(value)}; ${fileSystemEntryFields(value).join("; ")}`,
-      );
-    }
+    if (requestedPermissions.fileSystem.entries === null)
+      context.push("entries null");
+    else if (Array.isArray(requestedPermissions.fileSystem.entries))
+      for (const entry of requestedPermissions.fileSystem.entries.slice(
+        0,
+        MAX_APPROVAL_LIST_ITEMS,
+      )) {
+        const value = entry as RecordValue;
+        context.push(
+          `fileSystem entry: ${String(value.access)} ${fileSystemEntryDestination(value)}; ${fileSystemEntryFields(value).join("; ")}`,
+        );
+      }
   const choiceLines = available.map(
     (choice) =>
       `${choice.id}. ${boundedBytes(choice.label, MAX_CHOICE_LABEL_BYTES)}`,

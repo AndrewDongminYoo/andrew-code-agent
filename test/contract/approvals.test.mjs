@@ -731,6 +731,157 @@ test("renders every granted permission effect, including nullable network and sp
   }
 });
 
+test("preserves and renders explicit null filesystem entries and glob depth while leaving omitted fields omitted", async () => {
+  const [, , fixturePermission] = await requests();
+  const nullable = structuredClone(fixturePermission);
+  nullable.params.permissions.fileSystem.entries = null;
+  nullable.params.permissions.fileSystem.globScanMaxDepth = null;
+  const nullableSink = output();
+  const nullableResult = await approvals().answerApproval(
+    nullable,
+    input("1\n"),
+    nullableSink.stream,
+    100,
+  );
+  assert.deepEqual(nullableResult.response, {
+    permissions: nullable.params.permissions,
+    scope: "turn",
+  });
+  assert.match(nullableSink.text(), /entries null/);
+  assert.match(nullableSink.text(), /globScanMaxDepth null/);
+
+  const omitted = structuredClone(fixturePermission);
+  delete omitted.params.permissions.fileSystem.entries;
+  delete omitted.params.permissions.fileSystem.globScanMaxDepth;
+  const omittedSink = output();
+  const omittedResult = await approvals().answerApproval(
+    omitted,
+    input("1\n"),
+    omittedSink.stream,
+    100,
+  );
+  assert.equal("entries" in omittedResult.response.permissions.fileSystem, false);
+  assert.equal("globScanMaxDepth" in omittedResult.response.permissions.fileSystem, false);
+  assert.doesNotMatch(omittedSink.text(), /entries null|globScanMaxDepth null/);
+});
+
+test("accepts every nullable regular MCP form schema field declared by the runtime schema", async () => {
+  const [, , , fixtureMcp] = await requests();
+  const request = structuredClone(fixtureMcp);
+  request.params.requestedSchema = {
+    $schema: null,
+    type: "object",
+    properties: {
+      enabled: { type: "boolean", title: null, description: null, default: null },
+      count: {
+        type: "number",
+        title: null,
+        description: null,
+        minimum: null,
+        maximum: null,
+        default: null,
+      },
+      text: {
+        type: "string",
+        title: null,
+        description: null,
+        minLength: null,
+        maxLength: null,
+        format: null,
+        default: null,
+      },
+      legacyChoice: {
+        type: "string",
+        title: null,
+        description: null,
+        enum: ["a"],
+        enumNames: null,
+        default: null,
+      },
+      titledChoice: {
+        type: "string",
+        title: null,
+        description: null,
+        oneOf: [{ const: "a", title: "A" }],
+        default: null,
+      },
+      choices: {
+        type: "array",
+        title: null,
+        description: null,
+        minItems: null,
+        maxItems: null,
+        items: { type: "string", enum: ["a"] },
+        default: null,
+      },
+      titledChoices: {
+        type: "array",
+        title: null,
+        description: null,
+        minItems: null,
+        maxItems: null,
+        items: { anyOf: [{ const: "a", title: "A" }] },
+        default: null,
+      },
+    },
+    required: null,
+  };
+  const result = await approvals().answerApproval(
+    request,
+    input("1\n"),
+    output().stream,
+    100,
+  );
+  assert.equal(result.kind, "response");
+});
+
+test("fails closed without invoking getters on the approval envelope or direct params", async () => {
+  const [fixtureCommand] = await requests();
+  const getterCalls = { method: 0, id: 0, params: 0, threadId: 0 };
+  const hostileRequests = ["method", "id", "params"].map((key) => {
+    const request = structuredClone(fixtureCommand);
+    Object.defineProperty(request, key, {
+      enumerable: true,
+      get() {
+        getterCalls[key] += 1;
+        throw new Error(`${key} getter must not run`);
+      },
+    });
+    return request;
+  });
+  const hostileParams = structuredClone(fixtureCommand);
+  Object.defineProperty(hostileParams.params, "threadId", {
+    enumerable: true,
+    get() {
+      getterCalls.threadId += 1;
+      throw new Error("threadId getter must not run");
+    },
+  });
+  hostileRequests.push(hostileParams);
+
+  for (const request of hostileRequests) {
+    const sink = output();
+    const result = await approvals().answerApproval(
+      request,
+      input("1\n"),
+      sink.stream,
+      100,
+    );
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+    assert.deepEqual(result.audit, {
+      requestId: "<invalid>",
+      threadId: null,
+      turnId: null,
+      itemId: null,
+      method: "<invalid>",
+      decision: "decline",
+    });
+    assert.equal(sink.text(), "");
+  }
+  assert.deepEqual(getterCalls, { method: 0, id: 0, params: 0, threadId: 0 });
+});
+
 test("fails closed without evaluating hostile direct JSON properties", async () => {
   const [, , , fixtureMcp] = await requests();
   let getterCalls = 0;
