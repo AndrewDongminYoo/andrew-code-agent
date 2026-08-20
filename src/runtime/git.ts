@@ -110,7 +110,18 @@ async function runGit(
 ): Promise<string> {
   const { stdout } = await execFile("git", ["-C", repositoryRoot, ...args], {
     encoding: "utf8",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    env: gitEnvironment(),
   });
   return stdout;
+}
+
+function gitEnvironment(): NodeJS.ProcessEnv {
+  return {
+    HOME: process.env.HOME,
+    PATH: process.env.PATH,
+    TMPDIR: process.env.TMPDIR,
+    GIT_OPTIONAL_LOCKS: "0",
+    LANG: "C",
+    LC_ALL: "C",
+  };
 }

@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import {
+  chmod,
   lstat,
   mkdir,
   mkdtemp,
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   symlink,
   utimes,
@@ -175,5 +177,72 @@ test("surfaces corrupt metadata instead of skipping or deleting it", async () =>
       { code: "THREAD_CORRUPT" },
     );
     assert.deepEqual(await readFile(corruptPath), corruptBytes);
+  });
+});
+
+test("rejects a filename and payload thread ID mismatch without changing bytes", async () => {
+  await withStore(async ({ stateRoot, repositoryRoot }) => {
+    await requireThreads().writeThreadRecord(
+      stateRoot,
+      makeRecord("payload-id", repositoryRoot),
+    );
+    const threadsRoot = join(stateRoot, "threads");
+    const mismatchedPath = join(threadsRoot, "filename-id.json");
+    await rename(join(threadsRoot, "payload-id.json"), mismatchedPath);
+    const before = await readFile(mismatchedPath);
+
+    await assert.rejects(
+      requireThreads().readThreadRecord(
+        stateRoot,
+        "filename-id",
+        repositoryRoot,
+      ),
+      { code: "THREAD_CORRUPT" },
+    );
+    await assert.rejects(
+      requireThreads().findLatestThreadRecord(stateRoot, repositoryRoot),
+      { code: "THREAD_CORRUPT" },
+    );
+    assert.deepEqual(await readFile(mismatchedPath), before);
+  });
+});
+
+test("refuses to overwrite an existing filename and payload ID mismatch", async () => {
+  await withStore(async ({ stateRoot, repositoryRoot }) => {
+    await requireThreads().writeThreadRecord(
+      stateRoot,
+      makeRecord("payload-id", repositoryRoot),
+    );
+    const threadsRoot = join(stateRoot, "threads");
+    const mismatchedPath = join(threadsRoot, "filename-id.json");
+    await rename(join(threadsRoot, "payload-id.json"), mismatchedPath);
+    const before = await readFile(mismatchedPath);
+
+    await assert.rejects(
+      requireThreads().writeThreadRecord(
+        stateRoot,
+        makeRecord("filename-id", repositoryRoot),
+      ),
+      { code: "THREAD_CORRUPT" },
+    );
+    assert.deepEqual(await readFile(mismatchedPath), before);
+  });
+});
+
+test("read and latest reject an unsafe threads directory without chmod", async () => {
+  await withStore(async ({ stateRoot, repositoryRoot }) => {
+    const threadsRoot = join(stateRoot, "threads");
+    await mkdir(threadsRoot, { mode: 0o755 });
+    await chmod(threadsRoot, 0o755);
+
+    await assert.rejects(
+      requireThreads().readThreadRecord(stateRoot, "missing", repositoryRoot),
+      { code: "THREAD_STORE_UNSAFE" },
+    );
+    await assert.rejects(
+      requireThreads().findLatestThreadRecord(stateRoot, repositoryRoot),
+      { code: "THREAD_STORE_UNSAFE" },
+    );
+    assert.equal((await lstat(threadsRoot)).mode & 0o777, 0o755);
   });
 });

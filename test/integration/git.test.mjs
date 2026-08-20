@@ -15,6 +15,13 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 const gitModule = await import("../../dist/runtime/git.js").catch(() => null);
+const gitOverrideNames = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_COMMON_DIR",
+];
 
 function requireGit() {
   assert.notEqual(
@@ -28,8 +35,14 @@ function requireGit() {
 async function git(repository, args) {
   return execFile("git", ["-C", repository, ...args], {
     encoding: "utf8",
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" },
+    env: cleanGitEnvironment(),
   });
+}
+
+function cleanGitEnvironment() {
+  const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
+  for (const name of gitOverrideNames) delete env[name];
+  return env;
 }
 
 async function withRepository(run) {
@@ -141,5 +154,71 @@ test("rejects a non-worktree and accepts a later clean changed HEAD", async () =
     const second = await requireGit().readGitSnapshot(repository);
     assert.notEqual(second.head, first.head);
     assert.equal(second.clean, true);
+  });
+});
+
+test("ignores inherited Git repository redirection without mutating either repository", async () => {
+  await withRepository(async (repositoryA) => {
+    await withRepository(async (repositoryB) => {
+      await writeFile(join(repositoryA, "tracked.txt"), "repository A dirty\n");
+      const beforeA = (
+        await git(repositoryA, [
+          "status",
+          "--porcelain=v2",
+          "--untracked-files=all",
+        ])
+      ).stdout;
+      const beforeB = (
+        await git(repositoryB, [
+          "status",
+          "--porcelain=v2",
+          "--untracked-files=all",
+        ])
+      ).stdout;
+      const overrides = {
+        GIT_DIR: join(repositoryB, ".git"),
+        GIT_WORK_TREE: repositoryB,
+        GIT_INDEX_FILE: join(repositoryB, ".git", "index"),
+        GIT_OBJECT_DIRECTORY: join(repositoryB, ".git", "objects"),
+        GIT_COMMON_DIR: join(repositoryB, ".git"),
+      };
+      const original = Object.fromEntries(
+        gitOverrideNames.map((name) => [name, process.env[name]]),
+      );
+      Object.assign(process.env, overrides);
+      let snapshot;
+      try {
+        snapshot = await requireGit().readGitSnapshot(repositoryA);
+      } finally {
+        for (const name of gitOverrideNames) {
+          if (original[name] === undefined) delete process.env[name];
+          else process.env[name] = original[name];
+        }
+      }
+
+      assert.equal(snapshot.repositoryRoot, repositoryA);
+      assert.equal(snapshot.porcelainV2, beforeA);
+      assert.equal(snapshot.clean, false);
+      assert.equal(
+        (
+          await git(repositoryA, [
+            "status",
+            "--porcelain=v2",
+            "--untracked-files=all",
+          ])
+        ).stdout,
+        beforeA,
+      );
+      assert.equal(
+        (
+          await git(repositoryB, [
+            "status",
+            "--porcelain=v2",
+            "--untracked-files=all",
+          ])
+        ).stdout,
+        beforeB,
+      );
+    });
   });
 });

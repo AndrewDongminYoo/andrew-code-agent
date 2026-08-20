@@ -162,3 +162,26 @@ test("initializes only owner-only ordinary state directories and rejects symlink
     );
   });
 });
+
+test("rejects a pre-existing permissive state root without chmod", async () => {
+  await withFixture(async ({ root, home, source, codexBin }) => {
+    const stateRoot = join(root, "permissive-state");
+    await mkdir(stateRoot, { mode: 0o755 });
+    await chmod(stateRoot, 0o755);
+    const paths = await requirePaths().resolveRuntimePaths({
+      platform: "darwin",
+      env: {
+        HOME: home,
+        PATH: "/usr/bin:/bin",
+        ANDREW_AGENT_CODEX_SOURCE: source,
+        ANDREW_AGENT_STATE_ROOT: stateRoot,
+        ANDREW_AGENT_CODEX_BIN: codexBin,
+      },
+    });
+
+    await assert.rejects(requirePaths().initializeRuntimeState(paths), {
+      code: "RUNTIME_STATE_UNSAFE",
+    });
+    assert.equal((await lstat(stateRoot)).mode & 0o777, 0o755);
+  });
+});

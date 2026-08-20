@@ -32,6 +32,7 @@ async function withState(run) {
   try {
     await run(stateRoot);
   } finally {
+    lockModule?.__setLockPublicationCheckpointHookForTests?.(undefined);
     await rm(stateRoot, { recursive: true, force: true });
   }
 }
@@ -119,5 +120,38 @@ test("uses process start identity so a terminated child lock becomes stale", asy
       (await requireLock().inspectProcessLock(stateRoot)).status,
       "stale",
     );
+  });
+});
+
+test("never exposes a partial final lock when acquisition is killed before publication", async () => {
+  assert.equal(
+    typeof requireLock().__setLockPublicationCheckpointHookForTests,
+    "function",
+  );
+  await withState(async (stateRoot) => {
+    const childScript = join(stateRoot, "lock-publication-child.mjs");
+    await writeFile(
+      childScript,
+      `import { acquireProcessLock, __setLockPublicationCheckpointHookForTests } from ${JSON.stringify(new URL("../../dist/runtime/lock.js", import.meta.url).href)};\n__setLockPublicationCheckpointHookForTests(async () => { process.send("temp-synced"); await new Promise(() => {}); });\nawait acquireProcessLock(process.argv[2], ["publication-child"]);\n`,
+    );
+    await chmod(childScript, 0o700);
+    const child = fork(childScript, [stateRoot], {
+      stdio: ["ignore", "ignore", "ignore", "ipc"],
+    });
+    assert.equal(
+      await once(child, "message").then(([message]) => message),
+      "temp-synced",
+    );
+    await assert.rejects(readFile(join(stateRoot, "run.lock")), {
+      code: "ENOENT",
+    });
+    child.kill("SIGKILL");
+    await once(child, "exit");
+    await assert.rejects(readFile(join(stateRoot, "run.lock")), {
+      code: "ENOENT",
+    });
+    assert.deepEqual(await requireLock().inspectProcessLock(stateRoot), {
+      status: "absent",
+    });
   });
 });

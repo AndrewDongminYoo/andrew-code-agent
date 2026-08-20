@@ -1,8 +1,9 @@
 /// <reference types="node" />
 
 import { execFile as execFileCallback } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
-import { open, unlink } from "node:fs/promises";
+import { link, open, unlink } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -55,6 +56,13 @@ interface InternalLockHandle extends ProcessLockHandle {
 }
 
 const activeHandles = new WeakSet<object>();
+let lockPublicationCheckpointHook: (() => void | Promise<void>) | undefined;
+
+export function __setLockPublicationCheckpointHookForTests(
+  hook: (() => void | Promise<void>) | undefined,
+): void {
+  lockPublicationCheckpointHook = hook;
+}
 
 export async function inspectProcessLock(
   stateRoot: string,
@@ -110,39 +118,31 @@ export async function acquireProcessLock(
     acquiredAt: new Date().toISOString(),
   };
   const ownerBytes = Buffer.from(`${JSON.stringify(owner)}\n`, "utf8");
+  const temporaryPath = join(
+    stateRoot,
+    `.run.lock.${process.pid}.${randomBytes(12).toString("hex")}.tmp`,
+  );
   let file;
   try {
-    file = await open(lockPath, "wx", 0o600);
-  } catch (error) {
-    if (!isNodeError(error) || error.code !== "EEXIST") throw error;
-    const diagnosis = await inspectProcessLock(stateRoot);
-    if (diagnosis.status === "stale") {
-      throw new ProcessLockError(
-        "PROCESS_LOCK_STALE",
-        "A stale process lock is present.",
-      );
-    }
-    if (diagnosis.status === "malformed") {
-      throw new ProcessLockError(
-        "PROCESS_LOCK_MALFORMED",
-        "A malformed process lock is present.",
-      );
-    }
-    throw new ProcessLockError(
-      "PROCESS_LOCK_HELD",
-      "The process lock is already held.",
-    );
-  }
-  try {
+    file = await open(temporaryPath, "wx", 0o600);
     await file.chmod(0o600);
     await file.writeFile(ownerBytes);
     await file.sync();
+    await file.close();
+    file = undefined;
+    await lockPublicationCheckpointHook?.();
+    await link(temporaryPath, lockPath);
   } catch (error) {
-    await file.close().catch(() => undefined);
-    await unlink(lockPath).catch(() => undefined);
+    await file?.close().catch(() => undefined);
+    await unlink(temporaryPath).catch(() => undefined);
+    if (isNodeError(error) && error.code === "EEXIST") {
+      await throwExistingLock(stateRoot);
+    }
     throw error;
   }
-  await file.close();
+  await syncDirectory(stateRoot);
+  await unlink(temporaryPath);
+  await syncDirectory(stateRoot);
   const handle: InternalLockHandle = {
     [lockHandleBrand]: true,
     lockPath,
@@ -151,6 +151,35 @@ export async function acquireProcessLock(
   };
   activeHandles.add(handle);
   return handle;
+}
+
+async function throwExistingLock(stateRoot: string): Promise<never> {
+  const diagnosis = await inspectProcessLock(stateRoot);
+  if (diagnosis.status === "stale") {
+    throw new ProcessLockError(
+      "PROCESS_LOCK_STALE",
+      "A stale process lock is present.",
+    );
+  }
+  if (diagnosis.status === "malformed") {
+    throw new ProcessLockError(
+      "PROCESS_LOCK_MALFORMED",
+      "A malformed process lock is present.",
+    );
+  }
+  throw new ProcessLockError(
+    "PROCESS_LOCK_HELD",
+    "The process lock is already held.",
+  );
+}
+
+async function syncDirectory(path: string): Promise<void> {
+  const directory = await open(path, "r");
+  try {
+    await directory.sync();
+  } finally {
+    await directory.close();
+  }
 }
 
 export async function releaseProcessLock(

@@ -81,6 +81,12 @@ export async function writeThreadRecord(
   await ensureThreadsDirectory(threadsRoot);
   const target = join(threadsRoot, `${record.threadId}.json`);
   const existing = await readRecordIfPresent(target);
+  if (existing !== null && existing.threadId !== record.threadId) {
+    throw new ThreadStoreError(
+      "THREAD_CORRUPT",
+      "Existing thread record ID does not match its filename.",
+    );
+  }
   if (existing !== null && existing.repositoryRoot !== repositoryRoot) {
     throw new ThreadStoreError(
       "THREAD_REPOSITORY_MISMATCH",
@@ -125,9 +131,16 @@ export async function readThreadRecord(
   repositoryRoot?: string,
 ): Promise<ThreadRecord> {
   assertThreadId(threadId);
+  await requireReadableThreadsDirectory(join(stateRoot, "threads"));
   const record = await readRecord(
     join(stateRoot, "threads", `${threadId}.json`),
   );
+  if (record.threadId !== threadId) {
+    throw new ThreadStoreError(
+      "THREAD_CORRUPT",
+      "Thread record ID does not match its filename.",
+    );
+  }
   if (repositoryRoot !== undefined) {
     const expectedRoot = await canonicalRepository(repositoryRoot);
     if (record.repositoryRoot !== expectedRoot) {
@@ -146,6 +159,7 @@ export async function findLatestThreadRecord(
 ): Promise<ThreadRecord> {
   const expectedRoot = await canonicalRepository(repositoryRoot);
   const threadsRoot = join(stateRoot, "threads");
+  await requireReadableThreadsDirectory(threadsRoot);
   let entries;
   try {
     entries = await readdir(threadsRoot, { withFileTypes: true });
@@ -172,6 +186,13 @@ export async function findLatestThreadRecord(
     }
     const path = join(threadsRoot, entry.name);
     const record = await readRecord(path);
+    const filenameThreadId = entry.name.slice(0, -".json".length);
+    if (record.threadId !== filenameThreadId) {
+      throw new ThreadStoreError(
+        "THREAD_CORRUPT",
+        `Thread record ID does not match its filename: ${entry.name}`,
+      );
+    }
     if (record.repositoryRoot !== expectedRoot) continue;
     const metadata = await stat(path, { bigint: true });
     if (
@@ -227,6 +248,37 @@ async function ensureThreadsDirectory(threadsRoot: string): Promise<void> {
     }
   }
   const metadata = await lstat(threadsRoot);
+  if (
+    !metadata.isDirectory() ||
+    metadata.isSymbolicLink() ||
+    metadata.uid !== currentUid() ||
+    (metadata.mode & 0o777) !== 0o700
+  ) {
+    throw new ThreadStoreError(
+      "THREAD_STORE_UNSAFE",
+      "Thread store is not owner-only and ordinary.",
+    );
+  }
+}
+
+async function requireReadableThreadsDirectory(
+  threadsRoot: string,
+): Promise<void> {
+  let metadata;
+  try {
+    metadata = await lstat(threadsRoot);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new ThreadStoreError(
+        "THREAD_NOT_FOUND",
+        "No thread records exist.",
+      );
+    }
+    throw new ThreadStoreError(
+      "THREAD_STORE_UNSAFE",
+      "Unable to inspect thread store.",
+    );
+  }
   if (
     !metadata.isDirectory() ||
     metadata.isSymbolicLink() ||
