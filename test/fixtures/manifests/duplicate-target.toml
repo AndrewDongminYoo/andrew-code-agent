@@ -1,0 +1,20 @@
+schema_version = 1
+config_source = "config.toml"
+config_keys = ["model"]
+
+[config_overrides]
+approval_policy = "on-request"
+
+[[files]]
+source = "agents/plan.toml"
+target = "Agents/plan.toml"
+mode = "0644"
+
+[[files]]
+source = "agents/plan-copy.toml"
+target = "agents/plan.toml"
+mode = "0644"
+
+[forbidden]
+literals = []
+path_segments = []

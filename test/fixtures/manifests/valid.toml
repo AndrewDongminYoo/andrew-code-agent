@@ -1,0 +1,47 @@
+schema_version = 1
+config_source = "config.toml"
+config_keys = ["model", "features.hooks"]
+
+[config_overrides]
+approval_policy = "on-request"
+analytics_enabled = false
+max_depth = 3
+
+[[files]]
+source = "rules/default.rules"
+target = "rules/default.rules"
+mode = "0644"
+
+[[files]]
+source = "hooks/safety.sh"
+target = "hooks/safety.sh"
+mode = "0755"
+capability = "oracle"
+
+[[files.replacements]]
+search = "/Users/dongminyu/.codex"
+replacement = "${CODEX_HOME}"
+expected_matches = 1
+
+[[files]]
+source = "agents/advisor.toml"
+target = "agents/advisor.toml"
+mode = "0644"
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+source_command = "/Users/dongminyu/.codex/hooks/safety.sh"
+rendered_command = "${CODEX_HOME}/hooks/safety.sh"
+timeout = 5
+required_script = "hooks/safety.sh"
+capability = "oracle"
+
+[[capabilities]]
+name = "oracle"
+required_tokens = ["LLM_WIKI_ROOT"]
+read_only = true
+
+[forbidden]
+literals = ["/Users/dongminyu", "/Volumes/dongminyu"]
+path_segments = ["auth\\u002Ejson", "sessions", "logs"]
