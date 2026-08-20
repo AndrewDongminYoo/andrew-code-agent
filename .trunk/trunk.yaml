@@ -13,6 +13,10 @@ lint:
   ignore:
     - linters: [prettier]
       paths:
+        - "src/generated/codex-app-server/**"
+        - "schemas/codex-app-server/**"
+    - linters: [prettier]
+      paths:
         - "test/**/*.mjs"
     - linters: [markdownlint]
       paths:

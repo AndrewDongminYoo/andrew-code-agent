@@ -1,0 +1,3 @@
+{"method":"initialize","id":1,"params":{"clientInfo":{"name":"andrew-code-agent","title":"Andrew Code Agent","version":"0.1.0"},"capabilities":{"experimentalApi":false,"requestAttestation":false}}}
+{"id":1,"result":{"userAgent":"codex-test","codexHome":"/managed/codex-home","platformFamily":"unix","platformOs":"macos"}}
+{"method":"initialized"}
