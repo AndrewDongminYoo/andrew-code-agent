@@ -244,7 +244,7 @@ const secretPatterns: readonly {
     id: "credential-assignment",
     code: "CREDENTIAL_ASSIGNMENT",
     expression:
-      /\b(?:(?:[a-z0-9]+[_-])*(?:credential|password|passwd|pwd|secret|token|api[_-]?key)|aws_secret_access_key)\b\s*["']?\s*(?:=|:)\s*["']?[^\s"']{8,}/iu,
+      /\b(?:(?:[a-z0-9]+[_-])*(?:credential|password|passwd|pwd|secret|token|api[_-]?key)|aws_secret_access_key)\b\s*["']?\s*(?:=|:)\s*["']?(?!\$)[^\s"']{8,}/iu,
   },
   {
     id: "github-token",

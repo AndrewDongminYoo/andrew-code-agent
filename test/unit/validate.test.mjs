@@ -304,6 +304,44 @@ test("rejects high-confidence credential assignments without rejecting generic k
   }
 });
 
+for (const [name, content] of [
+  ["unquoted parameter expansion", "env_token=${BASH_REMATCH[2]}\n"],
+  ["quoted parameter expansion", 'client_secret="${CLIENT_SECRET}"\n'],
+  ["named parameter expansion", "access_token=$ACCESS_TOKEN\n"],
+  ["command substitution", "password=$(security find-generic-password)\n"],
+]) {
+  test(`allows credential assignments using ${name}`, () => {
+    assert.doesNotThrow(
+      () => validate([portableFile("hooks/runtime.sh", content)], manifest()),
+      content,
+    );
+  });
+}
+
+test("rejects literal credential assignments without exposing their values", () => {
+  const literalCredentialCases = [
+    [
+      'password = "correct-horse-battery-staple"\n',
+      "correct-horse-battery-staple",
+    ],
+    ["access_token=literalvalue123\n", "literalvalue123"],
+  ];
+
+  for (const [content, literalValue] of literalCredentialCases) {
+    assert.throws(
+      () => validate([portableFile("rules/canary.txt", content)], manifest()),
+      (error) => {
+        assert.equal(
+          assertValidationError(error, "CREDENTIAL_ASSIGNMENT"),
+          true,
+        );
+        assert.equal(error.message.includes(literalValue), false);
+        return true;
+      },
+    );
+  }
+});
+
 test("rejects invalid UTF-8 without exposing bytes", () => {
   assert.throws(
     () =>
