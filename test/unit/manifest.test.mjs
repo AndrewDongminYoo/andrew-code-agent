@@ -38,6 +38,25 @@ test("decodes a valid manifest into a stable sorted file contract", async () => 
     analytics_enabled: false,
     max_depth: 3,
   });
+  assert.deepEqual(manifest.allowedTokens, [
+    "CODEX_HOME",
+    "HOME",
+    "LLM_WIKI_ROOT",
+    "WORKSPACE_ROOT",
+  ]);
+  assert.deepEqual(manifest.requirements, [
+    {
+      name: "bash",
+      executable: "/bin/sh",
+      arguments: [],
+    },
+    {
+      name: "zsh",
+      executable: "/bin/sh",
+      arguments: ["-c"],
+      capability: "oracle",
+    },
+  ]);
   assert.deepEqual(manifest.hooks, [
     {
       event: "PreToolUse",
@@ -49,13 +68,22 @@ test("decodes a valid manifest into a stable sorted file contract", async () => 
       capability: "oracle",
     },
   ]);
+  assert.deepEqual(manifest.capabilities, [
+    {
+      name: "oracle",
+      requiredTokens: ["CODEX_HOME", "LLM_WIKI_ROOT"],
+      readOnly: true,
+      instructionSections: ["Capability Requirements", "Consult the Oracle"],
+    },
+  ]);
+  assert.deepEqual(manifest.forbiddenPatternIds, ["github-token", "private-key"]);
 });
 
 test("rejects unknown keys at decoded table levels", async () => {
   const valid = await fixture("valid");
   const cases = [
     ["unknown root", valid.replace('config_keys = ["model", "features.hooks"]', 'config_keys = ["model", "features.hooks"]\nunexpected = true')],
-    ["unknown file", await fixture("unknown-key")],
+    ["unknown file", valid.replace('mode = "0644"', 'mode = "0644"\nunexpected = true')],
     ["unknown replacement", valid.replace("expected_matches = 1", "expected_matches = 1\nunexpected = true")],
     ["unknown hook", valid.replace('event = "PreToolUse"', 'event = "PreToolUse"\nunexpected = true')],
     ["unknown capability", valid.replace('[[capabilities]]\nname = "oracle"', '[[capabilities]]\nname = "oracle"\nunexpected = true')],
@@ -94,13 +122,15 @@ test("rejects glob and recursive source selectors", async () => {
 });
 
 test("requires each root collection", async () => {
-  const collections = ["files", "hooks", "capabilities"];
+  const collections = ["allowed_tokens", "files", "hooks", "capabilities", "requirements"];
   const base = `schema_version = 1
 config_source = "config.toml"
 config_keys = ["model"]
+allowed_tokens = []
 files = []
 hooks = []
 capabilities = []
+requirements = []
 
 [config_overrides]
 approval_policy = "on-request"
@@ -112,6 +142,12 @@ path_segments = []`;
   for (const collection of collections) {
     assertManifestError(base.replace(`${collection} = []\n`, ""), "MISSING_FIELD");
   }
+});
+
+test("requires forbidden pattern IDs", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('pattern_ids = ["private-key", "github-token"]\n', ""), "MISSING_FIELD");
 });
 
 test("sorts file targets by NFC-normalized code units", async () => {
@@ -129,7 +165,9 @@ test("sorts file targets by NFC-normalized code units", async () => {
 });
 
 test("rejects case-folded duplicate targets before filesystem access", async () => {
-  assertManifestError(await fixture("duplicate-target"), "DUPLICATE_TARGET");
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('target = "agents/advisor.toml"', 'target = "Agents/plan.toml"').replace('target = "rules/default.rules"', 'target = "agents/plan.toml"'), "DUPLICATE_TARGET");
 });
 
 test("rejects undeclared capabilities, unsupported modes, and unbounded replacements", async () => {
@@ -152,4 +190,42 @@ test("rejects hooks whose required script is missing or not executable", async (
 
   assertManifestError(valid.replace('required_script = "hooks/safety.sh"', 'required_script = "hooks/missing.sh"'), "UNDECLARED_REQUIRED_SCRIPT");
   assertManifestError(valid.replace('required_script = "hooks/safety.sh"', 'required_script = "rules/default.rules"'), "UNDECLARED_REQUIRED_SCRIPT");
+});
+
+test("rejects unsupported and duplicate allowed tokens", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('allowed_tokens = ["WORKSPACE_ROOT", "HOME", "LLM_WIKI_ROOT", "CODEX_HOME"]', 'allowed_tokens = ["UNKNOWN"]'), "INVALID_ALLOWED_TOKEN");
+  assertManifestError(valid.replace('allowed_tokens = ["WORKSPACE_ROOT", "HOME", "LLM_WIKI_ROOT", "CODEX_HOME"]', 'allowed_tokens = ["HOME", "HOME"]'), "DUPLICATE_ALLOWED_TOKEN");
+});
+
+test("rejects invalid requirement records", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('arguments = ["-c"]', 'arguments = ["-c"]\nunexpected = true'), "UNKNOWN_KEY");
+  assertManifestError(valid.replace('name = "zsh"', 'name = ""'), "INVALID_REQUIREMENT");
+  assertManifestError(valid.replace('name = "zsh"', 'name = "bash"'), "DUPLICATE_REQUIREMENT");
+  assertManifestError(valid.replace('executable = "/bin/sh"', 'executable = "bin/sh"'), "INVALID_REQUIREMENT");
+  assertManifestError(valid.replace('capability = "oracle"', 'capability = "shared-memory"'), "UNDECLARED_CAPABILITY");
+});
+
+test("rejects unsupported and duplicate forbidden pattern IDs", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('pattern_ids = ["private-key", "github-token"]', 'pattern_ids = ["unknown"]'), "INVALID_PATTERN_ID");
+  assertManifestError(valid.replace('pattern_ids = ["private-key", "github-token"]', 'pattern_ids = ["private-key", "private-key"]'), "DUPLICATE_PATTERN_ID");
+});
+
+test("rejects invalid capability instruction sections", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = ["# Invalid"]'), "INVALID_INSTRUCTION_SECTION");
+  assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]', 'instruction_sections = ["Consult the Oracle", "Consult the Oracle"]'), "DUPLICATE_INSTRUCTION_SECTION");
+  assertManifestError(valid.replace('instruction_sections = ["Consult the Oracle", "Capability Requirements"]\n', ""), "MISSING_FIELD");
+});
+
+test("rejects capability tokens outside the allowed root set", async () => {
+  const valid = await fixture("valid");
+
+  assertManifestError(valid.replace('required_tokens = ["LLM_WIKI_ROOT", "CODEX_HOME"]', 'required_tokens = ["UNDECLARED"]'), "UNDECLARED_TOKEN");
 });

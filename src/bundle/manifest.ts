@@ -4,6 +4,12 @@ export type FileMode = "0644" | "0755";
 
 export type CapabilityName = "oracle" | "shared-memory";
 
+export type AllowedToken =
+  | "HOME"
+  | "CODEX_HOME"
+  | "WORKSPACE_ROOT"
+  | "LLM_WIKI_ROOT";
+
 export interface ReplacementRule {
   readonly search: string;
   readonly replacement: string;
@@ -32,6 +38,14 @@ export interface CapabilityDefinition {
   readonly name: CapabilityName;
   readonly requiredTokens: readonly string[];
   readonly readOnly: true;
+  readonly instructionSections: readonly string[];
+}
+
+export interface RequirementDefinition {
+  readonly name: string;
+  readonly executable: string;
+  readonly arguments: readonly string[];
+  readonly capability?: CapabilityName;
 }
 
 export interface BundleManifest {
@@ -39,11 +53,14 @@ export interface BundleManifest {
   readonly configSource: string;
   readonly configKeys: readonly string[];
   readonly configOverrides: Readonly<Record<string, string | boolean | number>>;
+  readonly allowedTokens: readonly AllowedToken[];
   readonly files: readonly BundleFileEntry[];
   readonly hooks: readonly HookSelection[];
   readonly capabilities: readonly CapabilityDefinition[];
+  readonly requirements: readonly RequirementDefinition[];
   readonly forbiddenLiterals: readonly string[];
   readonly forbiddenPathSegments: readonly string[];
+  readonly forbiddenPatternIds: readonly string[];
 }
 
 export type ManifestErrorCode =
@@ -60,7 +77,16 @@ export type ManifestErrorCode =
   | "DUPLICATE_CAPABILITY"
   | "UNDECLARED_CAPABILITY"
   | "CAPABILITY_NOT_READ_ONLY"
-  | "UNDECLARED_REQUIRED_SCRIPT";
+  | "UNDECLARED_REQUIRED_SCRIPT"
+  | "INVALID_ALLOWED_TOKEN"
+  | "DUPLICATE_ALLOWED_TOKEN"
+  | "INVALID_REQUIREMENT"
+  | "DUPLICATE_REQUIREMENT"
+  | "INVALID_PATTERN_ID"
+  | "DUPLICATE_PATTERN_ID"
+  | "INVALID_INSTRUCTION_SECTION"
+  | "DUPLICATE_INSTRUCTION_SECTION"
+  | "UNDECLARED_TOKEN";
 
 export class ManifestError extends Error {
   readonly code: ManifestErrorCode;
@@ -91,9 +117,11 @@ export function parseBundleManifest(source: string): BundleManifest {
     "config_source",
     "config_keys",
     "config_overrides",
+    "allowed_tokens",
     "files",
     "hooks",
     "capabilities",
+    "requirements",
     "forbidden",
   ]);
 
@@ -106,17 +134,21 @@ export function parseBundleManifest(source: string): BundleManifest {
   const configOverrides = readConfigOverrides(
     readRequired(root, "config_overrides", "manifest"),
   );
+  const allowedTokens = readAllowedTokens(root);
   const files = readFiles(readRequiredArray(root, "files", "manifest"));
   const capabilities = readCapabilities(
     readRequiredArray(root, "capabilities", "manifest"),
   );
   const hooks = readHooks(readRequiredArray(root, "hooks", "manifest"));
+  const requirements = readRequirements(
+    readRequiredArray(root, "requirements", "manifest"),
+  );
   const forbidden = readForbidden(readRequired(root, "forbidden", "manifest"));
 
   const declaredCapabilities = new Set(
     capabilities.map((capability) => capability.name),
   );
-  for (const capability of [...files, ...hooks].flatMap(
+  for (const capability of [...files, ...hooks, ...requirements].flatMap(
     (entry) => entry.capability ?? [],
   )) {
     if (!declaredCapabilities.has(capability)) {
@@ -139,18 +171,33 @@ export function parseBundleManifest(source: string): BundleManifest {
     }
   }
 
+  const allowedTokenNames = new Set<string>(allowedTokens);
+  for (const capability of capabilities) {
+    for (const token of capability.requiredTokens) {
+      if (!allowedTokenNames.has(token)) {
+        throw new ManifestError(
+          "UNDECLARED_TOKEN",
+          `Capability ${capability.name} references undeclared token ${token}.`,
+        );
+      }
+    }
+  }
+
   return {
     schemaVersion,
     configSource,
     configKeys,
     configOverrides,
+    allowedTokens,
     files: [...files].sort(compareFileTargets),
     hooks,
     capabilities: [...capabilities].sort((left, right) =>
-      left.name.localeCompare(right.name),
+      compareCodeUnits(left.name, right.name),
     ),
+    requirements,
     forbiddenLiterals: forbidden.literals,
     forbiddenPathSegments: forbidden.pathSegments,
+    forbiddenPatternIds: forbidden.patternIds,
   };
 }
 
@@ -190,6 +237,39 @@ function readConfigOverrides(
     Object.defineProperty(overrides, key, { enumerable: true, value: entry });
   }
   return overrides;
+}
+
+function readAllowedTokens(
+  table: Record<string, unknown>,
+): readonly AllowedToken[] {
+  const tokens = readStringArray(table, "allowed_tokens", "manifest");
+  const unique = new Set<AllowedToken>();
+  for (const token of tokens) {
+    const allowedToken = readAllowedToken(token);
+    if (unique.has(allowedToken)) {
+      throw new ManifestError(
+        "DUPLICATE_ALLOWED_TOKEN",
+        `Allowed token ${allowedToken} is declared more than once.`,
+      );
+    }
+    unique.add(allowedToken);
+  }
+  return [...unique].sort(compareCodeUnits);
+}
+
+function readAllowedToken(value: string): AllowedToken {
+  if (
+    value === "HOME" ||
+    value === "CODEX_HOME" ||
+    value === "WORKSPACE_ROOT" ||
+    value === "LLM_WIKI_ROOT"
+  ) {
+    return value;
+  }
+  throw new ManifestError(
+    "INVALID_ALLOWED_TOKEN",
+    `Unsupported allowed token: ${value}.`,
+  );
 }
 
 function readFiles(values: readonly unknown[]): readonly BundleFileEntry[] {
@@ -325,6 +405,7 @@ function readCapabilities(
       "name",
       "required_tokens",
       "read_only",
+      "instruction_sections",
     ]);
     const name = readCapability(
       readString(table, "name", `capabilities[${index}]`),
@@ -345,26 +426,146 @@ function readCapabilities(
     }
     return {
       name,
-      requiredTokens: readStringArray(
-        table,
-        "required_tokens",
-        `capabilities[${index}]`,
-      ),
+      requiredTokens: [
+        ...readStringArray(table, "required_tokens", `capabilities[${index}]`),
+      ].sort(compareCodeUnits),
       readOnly: true,
+      instructionSections: readInstructionSections(table, index),
     };
   });
+}
+
+function readRequirements(
+  values: readonly unknown[],
+): readonly RequirementDefinition[] {
+  const names = new Set<string>();
+  const requirements = values.map((value, index) => {
+    const table = readTable(value, `requirements[${index}]`);
+    assertKeys(table, `requirements[${index}]`, [
+      "name",
+      "executable",
+      "arguments",
+      "capability",
+    ]);
+    const name = readString(table, "name", `requirements[${index}]`);
+    if (name.length === 0) {
+      throw new ManifestError(
+        "INVALID_REQUIREMENT",
+        `requirements[${index}].name must not be empty.`,
+      );
+    }
+    if (names.has(name)) {
+      throw new ManifestError(
+        "DUPLICATE_REQUIREMENT",
+        `Requirement ${name} is declared more than once.`,
+      );
+    }
+    names.add(name);
+    const executable = readExecutable(
+      readString(table, "executable", `requirements[${index}]`),
+      index,
+    );
+    const arguments_ = readStringArray(
+      table,
+      "arguments",
+      `requirements[${index}]`,
+    );
+    const capability = readOptionalCapability(table, `requirements[${index}]`);
+    return capability === undefined
+      ? { name, executable, arguments: arguments_ }
+      : { name, executable, arguments: arguments_, capability };
+  });
+  return requirements.sort((left, right) =>
+    compareCodeUnits(left.name, right.name),
+  );
+}
+
+function readExecutable(value: string, index: number): string {
+  if (
+    !value.startsWith("/") ||
+    value.includes("\\") ||
+    value.includes("\u0000")
+  ) {
+    throw new ManifestError(
+      "INVALID_REQUIREMENT",
+      `requirements[${index}].executable must be an absolute POSIX path.`,
+    );
+  }
+  return value;
+}
+
+function readInstructionSections(
+  table: Record<string, unknown>,
+  capabilityIndex: number,
+): readonly string[] {
+  const sections = readStringArray(
+    table,
+    "instruction_sections",
+    `capabilities[${capabilityIndex}]`,
+  );
+  const unique = new Set<string>();
+  for (const section of sections) {
+    if (
+      section.trim().length === 0 ||
+      section.includes("#") ||
+      section.includes("\n") ||
+      section.includes("\r") ||
+      section.includes("\u0000")
+    ) {
+      throw new ManifestError(
+        "INVALID_INSTRUCTION_SECTION",
+        `capabilities[${capabilityIndex}].instruction_sections contains an invalid heading.`,
+      );
+    }
+    if (unique.has(section)) {
+      throw new ManifestError(
+        "DUPLICATE_INSTRUCTION_SECTION",
+        `Instruction section ${section} is declared more than once.`,
+      );
+    }
+    unique.add(section);
+  }
+  return [...unique].sort(compareCodeUnits);
 }
 
 function readForbidden(value: unknown): {
   readonly literals: readonly string[];
   readonly pathSegments: readonly string[];
+  readonly patternIds: readonly string[];
 } {
   const table = readTable(value, "forbidden");
-  assertKeys(table, "forbidden", ["literals", "path_segments"]);
+  assertKeys(table, "forbidden", ["literals", "path_segments", "pattern_ids"]);
   return {
     literals: readStringArray(table, "literals", "forbidden"),
     pathSegments: readStringArray(table, "path_segments", "forbidden"),
+    patternIds: readPatternIds(table),
   };
+}
+
+function readPatternIds(table: Record<string, unknown>): readonly string[] {
+  const ids = readStringArray(table, "pattern_ids", "forbidden");
+  const unique = new Set<string>();
+  for (const id of ids) {
+    if (
+      id !== "private-key" &&
+      id !== "credential-assignment" &&
+      id !== "github-token" &&
+      id !== "openai-api-key"
+    ) {
+      throw new ManifestError(
+        "INVALID_PATTERN_ID",
+        `Unsupported pattern ID: ${id}.`,
+      );
+    }
+    if (unique.has(id)) {
+      throw new ManifestError(
+        "DUPLICATE_PATTERN_ID",
+        `Pattern ID ${id} is declared more than once.`,
+      );
+    }
+    unique.add(id);
+  }
+  return [...unique].sort(compareCodeUnits);
 }
 
 function readMode(value: string): FileMode {
