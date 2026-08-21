@@ -17,7 +17,11 @@ import { promisify } from "node:util";
 
 import { parseBundleManifest, type FileMode } from "./manifest.js";
 import { renderBundle, type CapabilityInputs } from "./render.js";
-import type { ResolvedSourceFile } from "./source-tree.js";
+import {
+  readTrackedSourceFileBytes,
+  SourceTreeError,
+  type ResolvedSourceFile,
+} from "./source-tree.js";
 
 const metadataPath = "bundle-metadata.json";
 const stagingPrefix = ".bundle-staging-";
@@ -372,20 +376,26 @@ async function gitStatus(
 }
 
 async function readManifestBytes(sourceRoot: string): Promise<Uint8Array> {
-  const requestedPath = resolve(sourceRoot, "agent-bundle.toml");
-  if (!isContainedBy(sourceRoot, requestedPath)) {
-    throw new ArtifactError("MANIFEST_UNAVAILABLE", "Manifest is unavailable.");
-  }
   try {
-    const manifestPath = await realpath(requestedPath);
-    if (
-      !isContainedBy(sourceRoot, manifestPath) ||
-      !(await lstat(manifestPath)).isFile()
-    ) {
-      throw new Error("invalid manifest");
+    return await readTrackedSourceFileBytes(sourceRoot, "agent-bundle.toml");
+  } catch (error) {
+    if (error instanceof SourceTreeError) {
+      if (error.code === "DIRTY_SOURCE") {
+        throw new ArtifactError("DIRTY_SOURCE", "Source repository is dirty.");
+      }
+      if (error.code === "SOURCE_GIT_ERROR") {
+        throw new ArtifactError(
+          "SOURCE_GIT_ERROR",
+          "Source repository cannot be inspected.",
+        );
+      }
+      if (error.code === "SOURCE_CHANGED_DURING_READ") {
+        throw new ArtifactError(
+          "SOURCE_CHANGED_DURING_BUILD",
+          "Source repository changed during bundle construction.",
+        );
+      }
     }
-    return await readFile(manifestPath);
-  } catch {
     throw new ArtifactError("MANIFEST_UNAVAILABLE", "Manifest is unavailable.");
   }
 }

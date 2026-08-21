@@ -77,7 +77,12 @@ export async function resolveSourceFiles(
           `Manifest source for target ${entry.target} has an unexpected mode.`,
         );
       }
-      const bytes = await readOpenedSource(sourcePath, entry, mode, file);
+      const bytes = await readOpenedSource(
+        sourcePath,
+        `Manifest source for target ${entry.target}`,
+        file,
+        mode,
+      );
       return entry.capability === undefined
         ? { sourcePath, targetPath: entry.target, mode, bytes }
         : {
@@ -103,11 +108,55 @@ export async function resolveSourceFiles(
   );
 }
 
+export async function readTrackedSourceFileBytes(
+  sourceRoot: string,
+  source: string,
+): Promise<Uint8Array> {
+  const canonicalSourceRoot = await resolveSourceRoot(sourceRoot);
+  await assertGitWorktreeRoot(canonicalSourceRoot);
+  const initialRevision = await readCleanGitSnapshot(canonicalSourceRoot);
+  const requestedPath = resolve(canonicalSourceRoot, source);
+  if (!isContainedBy(canonicalSourceRoot, requestedPath)) {
+    throw new SourceTreeError(
+      "SOURCE_PATH_ESCAPE",
+      `Source file ${source} escapes the source root.`,
+    );
+  }
+  const { sourcePath, trackedPaths } = await resolveSourcePath(
+    canonicalSourceRoot,
+    requestedPath,
+    `Source file ${source}`,
+  );
+  await assertIndexedSourcePaths(canonicalSourceRoot, [{ trackedPaths }]);
+
+  const file = await lstat(sourcePath, { bigint: true });
+  if (!file.isFile()) {
+    throw new SourceTreeError(
+      "NON_REGULAR_SOURCE",
+      `Source file ${source} is not a regular file.`,
+    );
+  }
+  const bytes = await readOpenedSource(
+    sourcePath,
+    `Source file ${source}`,
+    file,
+  );
+
+  const finalRevision = await readFinalGitSnapshot(canonicalSourceRoot);
+  if (finalRevision !== initialRevision) {
+    throw new SourceTreeError(
+      "SOURCE_CHANGED_DURING_READ",
+      "Source repository changed while the tracked file was read.",
+    );
+  }
+  return bytes;
+}
+
 async function readOpenedSource(
   sourcePath: string,
-  entry: BundleFileEntry,
-  mode: 0o644 | 0o755,
+  sourceDescription: string,
   expected: BigIntStats,
+  mode?: 0o644 | 0o755,
 ): Promise<Uint8Array> {
   let file;
   try {
@@ -115,15 +164,15 @@ async function readOpenedSource(
   } catch {
     throw new SourceTreeError(
       "NON_REGULAR_SOURCE",
-      `Manifest source for target ${entry.target} is not a regular file.`,
+      `${sourceDescription} is not a regular file.`,
     );
   }
   try {
     const before = await file.stat({ bigint: true });
-    assertOpenedSource(entry, mode, expected, before);
+    assertOpenedSource(sourceDescription, expected, before, mode);
     const bytes = await file.readFile();
     const after = await file.stat({ bigint: true });
-    assertOpenedSource(entry, mode, before, after, true);
+    assertOpenedSource(sourceDescription, before, after, mode, true);
     return bytes;
   } finally {
     await file.close();
@@ -131,10 +180,10 @@ async function readOpenedSource(
 }
 
 function assertOpenedSource(
-  entry: BundleFileEntry,
-  mode: 0o644 | 0o755,
+  sourceDescription: string,
   expected: BigIntStats,
   actual: BigIntStats,
+  mode?: 0o644 | 0o755,
   compareContentMetadata = false,
 ): void {
   const currentUid = process.getuid?.();
@@ -146,14 +195,14 @@ function assertOpenedSource(
   ) {
     throw new SourceTreeError(
       "NON_REGULAR_SOURCE",
-      `Manifest source for target ${entry.target} is not a regular file.`,
+      `${sourceDescription} is not a regular file.`,
     );
   }
   const actualMode = Number(actual.mode & 0o777n);
-  if (!isAcceptedSourceMode(actualMode, mode)) {
+  if (mode !== undefined && !isAcceptedSourceMode(actualMode, mode)) {
     throw new SourceTreeError(
       "UNEXPECTED_MODE",
-      `Manifest source for target ${entry.target} has an unexpected mode.`,
+      `${sourceDescription} has an unexpected mode.`,
     );
   }
   if (
@@ -243,7 +292,7 @@ async function resolveEntries(
       const { sourcePath, trackedPaths } = await resolveSourcePath(
         sourceRoot,
         requestedPath,
-        entry,
+        `Manifest source for target ${entry.target}`,
       );
       return { entry, trackedPaths, sourcePath };
     }),
@@ -253,7 +302,7 @@ async function resolveEntries(
 async function resolveSourcePath(
   sourceRoot: string,
   requestedPath: string,
-  entry: BundleFileEntry,
+  sourceDescription: string,
 ): Promise<{ readonly sourcePath: string; readonly trackedPaths: string[] }> {
   const trackedPaths: string[] = [];
   let unresolvedPath = requestedPath;
@@ -264,7 +313,7 @@ async function resolveSourcePath(
     if (!isContainedBy(sourceRoot, unresolvedPath)) {
       throw new SourceTreeError(
         "SOURCE_PATH_ESCAPE",
-        `Manifest source for target ${entry.target} escapes the source root.`,
+        `${sourceDescription} escapes the source root.`,
       );
     }
     const components =
@@ -281,7 +330,7 @@ async function resolveSourcePath(
       } catch {
         throw new SourceTreeError(
           "SOURCE_PATH_ESCAPE",
-          `Manifest source for target ${entry.target} cannot be resolved.`,
+          `${sourceDescription} cannot be resolved.`,
         );
       }
       if (!source.isSymbolicLink()) {
@@ -294,7 +343,7 @@ async function resolveSourcePath(
       if (remainingSymlinkTraversals === 0) {
         throw new SourceTreeError(
           "SOURCE_PATH_ESCAPE",
-          `Manifest source for target ${entry.target} cannot be resolved.`,
+          `${sourceDescription} cannot be resolved.`,
         );
       }
       remainingSymlinkTraversals -= 1;
@@ -306,7 +355,7 @@ async function resolveSourcePath(
       } catch {
         throw new SourceTreeError(
           "SOURCE_PATH_ESCAPE",
-          `Manifest source for target ${entry.target} cannot be resolved.`,
+          `${sourceDescription} cannot be resolved.`,
         );
       }
       unresolvedPath = resolve(
@@ -329,20 +378,20 @@ async function resolveSourcePath(
     } catch {
       throw new SourceTreeError(
         "SOURCE_PATH_ESCAPE",
-        `Manifest source for target ${entry.target} cannot be resolved.`,
+        `${sourceDescription} cannot be resolved.`,
       );
     }
     if (!isContainedBy(sourceRoot, sourcePath)) {
       throw new SourceTreeError(
         "SOURCE_PATH_ESCAPE",
-        `Manifest source for target ${entry.target} escapes the source root.`,
+        `${sourceDescription} escapes the source root.`,
       );
     }
     const source = finalSource ?? (await lstat(sourcePath));
     if (!source.isFile()) {
       throw new SourceTreeError(
         "NON_REGULAR_SOURCE",
-        `Manifest source for target ${entry.target} is not a regular file.`,
+        `${sourceDescription} is not a regular file.`,
       );
     }
     trackedPaths.push(sourcePath);
@@ -352,7 +401,7 @@ async function resolveSourcePath(
 
 async function assertIndexedSourcePaths(
   sourceRoot: string,
-  entries: readonly ResolvedEntry[],
+  entries: readonly Pick<ResolvedEntry, "trackedPaths">[],
 ): Promise<void> {
   const exactPaths = [
     ...new Set(

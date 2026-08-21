@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   chmod,
   cp,
@@ -9,6 +10,7 @@ import {
   readFile,
   readdir,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -155,6 +157,66 @@ async function withWikiRoot(run) {
   }
 }
 
+async function withSecondSnapshotCommit(repository, run) {
+  const shimDirectory = await mkdtemp(
+    join(tmpdir(), "andrew-code-agent-artifact-git-"),
+  );
+  const firstMarkerPath = join(shimDirectory, "first-snapshot");
+  const secondMarkerPath = join(shimDirectory, "second-snapshot");
+  const outputPath = join(shimDirectory, "git-output");
+  const shimPath = join(shimDirectory, "git");
+  const { stdout } = await execFile("which", ["git"]);
+  const gitPath = stdout.trim();
+  await writeFile(
+    shimPath,
+    `#!/bin/sh
+if [ "$3" = "rev-parse" ] && [ "$4" = "HEAD" ]; then
+  "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
+  if [ ! -e "$ANDREW_AGENT_TEST_FIRST_MARKER" ]; then
+    : > "$ANDREW_AGENT_TEST_FIRST_MARKER"
+  elif [ ! -e "$ANDREW_AGENT_TEST_SECOND_MARKER" ]; then
+    printf '%s\n' 'changed during manifest read' > "$ANDREW_AGENT_TEST_MUTATE_PATH"
+    "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" add -- rules/default.rules || exit $?
+    "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" commit --quiet -m 'manifest read canary' || exit $?
+    : > "$ANDREW_AGENT_TEST_SECOND_MARKER"
+  fi
+  cat "$ANDREW_AGENT_TEST_GIT_OUTPUT"
+  exit 0
+fi
+exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
+`,
+  );
+  await chmod(shimPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
+  process.env.ANDREW_AGENT_TEST_FIRST_MARKER = firstMarkerPath;
+  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
+  process.env.ANDREW_AGENT_TEST_MUTATE_PATH = join(
+    repository,
+    "rules/default.rules",
+  );
+  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
+  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
+  process.env.ANDREW_AGENT_TEST_SECOND_MARKER = secondMarkerPath;
+  try {
+    await run();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    delete process.env.ANDREW_AGENT_TEST_FIRST_MARKER;
+    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
+    delete process.env.ANDREW_AGENT_TEST_MUTATE_PATH;
+    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
+    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
+    delete process.env.ANDREW_AGENT_TEST_SECOND_MARKER;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
 function buildBundle(input) {
   assert.notEqual(
     artifactModule,
@@ -210,6 +272,35 @@ async function commitChange(repository, path, contents) {
     "-m",
     "fixture change",
   ]);
+}
+
+async function commitAll(repository, message) {
+  await execFile("git", ["-C", repository, "add", "--all"]);
+  await execFile("git", [
+    "-C",
+    repository,
+    "commit",
+    "--quiet",
+    "-m",
+    message,
+  ]);
+}
+
+async function replaceManifestWithSymlinkChain(sourceRoot, manifest) {
+  await rm(join(sourceRoot, "agent-bundle.toml"));
+  await mkdir(join(sourceRoot, "manifests"));
+  await writeFile(
+    join(sourceRoot, "manifests", "agent-bundle.toml"),
+    manifest,
+  );
+  await symlink(
+    "manifest-bridge.toml",
+    join(sourceRoot, "agent-bundle.toml"),
+  );
+  await symlink(
+    "manifests/agent-bundle.toml",
+    join(sourceRoot, "manifest-bridge.toml"),
+  );
 }
 
 function assertArtifactError(error, code) {
@@ -389,6 +480,110 @@ test("binds source bytes, modes, revisions, manifests, builder versions, and req
         modeChanged.metadata.bundleDigest,
         manifestChanged.metadata.bundleDigest,
       );
+    });
+  });
+});
+
+test("rejects manifest paths outside the tracked source closure", async () => {
+  const cases = [
+    {
+      name: "ignored direct manifest",
+      arrange: async (sourceRoot) => {
+        await execFile("git", [
+          "-C",
+          sourceRoot,
+          "rm",
+          "--cached",
+          "--quiet",
+          "--",
+          "agent-bundle.toml",
+        ]);
+        await writeFile(join(sourceRoot, ".gitignore"), "agent-bundle.toml\n");
+      },
+    },
+    {
+      name: "tracked manifest symlink to ignored canonical target",
+      arrange: async (sourceRoot) => {
+        await rm(join(sourceRoot, "agent-bundle.toml"));
+        await mkdir(join(sourceRoot, "generated"));
+        await writeFile(
+          join(sourceRoot, "generated", "agent-bundle.toml"),
+          fixtureManifest,
+        );
+        await symlink(
+          "generated/agent-bundle.toml",
+          join(sourceRoot, "agent-bundle.toml"),
+        );
+        await writeFile(join(sourceRoot, ".gitignore"), "generated/\n");
+      },
+    },
+    {
+      name: "ignored intermediate symlink",
+      arrange: async (sourceRoot) => {
+        await replaceManifestWithSymlinkChain(sourceRoot, fixtureManifest);
+        await writeFile(
+          join(sourceRoot, ".gitignore"),
+          "manifest-bridge.toml\n",
+        );
+      },
+    },
+  ];
+
+  for (const manifestCase of cases) {
+    await withSourceRepository(async (sourceRoot) => {
+      await manifestCase.arrange(sourceRoot);
+      await commitAll(sourceRoot, manifestCase.name);
+      await withArtifactsRoot(async (artifactsRoot) => {
+        await assert.rejects(
+          buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+          (error) => assertArtifactError(error, "DIRTY_SOURCE"),
+          manifestCase.name,
+        );
+      });
+    });
+  }
+});
+
+test("reads exact manifest bytes through a fully tracked symlink chain", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    const targetManifest = `${fixtureManifest}\n# tracked manifest target\n`;
+    await replaceManifestWithSymlinkChain(sourceRoot, targetManifest);
+    await commitAll(sourceRoot, "tracked manifest symlink chain");
+
+    await withArtifactsRoot(async (artifactsRoot) => {
+      const result = await buildBundle(bundleInput(sourceRoot, artifactsRoot));
+      assert.equal(
+        result.metadata.manifestDigest,
+        createHash("sha256").update(targetManifest).digest("hex"),
+      );
+    });
+  });
+});
+
+test("accepts a directly tracked executable manifest", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await chmod(join(sourceRoot, "agent-bundle.toml"), 0o755);
+    await commitAll(sourceRoot, "executable manifest");
+
+    await withArtifactsRoot(async (artifactsRoot) => {
+      const result = await buildBundle(bundleInput(sourceRoot, artifactsRoot));
+      assert.equal(
+        result.metadata.manifestDigest,
+        createHash("sha256").update(fixtureManifest).digest("hex"),
+      );
+    });
+  });
+});
+
+test("maps a commit during tracked manifest reading to a changed build", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await withArtifactsRoot(async (artifactsRoot) => {
+      await withSecondSnapshotCommit(sourceRoot, async () => {
+        await assert.rejects(
+          buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+          (error) => assertArtifactError(error, "SOURCE_CHANGED_DURING_BUILD"),
+        );
+      });
     });
   });
 });
