@@ -34,6 +34,7 @@ const MAX_LINE_BYTES = 64;
 const MAX_CHOICE_LABEL_BYTES = 96;
 const MAX_APPROVAL_LIST_ITEMS = 8;
 const TRUNCATION_MARKER = " [truncated]";
+const TERMINAL_CONTROL_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 type RecordValue = Record<string, unknown>;
 type KnownMethod =
   | "item/commandExecution/requestApproval"
@@ -66,6 +67,20 @@ function boundedBytes(value: string, limit: number): string {
     result += part;
   }
   return `${result}${TRUNCATION_MARKER}`;
+}
+function escapeTerminalPart(part: string): string {
+  if (TERMINAL_CONTROL_PATTERN.test(part)) {
+    const codePoint = part.codePointAt(0);
+    if (codePoint === undefined) return "";
+    const hex = codePoint.toString(16).toUpperCase();
+    return codePoint <= 0xff ? `\\x${hex.padStart(2, "0")}` : `\\u{${hex}}`;
+  }
+  return part;
+}
+function escapeTerminalControls(value: string): string {
+  let result = "";
+  for (const part of value) result += escapeTerminalPart(part);
+  return result;
 }
 function bounded(value: string): string {
   return boundedBytes(value, MAX_FIELD_BYTES);
@@ -875,7 +890,12 @@ function hasPromptableListSizes(request: ValidRequest): boolean {
 }
 
 function fitsDisplayed(value: string, limit = MAX_FIELD_BYTES): boolean {
-  return Buffer.byteLength(value, "utf8") <= limit;
+  let byteLength = 0;
+  for (const part of value) {
+    byteLength += Buffer.byteLength(escapeTerminalPart(part), "utf8");
+    if (byteLength > limit) return false;
+  }
+  return true;
 }
 
 function commandActionFields(action: RecordValue): readonly string[] {
@@ -999,10 +1019,10 @@ function prompt(
 ): string | null {
   const lines = [
     `Approval: ${request.method}`,
-    `Request: ${request.id}`,
-    `Thread: ${request.audit.threadId ?? "none"}`,
-    `Turn: ${request.audit.turnId ?? "none"}`,
-    `Item: ${request.audit.itemId ?? "none"}`,
+    `Request: ${escapeTerminalControls(request.id)}`,
+    `Thread: ${escapeTerminalControls(request.audit.threadId ?? "none")}`,
+    `Turn: ${escapeTerminalControls(request.audit.turnId ?? "none")}`,
+    `Item: ${escapeTerminalControls(request.audit.itemId ?? "none")}`,
   ];
   const context: string[] = [];
   const params = request.params;
@@ -1083,15 +1103,16 @@ function prompt(
       }
   const choiceLines = available.map(
     (choice) =>
-      `${choice.id}. ${boundedBytes(choice.label, MAX_CHOICE_LABEL_BYTES)}`,
+      `${choice.id}. ${boundedBytes(escapeTerminalControls(choice.label), MAX_CHOICE_LABEL_BYTES)}`,
   );
   const choiceBlock = [...choiceLines, "Selection:"].join("\n");
   if (Buffer.byteLength(choiceBlock, "utf8") + 1 > MAX_PROMPT_BYTES)
     return null;
-  const boundedContext = context.map((line) =>
+  const visibleContext = context.map(escapeTerminalControls);
+  const boundedContext = visibleContext.map((line) =>
     boundedBytes(line, MAX_PROMPT_BYTES),
   );
-  if (boundedContext.some((line, index) => line !== context[index]))
+  if (boundedContext.some((line, index) => line !== visibleContext[index]))
     return null;
   for (const line of boundedContext) {
     if (

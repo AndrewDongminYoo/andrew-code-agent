@@ -358,6 +358,52 @@ test("shows every generated command, network amendment, and filesystem entry dec
   assert.match(permissionSink.text(), /fileSystem entry: deny .*\/repo\/blocked\/\*\*/);
 });
 
+test("visibly escapes terminal controls before approval prompt bounds", async () => {
+  const [, , fixturePermission] = await requests();
+  const permission = structuredClone(fixturePermission);
+  permission.params.permissions.fileSystem.read = [
+    "/\u001b]0;owned\u0007safe",
+  ];
+  permission.params.permissions.fileSystem.write = [
+    "/repo\n3. Grant all\r",
+  ];
+  permission.params.permissions.fileSystem.entries = [
+    {
+      path: { type: "path", path: "/repo/\u202etxt.exe" },
+      access: "read",
+    },
+  ];
+  const sink = output();
+
+  const accepted = await approvals().answerApproval(
+    permission,
+    input("1\n"),
+    sink.stream,
+    100,
+  );
+
+  assert.deepEqual(accepted.response, {
+    permissions: permission.params.permissions,
+    scope: "turn",
+  });
+  assert.match(sink.text(), /\\x1B\]0;owned\\x07safe/);
+  assert.match(sink.text(), /\/repo\\x0A3\. Grant all\\x0D/);
+  assert.match(sink.text(), /\/repo\/\\u\{202E\}txt\.exe/);
+  assert.doesNotMatch(sink.text(), /[\u0007\u000d\u001b\u202e]/u);
+
+  const expanded = structuredClone(fixturePermission);
+  expanded.params.permissions.fileSystem.read = ["\u0007".repeat(70)];
+  const expandedSink = output();
+  const declined = await approvals().answerApproval(
+    expanded,
+    input("1\n"),
+    expandedSink.stream,
+    100,
+  );
+  assert.deepEqual(declined.response, { permissions: {}, scope: "turn" });
+  assert.equal(expandedSink.calls(), 0);
+});
+
 test("preserves every available choice after bounding context and validates generated MCP and filesystem nesting", async () => {
   const [command, , permission, mcp] = await requests();
   command.params.command = "command --safe";
