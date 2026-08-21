@@ -55,6 +55,7 @@ export async function resolveRepositoryRoot(input: string): Promise<string> {
 export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
   const repositoryRoot = await resolveRepositoryRoot(input);
   const firstHead = await readHead(repositoryRoot);
+  await assertSupportedIndexFlags(repositoryRoot);
   let porcelainV2: string;
   try {
     porcelainV2 = await runGit(repositoryRoot, [
@@ -75,12 +76,61 @@ export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
       "Git HEAD changed while the worktree snapshot was read.",
     );
   }
+  await assertSupportedIndexFlags(repositoryRoot);
   return {
     repositoryRoot,
     head: firstHead,
     porcelainV2,
     clean: porcelainV2.length === 0,
   };
+}
+
+async function assertSupportedIndexFlags(
+  repositoryRoot: string,
+): Promise<void> {
+  let indexEntries: string;
+  try {
+    indexEntries = await runGit(repositoryRoot, [
+      "ls-files",
+      "--cached",
+      "--full-name",
+      "-v",
+      "-z",
+    ]);
+  } catch {
+    throw new GitRuntimeError(
+      "GIT_STATUS_FAILED",
+      "Unable to read Git worktree status.",
+    );
+  }
+
+  const indexTags = parseIndexTags(indexEntries);
+  if (indexTags === null) {
+    throw new GitRuntimeError(
+      "GIT_STATUS_FAILED",
+      "Unable to read Git worktree status.",
+    );
+  }
+  if (indexTags.some((tag) => tag !== "H")) {
+    throw new GitRuntimeError(
+      "GIT_WORKTREE_DIRTY",
+      "Git worktree is not clean.",
+    );
+  }
+}
+
+function parseIndexTags(indexEntries: string): string[] | null {
+  if (indexEntries.length === 0) return [];
+  if (!indexEntries.endsWith("\0")) return null;
+  const indexEntriesWithoutTerminalNul = indexEntries.slice(0, -1).split("\0");
+  if (
+    indexEntriesWithoutTerminalNul.some(
+      (entry) => entry.length < 3 || entry[1] !== " ",
+    )
+  ) {
+    return null;
+  }
+  return indexEntriesWithoutTerminalNul.map((entry) => entry[0]!);
 }
 
 export function assertCleanGitSnapshot(snapshot: GitSnapshot): GitSnapshot {

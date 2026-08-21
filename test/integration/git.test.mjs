@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import {
+  chmod,
   mkdtemp,
   mkdir,
   readFile,
@@ -59,6 +60,66 @@ async function withRepository(run) {
     await run(repository);
   } finally {
     await rm(repository, { recursive: true, force: true });
+  }
+}
+
+async function withGitShim(repository, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
+  const shimPath = join(shimDirectory, "git");
+  const realGit = (await execFile("which", ["git"], { encoding: "utf8" })).stdout.trim();
+  const statePath = join(shimDirectory, "first-index-check-complete");
+  const originalPath = process.env.PATH;
+  await writeFile(
+    shimPath,
+    `#!/bin/sh\n"${realGit}" "$@"\ncommand_exit=$?\nif [ "$1" = "-C" ] && [ "$3" = "ls-files" ] && [ ! -e "${statePath}" ]; then\n  : > "${statePath}"\n  "${realGit}" -C "${repository}" update-index --assume-unchanged tracked.txt\nfi\nexit "$command_exit"\n`,
+  );
+  await chmod(shimPath, 0o755);
+  process.env.PATH = `${shimDirectory}:${originalPath}`;
+  try {
+    await run();
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
+async function withGitListingShim(indexEntries, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
+  const shimPath = join(shimDirectory, "git");
+  const realGit = (await execFile("which", ["git"], { encoding: "utf8" })).stdout.trim();
+  const listingBase64 = Buffer.from(indexEntries, "utf8").toString("base64");
+  const originalPath = process.env.PATH;
+  await writeFile(
+    shimPath,
+    `#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst args = process.argv.slice(2);\nif (args[0] === "-C" && args[2] === "ls-files") {\n  process.stdout.write(Buffer.from("${listingBase64}", "base64"));\n  process.exit(0);\n}\nconst result = spawnSync("${realGit}", args, { stdio: "inherit" });\nprocess.exit(result.status ?? 1);\n`,
+  );
+  await chmod(shimPath, 0o755);
+  process.env.PATH = `${shimDirectory}:${originalPath}`;
+  try {
+    await run();
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
+async function withSecondHeadMutationShim(repository, flag, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
+  const shimPath = join(shimDirectory, "git");
+  const realGit = (await execFile("which", ["git"], { encoding: "utf8" })).stdout.trim();
+  const headCountPath = join(shimDirectory, "head-count");
+  const originalPath = process.env.PATH;
+  await writeFile(
+    shimPath,
+    `#!/bin/sh\nif [ "$1" = "-C" ] && [ "$3" = "rev-parse" ] && [ "$4" = "HEAD" ]; then\n  head_count=0\n  if [ -e "${headCountPath}" ]; then\n    head_count=$(cat "${headCountPath}")\n  fi\n  head_count=$((head_count + 1))\n  printf '%s' "$head_count" > "${headCountPath}"\n  if [ "$head_count" -eq 2 ]; then\n    head_output=$("${realGit}" "$@")\n    command_exit=$?\n    printf '%s\\n' "$head_output"\n    if [ "$command_exit" -eq 0 ]; then\n      "${realGit}" -C "${repository}" update-index ${flag} tracked.txt\n      printf '%s\\n' 'hidden after second HEAD read' > "${repository}/tracked.txt"\n    fi\n    exit "$command_exit"\n  fi\nfi\nexec "${realGit}" "$@"\n`,
+  );
+  await chmod(shimPath, 0o755);
+  process.env.PATH = `${shimDirectory}:${originalPath}`;
+  try {
+    await run();
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(shimDirectory, { recursive: true, force: true });
   }
 }
 
@@ -135,6 +196,98 @@ test("reports tracked, staged, and untracked bytes and preserves an untracked ca
     );
   });
 });
+
+for (const [flag, label] of [
+  ["--assume-unchanged", "assume-unchanged"],
+  ["--skip-worktree", "skip-worktree"],
+]) {
+  test(`rejects a modified tracked file hidden by ${label}`, async () => {
+    await withRepository(async (repository) => {
+      await git(repository, ["update-index", flag, "tracked.txt"]);
+      await writeFile(join(repository, "tracked.txt"), "hidden change\n");
+
+      await assert.rejects(
+        requireGit().readGitSnapshot(repository),
+        { code: "GIT_WORKTREE_DIRTY" },
+      );
+    });
+  });
+}
+
+for (const [flag, label] of [
+  ["--assume-unchanged", "assume-unchanged"],
+  ["--skip-worktree", "skip-worktree"],
+]) {
+  test(`rejects an unchanged tracked file flagged ${label}`, async () => {
+    await withRepository(async (repository) => {
+      await git(repository, ["update-index", flag, "tracked.txt"]);
+
+      await assert.rejects(
+        requireGit().readGitSnapshot(repository),
+        { code: "GIT_WORKTREE_DIRTY" },
+      );
+    });
+  });
+}
+
+test("accepts a clean tracked filename containing a newline", async () => {
+  await withRepository(async (repository) => {
+    const unusualFilename = "tracked\nfilename.txt";
+    await writeFile(join(repository, unusualFilename), "unchanged\n");
+    await git(repository, ["add", unusualFilename]);
+    await git(repository, ["commit", "--quiet", "-m", "unusual filename"]);
+
+    const snapshot = await requireGit().readGitSnapshot(repository);
+
+    assert.equal(snapshot.clean, true);
+    assert.equal(snapshot.porcelainV2, "");
+  });
+});
+
+test("rejects a flag introduced after the initial index flag check", async () => {
+  await withRepository(async (repository) => {
+    await withGitShim(repository, async () => {
+      await assert.rejects(
+        requireGit().readGitSnapshot(repository),
+        { code: "GIT_WORKTREE_DIRTY" },
+      );
+    });
+  });
+});
+
+for (const [flag, label] of [
+  ["--assume-unchanged", "assume-unchanged"],
+  ["--skip-worktree", "skip-worktree"],
+]) {
+  test(`rejects ${label} introduced after the second HEAD read`, async () => {
+    await withRepository(async (repository) => {
+      await withSecondHeadMutationShim(repository, flag, async () => {
+        await assert.rejects(
+          requireGit().readGitSnapshot(repository),
+          { code: "GIT_WORKTREE_DIRTY" },
+        );
+      });
+    });
+  });
+}
+
+for (const [label, indexEntries] of [
+  ["a missing terminal NUL", "H tracked.txt"],
+  ["an extra terminal empty record", "H tracked.txt\0\0"],
+  ["an empty internal record", "H tracked.txt\0\0H second.txt\0"],
+  ["a malformed tag and space shape", "Htracked.txt\0"],
+]) {
+  test(`maps ${label} from ls-files to GIT_STATUS_FAILED`, async () => {
+    await withRepository(async (repository) => {
+      await withGitListingShim(indexEntries, async () => {
+        await assert.rejects(
+          requireGit().readGitSnapshot(repository),
+          { code: "GIT_STATUS_FAILED" },
+        );
+      });
+    });
+  });
+}
 
 test("rejects a non-worktree and accepts a later clean changed HEAD", async () => {
   const outside = await mkdtemp(join(tmpdir(), "andrew-agent-not-git-"));
