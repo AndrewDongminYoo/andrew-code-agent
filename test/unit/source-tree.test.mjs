@@ -5,6 +5,7 @@ import {
   cp,
   mkdtemp,
   mkdir,
+  realpath,
   rm,
   symlink,
   writeFile,
@@ -153,6 +154,93 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
     delete process.env.ANDREW_AGENT_TEST_MUTATE_PATH;
     await rm(shimDirectory, { recursive: true, force: true });
   }
+}
+
+async function resolveWithSourceSwap(repository, externalPath, manifest) {
+  const sourcePath = await realpath(join(repository, "rules/default.rules"));
+  const backupPath = join(repository, "rules/default.rules.test-backup");
+  const virtualModule = `
+import { lstat as realLstat, open, readFile as realReadFile, realpath, rename, rm, symlink } from "node:fs/promises";
+let sourceLstatCalls = 0;
+let swapped = false;
+export { open, realpath };
+export async function lstat(path, options) {
+  const result = await realLstat(path, options);
+  if (path === process.env.ANDREW_AGENT_TEST_SOURCE_PATH && ++sourceLstatCalls === 2) {
+    await rename(path, process.env.ANDREW_AGENT_TEST_BACKUP_PATH);
+    await symlink(process.env.ANDREW_AGENT_TEST_EXTERNAL_PATH, path);
+    swapped = true;
+  }
+  return result;
+}
+export async function readFile(path, options) {
+  const result = await realReadFile(path, options);
+  if (path === process.env.ANDREW_AGENT_TEST_SOURCE_PATH && swapped) {
+    await rm(path);
+    await rename(process.env.ANDREW_AGENT_TEST_BACKUP_PATH, path);
+    swapped = false;
+  }
+  return result;
+}
+`;
+  const childScript = `
+import { registerHooks } from "node:module";
+import { lstat, rename, rm } from "node:fs/promises";
+const virtualModule = ${JSON.stringify(virtualModule)};
+registerHooks({
+  resolve(specifier, context, nextResolve) {
+    if (specifier === "node:fs/promises" && context.parentURL === process.env.ANDREW_AGENT_TEST_MODULE_URL)
+      return { shortCircuit: true, url: "andrew-test:fs-promises" };
+    return nextResolve(specifier, context);
+  },
+  load(url, context, nextLoad) {
+    if (url === "andrew-test:fs-promises")
+      return { format: "module", shortCircuit: true, source: virtualModule };
+    return nextLoad(url, context);
+  },
+});
+const sourceTree = await import(process.env.ANDREW_AGENT_TEST_MODULE_URL);
+let outcome;
+try {
+  const files = await sourceTree.resolveSourceFiles(
+    process.env.ANDREW_AGENT_TEST_REPOSITORY,
+    JSON.parse(process.env.ANDREW_AGENT_TEST_MANIFEST),
+  );
+  outcome = { bytes: Buffer.from(files[0].bytes).toString("utf8") };
+} catch (error) {
+  outcome = { code: error.code };
+} finally {
+  try {
+    if ((await lstat(process.env.ANDREW_AGENT_TEST_SOURCE_PATH)).isSymbolicLink()) {
+      await rm(process.env.ANDREW_AGENT_TEST_SOURCE_PATH);
+      await rename(
+        process.env.ANDREW_AGENT_TEST_BACKUP_PATH,
+        process.env.ANDREW_AGENT_TEST_SOURCE_PATH,
+      );
+    }
+  } catch {}
+}
+process.stdout.write(JSON.stringify(outcome));
+`;
+  const moduleUrl =
+    process.env.ANDREW_AGENT_TEST_SOURCE_TREE_MODULE ??
+    new URL("../../dist/bundle/source-tree.js", import.meta.url).href;
+  const { stdout } = await execFile(
+    process.execPath,
+    ["--input-type=module", "--eval", childScript],
+    {
+      env: {
+        ...process.env,
+        ANDREW_AGENT_TEST_BACKUP_PATH: backupPath,
+        ANDREW_AGENT_TEST_EXTERNAL_PATH: externalPath,
+        ANDREW_AGENT_TEST_MANIFEST: JSON.stringify(manifest),
+        ANDREW_AGENT_TEST_MODULE_URL: moduleUrl,
+        ANDREW_AGENT_TEST_REPOSITORY: repository,
+        ANDREW_AGENT_TEST_SOURCE_PATH: sourcePath,
+      },
+    },
+  );
+  return JSON.parse(stdout);
 }
 
 function resolveSourceFiles(sourceRoot, manifest) {
@@ -473,6 +561,31 @@ test("rejects a selected file changed after the initial clean source snapshot", 
         (error) => assertSourceTreeError(error, "SOURCE_CHANGED_DURING_READ"),
       );
     });
+  });
+});
+
+test("rejects an external symlink swapped in after the initial clean snapshot", async () => {
+  await withSourceRepository(async (repository) => {
+    const outside = await mkdtemp(join(tmpdir(), "andrew-code-agent-outside-"));
+    try {
+      const externalPath = join(outside, "secret.rules");
+      await writeFile(externalPath, "external secret bytes\n");
+      const outcome = await resolveWithSourceSwap(
+        repository,
+        externalPath,
+        baseManifest([
+          {
+            source: "rules/default.rules",
+            target: "rules/default.rules",
+            mode: "0644",
+            replacements: [],
+          },
+        ]),
+      );
+      assert.deepEqual(outcome, { code: "NON_REGULAR_SOURCE" });
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 

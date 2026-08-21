@@ -1,7 +1,9 @@
 /// <reference types="node" />
 
 import { execFile as execFileCallback } from "node:child_process";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
+import type { BigIntStats } from "node:fs";
 import { relative, resolve } from "node:path";
 import { promisify } from "node:util";
 
@@ -59,21 +61,21 @@ export async function resolveSourceFiles(
   const resolvedFiles = await Promise.all(
     entries.map(async ({ entry, sourcePath }) => {
       const mode = readExpectedMode(entry);
-      const file = await lstat(sourcePath);
+      const file = await lstat(sourcePath, { bigint: true });
       if (!file.isFile()) {
         throw new SourceTreeError(
           "NON_REGULAR_SOURCE",
           `Manifest source for target ${entry.target} is not a regular file.`,
         );
       }
-      const actualMode = file.mode & 0o777;
+      const actualMode = Number(file.mode & 0o777n);
       if (!isAcceptedSourceMode(actualMode, mode)) {
         throw new SourceTreeError(
           "UNEXPECTED_MODE",
           `Manifest source for target ${entry.target} has an unexpected mode.`,
         );
       }
-      const bytes = await readFile(sourcePath);
+      const bytes = await readOpenedSource(sourcePath, entry, mode, file);
       return entry.capability === undefined
         ? { sourcePath, targetPath: entry.target, mode, bytes }
         : {
@@ -97,6 +99,72 @@ export async function resolveSourceFiles(
   return resolvedFiles.sort((left, right) =>
     compareCodeUnits(left.targetPath, right.targetPath),
   );
+}
+
+async function readOpenedSource(
+  sourcePath: string,
+  entry: BundleFileEntry,
+  mode: 0o644 | 0o755,
+  expected: BigIntStats,
+): Promise<Uint8Array> {
+  let file;
+  try {
+    file = await open(sourcePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch {
+    throw new SourceTreeError(
+      "NON_REGULAR_SOURCE",
+      `Manifest source for target ${entry.target} is not a regular file.`,
+    );
+  }
+  try {
+    const before = await file.stat({ bigint: true });
+    assertOpenedSource(entry, mode, expected, before);
+    const bytes = await file.readFile();
+    const after = await file.stat({ bigint: true });
+    assertOpenedSource(entry, mode, before, after, true);
+    return bytes;
+  } finally {
+    await file.close();
+  }
+}
+
+function assertOpenedSource(
+  entry: BundleFileEntry,
+  mode: 0o644 | 0o755,
+  expected: BigIntStats,
+  actual: BigIntStats,
+  compareContentMetadata = false,
+): void {
+  const currentUid = process.getuid?.();
+  if (
+    !actual.isFile() ||
+    (currentUid !== undefined && actual.uid !== BigInt(currentUid)) ||
+    actual.dev !== expected.dev ||
+    actual.ino !== expected.ino
+  ) {
+    throw new SourceTreeError(
+      "NON_REGULAR_SOURCE",
+      `Manifest source for target ${entry.target} is not a regular file.`,
+    );
+  }
+  const actualMode = Number(actual.mode & 0o777n);
+  if (!isAcceptedSourceMode(actualMode, mode)) {
+    throw new SourceTreeError(
+      "UNEXPECTED_MODE",
+      `Manifest source for target ${entry.target} has an unexpected mode.`,
+    );
+  }
+  if (
+    compareContentMetadata &&
+    (actual.size !== expected.size ||
+      actual.mtimeNs !== expected.mtimeNs ||
+      actual.ctimeNs !== expected.ctimeNs)
+  ) {
+    throw new SourceTreeError(
+      "SOURCE_CHANGED_DURING_READ",
+      "Source repository changed while selected files were read.",
+    );
+  }
 }
 
 function isAcceptedSourceMode(
