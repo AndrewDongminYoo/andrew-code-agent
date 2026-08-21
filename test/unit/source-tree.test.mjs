@@ -205,6 +205,71 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
   }
 }
 
+async function withLsFilesGitShim(repository, mode, sourcePath, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-code-agent-git-"));
+  const markerPath = join(shimDirectory, "handled");
+  const outputPath = join(shimDirectory, "ls-files-output");
+  const shimPath = join(shimDirectory, "git");
+  const { stdout } = await execFile("which", ["git"]);
+  const gitPath = stdout.trim();
+  await writeFile(
+    shimPath,
+    `#!/bin/sh
+if [ "$4" = "ls-files" ] && [ "$5" = "--cached" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
+  "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
+  case "$ANDREW_AGENT_TEST_GIT_LS_FILES_MODE" in
+    mutate)
+      "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" update-index --assume-unchanged -- "$ANDREW_AGENT_TEST_MUTATE_PATH" || exit $?
+      printf '%s\\n' 'hidden after closure check' > "$ANDREW_AGENT_TEST_MUTATE_PATH" || exit $?
+      ;;
+    missing-terminal-nul)
+      byte_count=$(wc -c < "$ANDREW_AGENT_TEST_GIT_OUTPUT" | tr -d ' ')
+      dd if="$ANDREW_AGENT_TEST_GIT_OUTPUT" bs=1 count=$((byte_count - 1)) 2>/dev/null > "$ANDREW_AGENT_TEST_GIT_OUTPUT.truncated" || exit $?
+      mv "$ANDREW_AGENT_TEST_GIT_OUTPUT.truncated" "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
+      ;;
+    extra-nul)
+      printf '\\0' >> "$ANDREW_AGENT_TEST_GIT_OUTPUT"
+      ;;
+    duplicate)
+      cp "$ANDREW_AGENT_TEST_GIT_OUTPUT" "$ANDREW_AGENT_TEST_GIT_OUTPUT.duplicate" || exit $?
+      cat "$ANDREW_AGENT_TEST_GIT_OUTPUT.duplicate" >> "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
+      ;;
+  esac
+  : > "$ANDREW_AGENT_TEST_GIT_MARKER"
+  cat "$ANDREW_AGENT_TEST_GIT_OUTPUT"
+  exit 0
+fi
+exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
+`,
+  );
+  await chmod(shimPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
+  process.env.ANDREW_AGENT_TEST_GIT_LS_FILES_MODE = mode;
+  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
+  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
+  process.env.ANDREW_AGENT_TEST_MUTATE_PATH = join(repository, sourcePath);
+  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
+  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
+  try {
+    await run();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    delete process.env.ANDREW_AGENT_TEST_GIT_LS_FILES_MODE;
+    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
+    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
+    delete process.env.ANDREW_AGENT_TEST_MUTATE_PATH;
+    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
+    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
 async function withRetargetingGitShim(repository, run) {
   const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-code-agent-git-"));
   const markerPath = join(shimDirectory, "retargeted");
@@ -345,6 +410,15 @@ function resolveSourceFiles(sourceRoot, manifest) {
     "the built source-tree module must be available",
   );
   return sourceTreeModule.resolveSourceFiles(sourceRoot, manifest);
+}
+
+function readTrackedSourceFileBytes(sourceRoot, source) {
+  assert.notEqual(
+    sourceTreeModule,
+    null,
+    "the built source-tree module must be available",
+  );
+  return sourceTreeModule.readTrackedSourceFileBytes(sourceRoot, source);
 }
 
 function assertSourceTreeError(error, code) {
@@ -638,6 +712,135 @@ test("rejects unstaged, staged-only, and untracked source dirt before reading so
   });
 });
 
+for (const [indexFlag, contents] of [
+  ["--assume-unchanged", "assume-hidden bytes\n"],
+  ["--skip-worktree", "skip-hidden bytes\n"],
+]) {
+  test(`rejects a modified direct selected file hidden by ${indexFlag}`, async () => {
+    await withSourceRepository(async (repository) => {
+      await execFile("git", [
+        "-C",
+        repository,
+        "update-index",
+        indexFlag,
+        "--",
+        "rules/default.rules",
+      ]);
+      await writeFile(join(repository, "rules/default.rules"), contents);
+
+      await assert.rejects(
+        resolveSourceFiles(
+          repository,
+          baseManifest([
+            {
+              source: "rules/default.rules",
+              target: "rules/default.rules",
+              mode: "0644",
+              replacements: [],
+            },
+          ]),
+        ),
+        (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+        indexFlag,
+      );
+    });
+  });
+}
+
+test("rejects index-hidden traversed symlinks and canonical selected targets", async () => {
+  const cases = [
+    ["rules/selected.rules", "--assume-unchanged"],
+    ["rules/default.rules", "--skip-worktree"],
+  ];
+
+  for (const [path, indexFlag] of cases) {
+    await withSourceRepository(async (repository) => {
+      await symlink("default.rules", join(repository, "rules/selected.rules"));
+      await execFile("git", [
+        "-C",
+        repository,
+        "add",
+        "--",
+        "rules/selected.rules",
+      ]);
+      await execFile("git", [
+        "-C",
+        repository,
+        "commit",
+        "--quiet",
+        "-m",
+        "tracked source symlink",
+      ]);
+      await execFile("git", [
+        "-C",
+        repository,
+        "update-index",
+        indexFlag,
+        "--",
+        path,
+      ]);
+
+      await assert.rejects(
+        resolveSourceFiles(
+          repository,
+          baseManifest([
+            {
+              source: "rules/selected.rules",
+              target: "rules/default.rules",
+              mode: "0644",
+              replacements: [],
+            },
+          ]),
+        ),
+        (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+        `${path} ${indexFlag}`,
+      );
+    });
+  }
+});
+
+test("allows an index-hidden unrelated tracked file", async () => {
+  await withSourceRepository(async (repository) => {
+    await writeFile(join(repository, "unrelated.rules"), "original\n");
+    await execFile("git", ["-C", repository, "add", "--", "unrelated.rules"]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "unrelated source canary",
+    ]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "update-index",
+      "--assume-unchanged",
+      "--",
+      "unrelated.rules",
+    ]);
+    await writeFile(join(repository, "unrelated.rules"), "hidden unrelated bytes\n");
+
+    const files = await resolveSourceFiles(
+      repository,
+      baseManifest([
+        {
+          source: "rules/default.rules",
+          target: "rules/default.rules",
+          mode: "0644",
+          replacements: [],
+        },
+      ]),
+    );
+
+    assert.equal(files.length, 1);
+    assert.equal(
+      new TextDecoder().decode(files[0].bytes),
+      "Always preserve the source boundary.\n",
+    );
+  });
+});
+
 test("rejects an ignored manifest source absent from the Git index", async () => {
   await withSourceRepository(async (repository) => {
     await writeFile(join(repository, ".gitignore"), "rules/ignored.rules\n");
@@ -872,6 +1075,80 @@ test("rejects a source de-indexed after the initial revision snapshot", async ()
     );
   });
 });
+
+test("rejects a selected flag introduced after the initial closure check before returning resolved sources", async () => {
+  await withSourceRepository(async (repository) => {
+    await withLsFilesGitShim(
+      repository,
+      "mutate",
+      "rules/default.rules",
+      async () => {
+        await assert.rejects(
+          resolveSourceFiles(
+            repository,
+            baseManifest([
+              {
+                source: "rules/default.rules",
+                target: "rules/default.rules",
+                mode: "0644",
+                replacements: [],
+              },
+            ]),
+          ),
+          (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+        );
+      },
+    );
+  });
+});
+
+test("rejects a selected flag introduced after the initial closure check before returning tracked bytes", async () => {
+  await withSourceRepository(async (repository) => {
+    await withLsFilesGitShim(
+      repository,
+      "mutate",
+      "rules/default.rules",
+      async () => {
+        await assert.rejects(
+          readTrackedSourceFileBytes(repository, "rules/default.rules"),
+          (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+        );
+      },
+    );
+  });
+});
+
+for (const [mode, description] of [
+  ["missing-terminal-nul", "a missing final NUL"],
+  ["extra-nul", "an extra empty record"],
+  ["duplicate", "a duplicate record"],
+]) {
+  test(`rejects ${description} from exact selected index output`, async () => {
+    await withSourceRepository(async (repository) => {
+      await withLsFilesGitShim(
+        repository,
+        mode,
+        "rules/default.rules",
+        async () => {
+          await assert.rejects(
+            resolveSourceFiles(
+              repository,
+              baseManifest([
+                {
+                  source: "rules/default.rules",
+                  target: "rules/default.rules",
+                  mode: "0644",
+                  replacements: [],
+                },
+              ]),
+            ),
+            (error) => assertSourceTreeError(error, "SOURCE_GIT_ERROR"),
+          );
+        },
+      );
+    });
+  });
+}
 
 test("uses a symlink target committed before the initial source snapshot", async () => {
   await withSourceRepository(async (repository) => {

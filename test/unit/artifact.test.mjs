@@ -217,6 +217,53 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
   }
 }
 
+async function withPostIndexMutationGitShim(repository, run) {
+  const shimDirectory = await mkdtemp(
+    join(tmpdir(), "andrew-code-agent-artifact-git-"),
+  );
+  const markerPath = join(shimDirectory, "mutated");
+  const outputPath = join(shimDirectory, "ls-files-output");
+  const shimPath = join(shimDirectory, "git");
+  const { stdout } = await execFile("which", ["git"]);
+  const gitPath = stdout.trim();
+  await writeFile(
+    shimPath,
+    `#!/bin/sh
+if [ "$4" = "ls-files" ] && [ "$5" = "--cached" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
+  "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
+  "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" update-index --assume-unchanged -- agent-bundle.toml || exit $?
+  printf '%s\\n' '# hidden after manifest closure check' >> "$ANDREW_AGENT_TEST_REPOSITORY/agent-bundle.toml" || exit $?
+  : > "$ANDREW_AGENT_TEST_GIT_MARKER"
+  cat "$ANDREW_AGENT_TEST_GIT_OUTPUT"
+  exit 0
+fi
+exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
+`,
+  );
+  await chmod(shimPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
+  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
+  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
+  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
+  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
+  try {
+    await run();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
+    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
+    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
+    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
 function buildBundle(input) {
   assert.notEqual(
     artifactModule,
@@ -571,6 +618,43 @@ test("accepts a directly tracked executable manifest", async () => {
         result.metadata.manifestDigest,
         createHash("sha256").update(fixtureManifest).digest("hex"),
       );
+    });
+  });
+});
+
+test("maps an index-hidden modified manifest to DIRTY_SOURCE", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await execFile("git", [
+      "-C",
+      sourceRoot,
+      "update-index",
+      "--assume-unchanged",
+      "--",
+      "agent-bundle.toml",
+    ]);
+    await writeFile(
+      join(sourceRoot, "agent-bundle.toml"),
+      `${fixtureManifest}\n# hidden manifest bytes\n`,
+    );
+
+    await withArtifactsRoot(async (artifactsRoot) => {
+      await assert.rejects(
+        buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+        (error) => assertArtifactError(error, "DIRTY_SOURCE"),
+      );
+    });
+  });
+});
+
+test("maps a manifest flag introduced after its initial closure check to DIRTY_SOURCE", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await withArtifactsRoot(async (artifactsRoot) => {
+      await withPostIndexMutationGitShim(sourceRoot, async () => {
+        await assert.rejects(
+          buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+          (error) => assertArtifactError(error, "DIRTY_SOURCE"),
+        );
+      });
     });
   });
 });

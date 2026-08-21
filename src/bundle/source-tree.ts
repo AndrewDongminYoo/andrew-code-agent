@@ -102,6 +102,7 @@ export async function resolveSourceFiles(
       "Source repository changed while selected files were read.",
     );
   }
+  await assertIndexedSourcePaths(canonicalSourceRoot, entries);
 
   return resolvedFiles.sort((left, right) =>
     compareCodeUnits(left.targetPath, right.targetPath),
@@ -149,6 +150,7 @@ export async function readTrackedSourceFileBytes(
       "Source repository changed while the tracked file was read.",
     );
   }
+  await assertIndexedSourcePaths(canonicalSourceRoot, [{ trackedPaths }]);
   return bytes;
 }
 
@@ -423,6 +425,7 @@ async function assertIndexedSourcePaths(
       "ls-files",
       "--cached",
       "--full-name",
+      "-v",
       "-z",
       "--",
       ...exactPaths,
@@ -434,7 +437,37 @@ async function assertIndexedSourcePaths(
     );
   }
 
-  const indexedPaths = new Set(indexed.split("\0").filter(Boolean));
+  const exactPathSet = new Set(exactPaths);
+  const indexedPaths = new Set<string>();
+  if (indexed !== "") {
+    if (!indexed.endsWith("\0")) {
+      throw new SourceTreeError(
+        "SOURCE_GIT_ERROR",
+        "Source repository cannot be inspected.",
+      );
+    }
+    for (const indexedEntry of indexed.slice(0, -1).split("\0")) {
+      const indexedPath = indexedEntry.slice(2);
+      if (
+        indexedEntry.length < 3 ||
+        indexedEntry[1] !== " " ||
+        !exactPathSet.has(indexedPath) ||
+        indexedPaths.has(indexedPath)
+      ) {
+        throw new SourceTreeError(
+          "SOURCE_GIT_ERROR",
+          "Source repository cannot be inspected.",
+        );
+      }
+      if (indexedEntry[0] !== "H") {
+        throw new SourceTreeError(
+          "DIRTY_SOURCE",
+          "Source repository is dirty.",
+        );
+      }
+      indexedPaths.add(indexedPath);
+    }
+  }
   if (exactPaths.some((path) => !indexedPaths.has(path))) {
     throw new SourceTreeError("DIRTY_SOURCE", "Source repository is dirty.");
   }
