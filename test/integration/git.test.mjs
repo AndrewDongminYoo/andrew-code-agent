@@ -40,6 +40,13 @@ async function git(repository, args) {
   });
 }
 
+async function rawGit(repository, args) {
+  return execFile("git", ["-C", repository, ...args], {
+    encoding: "utf8",
+    env: { ...cleanGitEnvironment(), GIT_NO_REPLACE_OBJECTS: "1" },
+  });
+}
+
 function cleanGitEnvironment() {
   const env = { ...process.env, GIT_OPTIONAL_LOCKS: "0" };
   for (const name of gitOverrideNames) delete env[name];
@@ -61,6 +68,15 @@ async function withRepository(run) {
   } finally {
     await rm(repository, { recursive: true, force: true });
   }
+}
+
+async function withGitlinkSource(run) {
+  await withRepository(async (source) => {
+    const sourceHead = (await git(source, ["rev-parse", "HEAD"])).stdout.trim();
+    await withRepository(async (repository) => {
+      await run({ repository, source, sourceHead });
+    });
+  });
 }
 
 async function withGitShim(repository, run) {
@@ -272,10 +288,10 @@ for (const [flag, label] of [
 }
 
 for (const [label, indexEntries] of [
-  ["a missing terminal NUL", "H tracked.txt"],
-  ["an extra terminal empty record", "H tracked.txt\0\0"],
-  ["an empty internal record", "H tracked.txt\0\0H second.txt\0"],
-  ["a malformed tag and space shape", "Htracked.txt\0"],
+  ["a missing terminal NUL", "H 100644 0123456789012345678901234567890123456789 0\ttracked.txt"],
+  ["an extra terminal empty record", "H 100644 0123456789012345678901234567890123456789 0\ttracked.txt\0\0"],
+  ["an empty internal record", "H 100644 0123456789012345678901234567890123456789 0\ttracked.txt\0\0H 100644 0123456789012345678901234567890123456789 0\tsecond.txt\0"],
+  ["a malformed tag and stage shape", "H100644 0123456789012345678901234567890123456789 0\ttracked.txt\0"],
 ]) {
   test(`maps ${label} from ls-files to GIT_STATUS_FAILED`, async () => {
     await withRepository(async (repository) => {
@@ -288,6 +304,133 @@ for (const [label, indexEntries] of [
     });
   });
 }
+
+test("rejects initialized submodules even when status ignores their dirt", async () => {
+  await withGitlinkSource(async ({ repository, source }) => {
+    await git(repository, [
+      "-c",
+      "protocol.file.allow=always",
+      "submodule",
+      "add",
+      "--quiet",
+      source,
+      "modules/source",
+    ]);
+    await git(repository, ["commit", "--quiet", "-am", "add submodule"]);
+
+    await assert.rejects(requireGit().readGitSnapshot(repository), {
+      code: "UNSUPPORTED_GIT_SUBMODULE",
+    });
+
+    await git(repository, ["config", "submodule.modules/source.ignore", "all"]);
+    await writeFile(join(repository, "modules", "source", "tracked.txt"), "dirty\n");
+
+    await assert.rejects(requireGit().readGitSnapshot(repository), {
+      code: "UNSUPPORTED_GIT_SUBMODULE",
+    });
+  });
+});
+
+test("rejects a raw HEAD gitlink hidden by a replacement tree", async () => {
+  await withGitlinkSource(async ({ repository, sourceHead }) => {
+    await git(repository, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sourceHead},raw-gitlink`,
+    ]);
+    await git(repository, ["commit", "--quiet", "-m", "raw gitlink"]);
+    const rawHead = (await rawGit(repository, ["rev-parse", "HEAD"])).stdout.trim();
+    const parent = (await rawGit(repository, ["rev-parse", "HEAD^"])).stdout.trim();
+    const parentTree = (await rawGit(repository, ["rev-parse", `${parent}^{tree}`])).stdout.trim();
+    const replacementHead = (await git(repository, [
+      "commit-tree",
+      parentTree,
+      "-p",
+      parent,
+      "-m",
+      "replacement without gitlink",
+    ])).stdout.trim();
+    await git(repository, ["replace", rawHead, replacementHead]);
+    await git(repository, ["read-tree", "--reset", "-u", replacementHead]);
+
+    assert.match(
+      (await rawGit(repository, ["ls-tree", "-r", "--format=%(objectmode)", rawHead])).stdout,
+      /^160000$/m,
+    );
+    assert.equal(
+      (await git(repository, ["status", "--porcelain=v2", "--untracked-files=all"])).stdout,
+      "",
+    );
+
+    await assert.rejects(requireGit().readGitSnapshot(repository), {
+      code: "UNSUPPORTED_GIT_SUBMODULE",
+    });
+  });
+});
+
+test("rejects a gitlink without a .gitmodules file", async () => {
+  await withGitlinkSource(async ({ repository, sourceHead }) => {
+    await git(repository, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sourceHead},linked-source`,
+    ]);
+    await git(repository, ["commit", "--quiet", "-m", "add gitlink"]);
+    await assert.rejects(readFile(join(repository, ".gitmodules")), {
+      code: "ENOENT",
+    });
+
+    await assert.rejects(requireGit().readGitSnapshot(repository), {
+      code: "UNSUPPORTED_GIT_SUBMODULE",
+    });
+  });
+});
+
+test("rejects an index-only gitlink", async () => {
+  await withGitlinkSource(async ({ repository, sourceHead }) => {
+    await git(repository, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sourceHead},index-only`,
+    ]);
+
+    await assert.rejects(requireGit().readGitSnapshot(repository), {
+      code: "UNSUPPORTED_GIT_SUBMODULE",
+    });
+  });
+});
+
+test("rejects a HEAD gitlink before checking a divergent index", async () => {
+  await withGitlinkSource(async ({ repository, sourceHead }) => {
+    await git(repository, [
+      "update-index",
+      "--add",
+      "--cacheinfo",
+      `160000,${sourceHead},head-only`,
+    ]);
+    await git(repository, ["commit", "--quiet", "-m", "add gitlink"]);
+    await git(repository, ["update-index", "--force-remove", "head-only"]);
+
+    await assert.rejects(requireGit().readGitSnapshot(repository), {
+      code: "UNSUPPORTED_GIT_SUBMODULE",
+    });
+  });
+});
+
+test("accepts a nested directory and lone .gitmodules file without gitlinks", async () => {
+  await withRepository(async (repository) => {
+    await mkdir(join(repository, "nested"));
+    await writeFile(join(repository, ".gitmodules"), "[submodule \"not-a-gitlink\"]\n");
+    await git(repository, ["add", "nested", ".gitmodules"]);
+    await git(repository, ["commit", "--quiet", "-m", "ordinary files"]);
+
+    const snapshot = await requireGit().readGitSnapshot(repository);
+    assert.equal(snapshot.clean, true);
+  });
+});
 
 test("rejects a non-worktree and accepts a later clean changed HEAD", async () => {
   const outside = await mkdtemp(join(tmpdir(), "andrew-agent-not-git-"));

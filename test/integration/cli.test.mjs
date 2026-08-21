@@ -44,6 +44,22 @@ async function createRepository() {
   return root;
 }
 
+async function createRepositoryWithGitlink() {
+  const sourceRoot = await createRepository();
+  const repositoryRoot = await createRepository();
+  const sourceHead = (await execFile("git", ["-C", sourceRoot, "rev-parse", "HEAD"])).stdout.trim();
+  await execFile("git", [
+    "-C",
+    repositoryRoot,
+    "update-index",
+    "--add",
+    "--cacheinfo",
+    `160000,${sourceHead},linked-source`,
+  ]);
+  await execFile("git", ["-C", repositoryRoot, "commit", "--quiet", "-m", "gitlink fixture"]);
+  return { repositoryRoot, sourceRoot };
+}
+
 function terminalRecord(repositoryRoot, terminalStatus = "completed") {
   return { threadId: "thread-1", repositoryRoot, startingHead: "a".repeat(40), terminalHead: "b".repeat(40), bundleDigest: "c".repeat(64), productVersion: "0.1.0", codexVersion: "0.148.0", turnId: "turn-1", terminalStatus, finalGitStatus: "1 .M N... tracked.txt" };
 }
@@ -321,6 +337,33 @@ test("run rejects tracked and untracked dirt before runtime mutation", async (t)
   assert.deepEqual(await readFile(join(repositoryRoot, "tracked.txt")), beforeTracked);
   assert.equal((await execFile("git", ["-C", repositoryRoot, "status", "--porcelain=v2", "--untracked-files=all"])).stdout, beforeStatus);
   await assert.rejects(readFile(stateRoot), { code: "ENOENT" });
+});
+
+test("run and prompted resume reject a gitlink before setup with the safe diagnostic", async (t) => {
+  const { runModule, resumeModule } = modules();
+  const { repositoryRoot, sourceRoot } = await createRepositoryWithGitlink();
+  t.after(() => Promise.all([
+    rm(repositoryRoot, { recursive: true, force: true }),
+    rm(sourceRoot, { recursive: true, force: true }),
+  ]));
+
+  for (const command of ["run", "resume"]) {
+    const harness = operationHarness(repositoryRoot);
+    const output = capture();
+    const exitCode = command === "run"
+      ? await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies)
+      : await resumeModule.resumeCommand("thread-1", "prompt", output, harness.dependencies);
+
+    assert.equal(exitCode, 3, command);
+    assert.equal(output.output().stderr, "Submodules are unsupported in v0.1.\n", command);
+    assert.deepEqual(
+      harness.order,
+      command === "run"
+        ? ["paths", "snapshot"]
+        : ["paths", "read-record", "snapshot"],
+      command,
+    );
+  }
 });
 
 test("run observes clean Git before ordered setup and releases after close", async (t) => {

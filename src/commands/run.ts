@@ -22,6 +22,7 @@ import { runDoctor } from "./doctor.js";
 import { PRODUCT_VERSION, REQUIRED_CODEX_VERSION } from "../constants.js";
 import {
   assertCleanGitSnapshot,
+  GitRuntimeError,
   readGitSnapshot,
   resolveRepositoryRoot,
 } from "../runtime/git.js";
@@ -388,6 +389,12 @@ function bounded(value: string, limit = MAX_FIELD_BYTES): string {
 
 function diagnosticFor(error: unknown, phase: string): string {
   if (error instanceof CommandOutputError) return "Output stream failed.";
+  if (
+    error instanceof GitRuntimeError &&
+    error.code === "UNSUPPORTED_GIT_SUBMODULE"
+  ) {
+    return "Submodules are unsupported in v0.1.";
+  }
   if (error instanceof ReadinessError) return "Candidate readiness failed.";
   if (phase === "app-server") return "App Server operation failed.";
   if (phase === "preflight") return "Repository preflight failed.";

@@ -3,6 +3,7 @@
 import type { ProcessLockHandle } from "../runtime/lock.js";
 import type { AppServerClient } from "../app-server/client.js";
 import { ThreadStoreError } from "../runtime/thread-store.js";
+import { GitRuntimeError } from "../runtime/git.js";
 import {
   appServerInput,
   CommandOutputError,
@@ -92,11 +93,14 @@ export async function resumeCommand(
     outcome = terminalExit(record);
   } catch (error) {
     diagnostic =
-      phase === "app-server"
-        ? "App Server operation failed."
-        : phase === "local"
-          ? "Local thread lookup failed."
-          : "Runtime preparation failed.";
+      error instanceof GitRuntimeError &&
+      error.code === "UNSUPPORTED_GIT_SUBMODULE"
+        ? "Submodules are unsupported in v0.1."
+        : phase === "app-server"
+          ? "App Server operation failed."
+          : phase === "local"
+            ? "Local thread lookup failed."
+            : "Runtime preparation failed.";
     outcome =
       error instanceof CommandOutputError
         ? 1
