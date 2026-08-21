@@ -102,6 +102,26 @@ test("fails malformed JSONL terminally, reaps the child, and emits no thread sta
   }
 });
 
+test("rejects an oversized newline-free protocol line and reaps the child", async () => {
+  await withProtocolChild(
+    `process.stdout.write("x".repeat(65537)); setInterval(() => {}, 1000);`,
+    async (child) => {
+      const transport = new (requireTransport().StdioJsonRpcTransport)(
+        child,
+        300,
+      );
+      let failure;
+      await transport.request("initialize", {}).catch((error) => {
+        failure = error;
+      });
+      await transport.close();
+      assert.equal(failure.code, "MALFORMED_PROTOCOL");
+      assert.doesNotMatch(String(failure), /xxx/u);
+      assert.notEqual(child.exitCode ?? child.signalCode, null);
+    },
+  );
+});
+
 for (const [name, frame, code] of [
   [
     "malformed response envelope",

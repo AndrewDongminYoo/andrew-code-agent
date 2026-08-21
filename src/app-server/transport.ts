@@ -87,6 +87,8 @@ interface PendingRequest {
   readonly timer: NodeJS.Timeout;
 }
 
+const MAX_PROTOCOL_LINE_BYTES = 65_536;
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -126,6 +128,7 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
   };
   private nextId = 1;
   private stdoutBuffer = "";
+  private stdoutBufferBytes = 0;
   private ready = false;
   private firstFailure: AppServerError | undefined;
   private closePromise: Promise<void> | undefined;
@@ -294,12 +297,22 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
 
   private consumeStdout(chunk: string): void {
     if (this.firstFailure || this.closePromise) return;
-    this.stdoutBuffer += chunk;
+    let remaining = chunk;
     while (true) {
-      const newline = this.stdoutBuffer.indexOf("\n");
+      const newline = remaining.indexOf("\n");
+      const segment = newline < 0 ? remaining : remaining.slice(0, newline);
+      const segmentBytes = Buffer.byteLength(segment, "utf8");
+      if (segmentBytes > MAX_PROTOCOL_LINE_BYTES - this.stdoutBufferBytes) {
+        this.fail(new AppServerError("MALFORMED_PROTOCOL", this.diagnostics));
+        return;
+      }
+      this.stdoutBuffer += segment;
+      this.stdoutBufferBytes += segmentBytes;
       if (newline < 0) return;
-      const line = this.stdoutBuffer.slice(0, newline);
-      this.stdoutBuffer = this.stdoutBuffer.slice(newline + 1);
+      const line = this.stdoutBuffer;
+      this.stdoutBuffer = "";
+      this.stdoutBufferBytes = 0;
+      remaining = remaining.slice(newline + 1);
       let message: unknown;
       try {
         message = JSON.parse(line);
