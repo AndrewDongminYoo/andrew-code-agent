@@ -1,3 +1,5 @@
+import { isProxy } from "node:util/types";
+
 export interface ItemState {
   readonly id: string;
   readonly type: string;
@@ -130,6 +132,7 @@ function bounded(value: string): string {
 }
 
 function structurallyEqual(left: unknown, right: unknown, depth = 0): boolean {
+  if (isProxy(left) || isProxy(right)) return false;
   if (Object.is(left, right)) return true;
   if (
     depth > 32 ||
@@ -140,30 +143,38 @@ function structurallyEqual(left: unknown, right: unknown, depth = 0): boolean {
     Array.isArray(left) !== Array.isArray(right)
   )
     return false;
-  const leftDescriptors = Object.getOwnPropertyDescriptors(left);
-  const rightDescriptors = Object.getOwnPropertyDescriptors(right);
-  const leftNames = Object.getOwnPropertyNames(left).filter(
-    (name) => name !== "length",
-  );
-  const rightNames = Object.getOwnPropertyNames(right).filter(
-    (name) => name !== "length",
-  );
-  if (
-    leftNames.length !== rightNames.length ||
-    leftNames.some((name, index) => name !== rightNames[index])
-  )
-    return false;
-  return leftNames.every((name) => {
-    const leftDescriptor = leftDescriptors[name];
-    const rightDescriptor = rightDescriptors[name];
-    return (
-      leftDescriptor !== undefined &&
-      rightDescriptor !== undefined &&
-      "value" in leftDescriptor &&
-      "value" in rightDescriptor &&
-      structurallyEqual(leftDescriptor.value, rightDescriptor.value, depth + 1)
+  try {
+    const leftDescriptors = Object.getOwnPropertyDescriptors(left);
+    const rightDescriptors = Object.getOwnPropertyDescriptors(right);
+    const leftNames = Object.getOwnPropertyNames(left).filter(
+      (name) => name !== "length",
     );
-  });
+    const rightNames = Object.getOwnPropertyNames(right).filter(
+      (name) => name !== "length",
+    );
+    if (
+      leftNames.length !== rightNames.length ||
+      leftNames.some((name, index) => name !== rightNames[index])
+    )
+      return false;
+    return leftNames.every((name) => {
+      const leftDescriptor = leftDescriptors[name];
+      const rightDescriptor = rightDescriptors[name];
+      return (
+        leftDescriptor !== undefined &&
+        rightDescriptor !== undefined &&
+        "value" in leftDescriptor &&
+        "value" in rightDescriptor &&
+        structurallyEqual(
+          leftDescriptor.value,
+          rightDescriptor.value,
+          depth + 1,
+        )
+      );
+    });
+  } catch {
+    return false;
+  }
 }
 
 function requireIdentity(state: TurnState, params: RecordValue): void {

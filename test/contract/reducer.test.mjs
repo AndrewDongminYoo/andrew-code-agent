@@ -514,3 +514,113 @@ test("rejects prototype property names as terminal statuses", () => {
     );
   }
 });
+
+function trackedProxy(target, counter, throwing) {
+  return new Proxy(target, {
+    getPrototypeOf(value) {
+      counter.calls += 1;
+      if (throwing) throw new Error("proxy getPrototypeOf trap invoked");
+      return Reflect.getPrototypeOf(value);
+    },
+    ownKeys(value) {
+      counter.calls += 1;
+      if (throwing) throw new Error("proxy ownKeys trap invoked");
+      return Reflect.ownKeys(value);
+    },
+    getOwnPropertyDescriptor(value, key) {
+      counter.calls += 1;
+      if (throwing)
+        throw new Error("proxy getOwnPropertyDescriptor trap invoked");
+      return Reflect.getOwnPropertyDescriptor(value, key);
+    },
+  });
+}
+
+function withProxiedFileValue(state, nested, throwing, counter) {
+  const stored = state.items.get("files-1");
+  const value = nested
+    ? {
+        ...stored.value,
+        files: [
+          trackedProxy(stored.value.files[0], counter, throwing),
+        ],
+      }
+    : trackedProxy(stored.value, counter, throwing);
+  return {
+    ...state,
+    items: new Map([["files-1", { ...stored, value }]]),
+  };
+}
+
+test("rejects top-level and nested proxies in active duplicate item values without invoking traps", () => {
+  const api = reducer();
+  const completedFile = item("fileChange", "files-1", {
+    changes: [{ path: "file.txt", kind: "update" }],
+    status: "completed",
+  });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    completed(completedFile),
+  );
+
+  for (const { nested, throwing } of [
+    { nested: false, throwing: false },
+    { nested: true, throwing: true },
+  ]) {
+    const counter = { calls: 0 };
+    const state = withProxiedFileValue(base, nested, throwing, counter);
+    let failure = null;
+
+    try {
+      api.reduceServerMessage(state, completed(completedFile));
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.equal(counter.calls, 0);
+    assert.equal(failure?.code, "INVALID_SERVER_EVENT");
+  }
+});
+
+test("rejects top-level and nested proxies in terminal duplicate item values without invoking traps", () => {
+  const api = reducer();
+  const completedFile = item("fileChange", "files-1", {
+    changes: [{ path: "file.txt", kind: "update" }],
+    status: "completed",
+  });
+  const completedTurn = {
+    id: "turn-1",
+    items: [completedFile],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    { method: "turn/completed", params: { threadId: "thread-1", turn: completedTurn } },
+  );
+
+  for (const { nested, throwing } of [
+    { nested: false, throwing: true },
+    { nested: true, throwing: false },
+  ]) {
+    const counter = { calls: 0 };
+    const state = withProxiedFileValue(base, nested, throwing, counter);
+    let failure = null;
+
+    try {
+      api.reduceServerMessage(state, {
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: completedTurn },
+      });
+    } catch (error) {
+      failure = error;
+    }
+
+    assert.equal(counter.calls, 0);
+    assert.equal(failure?.code, "INVALID_SERVER_EVENT");
+  }
+});
