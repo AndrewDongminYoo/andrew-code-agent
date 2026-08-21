@@ -115,6 +115,14 @@ for await (const line of lines) {
     }
     continue;
   }
+  if (scenario === "failure-forwarding") {
+    send({ id: message.id, result: { method: message.method, params: message.params } });
+    if (message.method === "thread/start") {
+      send({ method: "unknown/notice", params: { beforeFailure: true } });
+      setTimeout(() => process.exit(23), 10);
+    }
+    continue;
+  }
   send({ id: message.id, result: { method: message.method, params: message.params } });
 }
 `,
@@ -377,6 +385,27 @@ test("delivers unknown notifications and typed server requests to registered lis
     await assert.rejects(client.threadStart({}), {
       code: "MALFORMED_PROTOCOL",
     });
+    await client.close();
+  });
+});
+
+test("forwards the transport failure subscription through the public client", async () => {
+  await withFakeCodex("failure-forwarding", async ({ binary, codexHome }) => {
+    const client = await requireClient().startAppServer(
+      startInput(binary, codexHome),
+    );
+    const order = [];
+    client.onNotification(() => order.push("notification"));
+    const failure = new Promise((resolve) =>
+      client.onFailure((error) => {
+        order.push("failure");
+        resolve(error);
+      }),
+    );
+    await client.threadStart({ cwd: "/fixture" });
+    const error = await failure;
+    assert.equal(error.code, "APP_SERVER_UNEXPECTED_EXIT");
+    assert.deepEqual(order, ["notification", "failure"]);
     await client.close();
   });
 });

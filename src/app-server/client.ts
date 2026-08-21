@@ -35,6 +35,9 @@ export interface AppServerClient {
   respond(id: RequestId, result: unknown): Promise<void>;
   onNotification(listener: (message: ServerNotification) => void): () => void;
   onRequest(listener: (message: ServerRequest) => void): () => void;
+  onFailure(
+    listener: (error: AppServerError) => void | Promise<void>,
+  ): () => void;
   close(): Promise<void>;
 }
 
@@ -131,6 +134,7 @@ export async function startAppServer(
       ),
     onRequest: (listener) =>
       transport.onRequest((message) => listener(message as ServerRequest)),
+    onFailure: (listener) => transport.onFailure(listener),
     close: () => transport.close(),
   };
 }

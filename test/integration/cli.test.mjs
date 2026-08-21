@@ -309,6 +309,157 @@ test("prompted resume reads the record before Git and uses mutating order", asyn
   assert.deepEqual(harness.order, ["paths", "read-record", "snapshot", "clean", "initialize", "lock", "recover", "build", "install", "readiness", "app-server", "resume-turn", "client-close", "unlock"]);
 });
 
+test("prompted resume reports changed clean HEAD before setup and is silent otherwise", async (t) => {
+  const { resumeModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const storedHead = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "HEAD"])).stdout.trim();
+  await writeFile(join(repositoryRoot, "tracked.txt"), "next\n");
+  await execFile("git", ["-C", repositoryRoot, "add", "tracked.txt"]);
+  await execFile("git", ["-C", repositoryRoot, "commit", "--quiet", "-m", "next fixture"]);
+  const currentHead = (await execFile("git", ["-C", repositoryRoot, "rev-parse", "HEAD"])).stdout.trim();
+
+  const changed = operationHarness(repositoryRoot, {
+    record: { ...terminalRecord(repositoryRoot), terminalHead: storedHead },
+  });
+  const changedOutput = capture();
+  const originalWrite = changedOutput.stdout.write.bind(changedOutput.stdout);
+  changedOutput.stdout.write = (value) => {
+    changed.order.push(`stdout:${String(value)}`);
+    return originalWrite(value);
+  };
+  assert.equal(await resumeModule.resumeCommand("thread-1", "next", changedOutput, changed.dependencies), 0);
+  assert.match(
+    changedOutput.output().stdout,
+    new RegExp(`Repository HEAD changed: stored ${storedHead}, current ${currentHead}\\.`),
+  );
+  const noticeIndex = changed.order.findIndex((entry) => entry.startsWith("stdout:Repository HEAD changed:"));
+  assert.ok(changed.order.indexOf("clean") < noticeIndex);
+  assert.ok(noticeIndex < changed.order.indexOf("initialize"));
+
+  for (const terminalHead of [currentHead, null]) {
+    const silent = operationHarness(repositoryRoot, {
+      record: { ...terminalRecord(repositoryRoot), terminalHead },
+    });
+    const output = capture();
+    assert.equal(await resumeModule.resumeCommand("thread-1", "next", output, silent.dependencies), 0);
+    assert.doesNotMatch(output.output().stdout, /Repository HEAD changed:/);
+  }
+
+  const sha256Stored = "c".repeat(64);
+  const sha256Current = "d".repeat(64);
+  const sha256 = operationHarness(repositoryRoot, {
+    record: { ...terminalRecord(repositoryRoot), terminalHead: sha256Stored },
+  });
+  sha256.dependencies.readGitSnapshot = async () => {
+    sha256.order.push("snapshot");
+    return {
+      ...(await gitModule.readGitSnapshot(repositoryRoot)),
+      head: sha256Current,
+    };
+  };
+  const sha256Output = capture();
+  assert.equal(
+    await resumeModule.resumeCommand(
+      "thread-1",
+      "next",
+      sha256Output,
+      sha256.dependencies,
+    ),
+    0,
+  );
+  assert.match(
+    sha256Output.output().stdout,
+    new RegExp(
+      `Repository HEAD changed: stored ${sha256Stored}, current ${sha256Current}\\.`,
+    ),
+  );
+});
+
+test("prompted resume rejects malformed stored and current HEADs without disclosure or setup", async (t) => {
+  const { resumeModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const snapshot = await gitModule.readGitSnapshot(repositoryRoot);
+  const validHead = snapshot.head;
+  const cases = [
+    {
+      name: "long multibyte stored secret",
+      storedHead: `secret-stored-canary-${"가".repeat(2_000)}`,
+      currentHead: validHead,
+    },
+    {
+      name: "long multibyte current secret",
+      storedHead: validHead,
+      currentHead: `secret-current-canary-${"나".repeat(2_000)}`,
+    },
+    {
+      name: "short stored value",
+      storedHead: "secret-short",
+      currentHead: validHead,
+    },
+    {
+      name: "uppercase current value",
+      storedHead: "c".repeat(64),
+      currentHead: "A".repeat(40),
+    },
+  ];
+
+  for (const fixtureCase of cases) {
+    await t.test(fixtureCase.name, async () => {
+      const harness = operationHarness(repositoryRoot, {
+        record: {
+          ...terminalRecord(repositoryRoot),
+          terminalHead: fixtureCase.storedHead,
+        },
+      });
+      harness.dependencies.readGitSnapshot = async () => {
+        harness.order.push("snapshot");
+        return { ...snapshot, head: fixtureCase.currentHead };
+      };
+      const output = capture();
+
+      assert.equal(
+        await resumeModule.resumeCommand(
+          "thread-1",
+          "next",
+          output,
+          harness.dependencies,
+        ),
+        3,
+        fixtureCase.name,
+      );
+      assert.deepEqual(
+        harness.order,
+        ["paths", "read-record", "snapshot", "clean"],
+        fixtureCase.name,
+      );
+      assert.equal(output.output().stdout, "", fixtureCase.name);
+      assert.equal(
+        output.output().stderr,
+        "Local thread lookup failed.\n",
+        fixtureCase.name,
+      );
+      const transcript = `${output.output().stdout}${output.output().stderr}`;
+      assert.equal(
+        transcript.includes("Repository HEAD changed:"),
+        false,
+        fixtureCase.name,
+      );
+      assert.equal(
+        transcript.includes(fixtureCase.storedHead),
+        false,
+        fixtureCase.name,
+      );
+      assert.equal(
+        transcript.includes(fixtureCase.currentHead),
+        false,
+        fixtureCase.name,
+      );
+    });
+  }
+});
+
 test("prompted resume rejects a stored repository identity change before mutation", async (t) => {
   const { resumeModule } = modules();
   const repositoryRoot = await createRepository();
@@ -415,6 +566,10 @@ for await (const line of lines) {
     process.stdout.write(JSON.stringify({ id: message.id, result: { thread: { id: "thread-fake" } } }) + "\\n");
   } else if (message.method === "turn/start") {
     if (${JSON.stringify(mode)} === true) await writeFile(join(message.params.cwd, "tracked.txt"), "after\\n");
+    if (${JSON.stringify(mode)} === "active-exit-run" || ${JSON.stringify(mode)} === "active-exit-resume") {
+      process.stdout.write(JSON.stringify({ id: message.id, result: { turn: { id: "turn-fake" } } }) + "\\n", () => process.exit(47));
+      continue;
+    }
     process.stdout.write(JSON.stringify({ id: message.id, result: { turn: { id: "turn-fake" } } }) + "\\n");
     if (${JSON.stringify(mode)} === "approval") setTimeout(() => process.stdout.write(JSON.stringify({ method: "item/commandExecution/requestApproval", id: "approval-1", params: { threadId: "thread-fake", turnId: "turn-fake", itemId: "command-1", startedAtMs: 1, environmentId: null, reason: "Needed", command: "pwd", cwd: ${JSON.stringify(repositoryRoot)}, commandActions: [], proposedExecpolicyAmendment: null, proposedNetworkPolicyAmendments: [] } }) + "\\n"), 10);
     if (${JSON.stringify(mode)} === true || ${JSON.stringify(mode)} === "resume") setTimeout(() => {
@@ -504,6 +659,26 @@ function observeUnlockAfterChildExit(fixture) {
   return () => assert.equal(calls, 1);
 }
 
+function observeClientCloseBeforeUnlock(fixture) {
+  const start = fixture.dependencies.startAppServer;
+  const release = fixture.dependencies.releaseProcessLock;
+  let closeCalls = 0;
+  fixture.dependencies.startAppServer = async (input) => {
+    const client = await start(input);
+    const close = client.close.bind(client);
+    client.close = async () => {
+      closeCalls += 1;
+      await close();
+    };
+    return client;
+  };
+  fixture.dependencies.releaseProcessLock = async (handle) => {
+    assert.equal(closeCalls, 1);
+    await release(handle);
+  };
+  return () => assert.equal(closeCalls, 1);
+}
+
 async function waitFor(check, timeoutMs = 2_000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -512,6 +687,20 @@ async function waitFor(check, timeoutMs = 2_000) {
     } catch {}
     if (Date.now() >= deadline) throw new Error("fixture timeout");
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+async function settleWithin(settlement, timeoutMs) {
+  let timeout;
+  try {
+    return await Promise.race([
+      settlement,
+      new Promise((resolve) => {
+        timeout = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -587,6 +776,51 @@ test("real fake resume and status failures stay stable and clean up", async (t) 
       assert.equal(`${output.output().stdout}${output.output().stderr}`.includes("47"), false);
       assertReleaseOrder();
       await assertFakeServerCleanup(fixture);
+    } finally {
+      await cleanupFixture();
+    }
+  }
+});
+
+test("active fake-server exit persists failure before cleanup for run and resume", async (t) => {
+  const { runModule, resumeModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  for (const command of ["run", "resume"]) {
+    const fixture = await fakeAppServerHarness(repositoryRoot, `active-exit-${command}`);
+    const cleanupFixture = () => cleanupFakeAppServerFixture(fixture);
+    t.after(cleanupFixture);
+    try {
+      if (command === "resume") await seedThreadRecord(repositoryRoot, fixture);
+      const assertReleaseOrder = observeUnlockAfterChildExit(fixture);
+      const assertClientCloseOrder = observeClientCloseBeforeUnlock(fixture);
+      const output = capture();
+      const running = command === "run"
+        ? runModule.runCommand(repositoryRoot, "continue", output, fixture.dependencies)
+        : resumeModule.resumeCommand("thread-fake", "continue", output, fixture.dependencies);
+      const settlement = running.then(
+        (value) => ({ kind: "resolved", value }),
+        (error) => ({ kind: "rejected", error }),
+      );
+      let result = await settleWithin(settlement, 1_000);
+      if (result.kind === "timeout") {
+        process.emit("SIGINT");
+        process.emit("SIGINT");
+        result = await settleWithin(settlement, 1_000);
+        if (result.kind === "timeout") {
+          await cleanupFixture();
+          throw new Error(`active-exit ${command} did not settle after signals`);
+        }
+      }
+      if (result.kind === "rejected") throw result.error;
+      assert.equal(result.value, 4, command);
+      const record = await threadStoreModule.readThreadRecord(fixture.stateRoot, "thread-fake");
+      assert.equal(record.terminalStatus, "failed", command);
+      assert.equal(record.turnId, "turn-fake", command);
+      assertReleaseOrder();
+      assertClientCloseOrder();
+      await assertFakeServerCleanup(fixture);
+      assert.equal(`${output.output().stdout}${output.output().stderr}`.includes("47"), false);
     } finally {
       await cleanupFixture();
     }

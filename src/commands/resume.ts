@@ -17,6 +17,12 @@ import {
   type CommandIO,
 } from "./run.js";
 
+const GIT_OBJECT_ID_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+
+function isGitObjectId(value: unknown): value is string {
+  return typeof value === "string" && GIT_OBJECT_ID_PATTERN.test(value);
+}
+
 export async function resumeCommand(
   threadId: string,
   prompt: string | undefined,
@@ -47,6 +53,22 @@ export async function resumeCommand(
       throw new Error("repository identity changed");
     }
     dependencies.assertCleanGitSnapshot(snapshot);
+    if (
+      (existing.terminalHead !== null &&
+        !isGitObjectId(existing.terminalHead)) ||
+      !isGitObjectId(snapshot.head)
+    ) {
+      throw new Error("invalid Git object ID");
+    }
+    if (
+      existing.terminalHead !== null &&
+      existing.terminalHead !== snapshot.head
+    ) {
+      await writeLine(
+        io.stdout,
+        `Repository HEAD changed: stored ${existing.terminalHead}, current ${snapshot.head}.`,
+      );
+    }
     phase = "setup";
     await dependencies.initializeRuntimeState(paths);
     lock = await dependencies.acquireProcessLock(paths.stateRoot);

@@ -32,6 +32,7 @@ class FakeClient {
   calls = [];
   notifications = new Set();
   requests = new Set();
+  failures = new Set();
   closed = 0;
   threadId = "thread-1";
   turnId = "turn-1";
@@ -79,12 +80,21 @@ class FakeClient {
     return () => this.requests.delete(listener);
   }
 
+  onFailure(listener) {
+    this.failures.add(listener);
+    return () => this.failures.delete(listener);
+  }
+
   emitNotification(message) {
     for (const listener of this.notifications) listener(message);
   }
 
   emitRequest(message) {
     for (const listener of this.requests) listener(message);
+  }
+
+  emitFailure(error) {
+    for (const listener of this.failures) listener(error);
   }
 
   async close() {
@@ -879,6 +889,125 @@ test("keeps an observed terminal notification authoritative when reporting fails
   assert.equal(result.terminalStatus, "completed");
 });
 
+test("persists one failed active turn before close and rethrows infrastructure failure", async () => {
+  const fixture = harness({ record: null });
+  const failure = Object.assign(new Error("infrastructure"), {
+    code: "APP_SERVER_UNEXPECTED_EXIT",
+  });
+  fixture.client.onClose = async () => {
+    fixture.order.push("client-close");
+  };
+  fixture.client.onTurnStart = async (client) => {
+    assert.equal(client.failures.size, 1);
+    setImmediate(() => client.emitFailure(failure));
+    setTimeout(
+      () => client.emitNotification(terminalNotification("thread-1", "turn-1")),
+      50,
+    );
+  };
+  await assert.rejects(
+    coordinator().startNewThread(
+      { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+      fixture.dependencies,
+    ),
+    (error) => error === failure,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 75));
+  assert.deepEqual(
+    fixture.writes.map((record) => record.terminalStatus),
+    ["not-started", "running", "failed"],
+  );
+  assert.equal(fixture.stored().terminalStatus, "failed");
+  assert.equal(fixture.client.closed, 1);
+  assert.equal(fixture.client.failures.size, 0);
+  assert.ok(
+    fixture.order.indexOf("write:failed") < fixture.order.indexOf("client-close"),
+  );
+});
+
+test("persists a failed no-turn record when failure precedes a synchronous turn-start rejection", async () => {
+  const fixture = harness({ record: null });
+  const failure = Object.assign(new Error("infrastructure"), {
+    code: "APP_SERVER_UNEXPECTED_EXIT",
+  });
+  fixture.client.onClose = async () => {
+    fixture.order.push("client-close");
+  };
+  fixture.client.turnStart = function (params) {
+    this.calls.push(["turnStart", params]);
+    assert.equal(this.failures.size, 1);
+    this.emitFailure(failure);
+    return Promise.reject(failure);
+  };
+
+  await assert.rejects(
+    coordinator().startNewThread(
+      { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+      fixture.dependencies,
+    ),
+    (error) => error === failure,
+  );
+
+  assert.deepEqual(
+    fixture.writes.map((record) => record.terminalStatus),
+    ["not-started", "failed"],
+  );
+  assert.equal(fixture.stored().terminalStatus, "failed");
+  assert.equal(fixture.stored().turnId, null);
+  assert.equal(fixture.stored().terminalHead, "head-final");
+  assert.equal(fixture.client.closed, 1);
+  assert.equal(fixture.client.failures.size, 0);
+  assert.ok(
+    fixture.order.indexOf("snapshot:/repo") <
+      fixture.order.indexOf("write:failed"),
+  );
+  assert.ok(
+    fixture.order.indexOf("write:failed") < fixture.order.indexOf("client-close"),
+  );
+  fixture.client.emitNotification(
+    terminalNotification("thread-1", "turn-1", "completed"),
+  );
+  assert.deepEqual(
+    fixture.writes.map((record) => record.terminalStatus),
+    ["not-started", "failed"],
+  );
+});
+
+test("queued terminal state and handled interrupt remain authoritative over failure", async () => {
+  const failure = Object.assign(new Error("infrastructure"), {
+    code: "APP_SERVER_UNEXPECTED_EXIT",
+  });
+  const terminal = harness({ record: null });
+  terminal.client.onTurnStart = async (client) => {
+    setImmediate(() => {
+      client.emitNotification(terminalNotification("thread-1", "turn-1"));
+      client.emitFailure(failure);
+    });
+  };
+  const terminalResult = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    terminal.dependencies,
+  );
+  assert.equal(terminalResult.terminalStatus, "completed");
+  assert.deepEqual(
+    terminal.writes.map((record) => record.terminalStatus),
+    ["not-started", "running", "completed"],
+  );
+
+  const interrupted = harness({ record: null, interruptGraceMs: 5 });
+  interrupted.client.onTurnStart = async (client) => {
+    interrupted.interrupt();
+    client.emitFailure(failure);
+  };
+  const interruptedResult = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    interrupted.dependencies,
+  );
+  assert.equal(interruptedResult.terminalStatus, "interrupted");
+  assert.equal(interrupted.stored().terminalStatus, "interrupted");
+  assert.equal(interrupted.client.closed, 1);
+});
+
 test("latches the first interrupt and lets terminal notification beat the grace deadline", async () => {
   const fixture = harness({ record: null, interruptGraceMs: 100 });
   fixture.client.onTurnStart = async (client) => {
@@ -985,6 +1114,104 @@ test("finalizes a pre-stable force close but preserves ordinary turn-start failu
   );
   assert.equal(ordinary.client.closed, 1);
 });
+
+for (const operation of ["start", "resume"]) {
+  test(`captures post-close Git state for forced no-turn ${operation} interruption`, async () => {
+    const finalSnapshot = {
+      repositoryRoot: "/repo",
+      head: `head-before-close-${operation}`,
+      porcelainV2: "",
+      clean: true,
+    };
+    const fixture = harness({
+      record: operation === "start" ? null : existingRecord(),
+      snapshots: [
+        {
+          repositoryRoot: "/repo",
+          head: "head-new",
+          porcelainV2: "",
+          clean: true,
+        },
+        finalSnapshot,
+      ],
+    });
+    let releaseClose;
+    const closeGate = new Promise((resolve) => {
+      releaseClose = resolve;
+    });
+    let markCloseStarted;
+    const closeStarted = new Promise((resolve) => {
+      markCloseStarted = resolve;
+    });
+    fixture.client.onClose = async () => {
+      markCloseStarted();
+      await closeGate;
+      finalSnapshot.head = `head-after-close-${operation}`;
+      finalSnapshot.porcelainV2 = `? post-close-${operation}.txt\n`;
+      finalSnapshot.clean = false;
+      fixture.order.push("close-mutation");
+    };
+    const rejectAfterInterrupts = function (params, method) {
+      this.calls.push([method, params]);
+      return new Promise((_, reject) => {
+        queueMicrotask(() => {
+          fixture.interrupt();
+          fixture.interrupt();
+          reject(Object.assign(new Error("closed"), { code: "APP_SERVER_CLOSED" }));
+        });
+      });
+    };
+    if (operation === "start") {
+      fixture.client.turnStart = function (params) {
+        return rejectAfterInterrupts.call(this, params, "turnStart");
+      };
+    } else {
+      fixture.client.threadResume = function (params) {
+        return rejectAfterInterrupts.call(this, params, "threadResume");
+      };
+    }
+
+    const running =
+      operation === "start"
+        ? coordinator().startNewThread(
+            {
+              repositoryRoot: "/repo",
+              prompt: "x",
+              bundleDigest: "bundle-new",
+            },
+            fixture.dependencies,
+          )
+        : coordinator().resumeThread(
+            "thread-1",
+            "continue",
+            fixture.dependencies,
+          );
+    await closeStarted;
+    await new Promise((resolve) => setImmediate(resolve));
+    releaseClose();
+    const result = await running;
+
+    assert.equal(result.terminalStatus, "interrupted", operation);
+    assert.equal(result.turnId, null, operation);
+    assert.equal(result.terminalHead, `head-after-close-${operation}`, operation);
+    assert.equal(
+      result.finalGitStatus,
+      `? post-close-${operation}.txt\n`,
+      operation,
+    );
+    assert.equal(fixture.client.closed, 1, operation);
+    assert.ok(
+      fixture.order.indexOf("close-mutation") <
+        fixture.order.lastIndexOf("snapshot:/repo"),
+      operation,
+    );
+    assert.ok(
+      fixture.order.indexOf("close-mutation") <
+        fixture.order.lastIndexOf("write:interrupted"),
+      operation,
+    );
+  });
+}
 
 test("settles interruption once on second signal, RPC failure, or grace timeout", async () => {
   for (const mode of ["second", "rpc", "timeout"]) {

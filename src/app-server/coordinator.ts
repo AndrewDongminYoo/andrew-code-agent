@@ -218,8 +218,9 @@ async function finalizeWithoutTurn(
   },
   dependencies: CoordinatorDependencies,
   lifecycle: ClientLifecycle,
+  closeBeforeSnapshot = true,
 ): Promise<ThreadRecord> {
-  await lifecycle.close();
+  if (closeBeforeSnapshot) await lifecycle.close();
   const finalSnapshot = requireSnapshotRepository(
     await dependencies.git.readGitSnapshot(identity.repositoryRoot),
     identity.repositoryRoot,
@@ -240,6 +241,7 @@ async function finalizeWithoutTurn(
     dependencies.stateRoot,
     finalRecord,
   );
+  if (!closeBeforeSnapshot) await lifecycle.close();
   return finalRecord;
 }
 
@@ -283,14 +285,16 @@ async function runTurn(
   let graceTimer: NodeJS.Timeout | null = null;
   let settled = false;
   let fatalFailure = false;
+  let infrastructureFailure: Error | null = null;
   let removeNotification = () => {};
   let removeRequest = () => {};
+  let removeFailure = () => {};
   let resolveSettlement!: (status: TerminalStatus) => void;
   const settlement = new Promise<TerminalStatus>((resolve) => {
     resolveSettlement = resolve;
   });
   const buffered: {
-    readonly kind: "notification" | "request";
+    readonly kind: "notification" | "request" | "failure";
     value: unknown;
   }[] = [];
   let notificationSerial = Promise.resolve();
@@ -391,9 +395,25 @@ async function runTurn(
       failClosed();
     }
   };
-  const enqueue = (kind: "notification" | "request", value: unknown): void => {
+  const processFailure = (error: Error): void => {
+    if (settled) return;
+    if (interruptStarted || interruptCount > 0) {
+      settle("interrupted");
+      return;
+    }
+    infrastructureFailure = error;
+    settle("failed");
+  };
+  const enqueue = (
+    kind: "notification" | "request" | "failure",
+    value: unknown,
+  ): void => {
     if (settled) return;
     if (state === null) {
+      if (kind === "failure") {
+        processFailure(value as Error);
+        return;
+      }
       if (buffered.length >= MAX_BUFFERED_EVENTS) {
         failClosed();
         return;
@@ -404,6 +424,10 @@ async function runTurn(
     if (kind === "notification")
       notificationSerial = notificationSerial.then(() =>
         processNotification(value),
+      );
+    else if (kind === "failure")
+      notificationSerial = notificationSerial.then(() =>
+        processFailure(value as Error),
       );
     else requestSerial = requestSerial.then(() => processRequest(value));
   };
@@ -416,6 +440,7 @@ async function runTurn(
       identity,
       dependencies,
       lifecycle,
+      infrastructureFailure === null,
     );
   };
 
@@ -424,6 +449,7 @@ async function runTurn(
       enqueue("notification", message),
     );
     removeRequest = client.onRequest((message) => enqueue("request", message));
+    removeFailure = client.onFailure((error) => enqueue("failure", error));
     interruptLatch.bind(onInterrupt);
     if (settled) return await finalizeSettledWithoutTurn();
     let response;
@@ -442,7 +468,9 @@ async function runTurn(
       });
     } catch (error) {
       if (!settled) throw error;
-      return await finalizeSettledWithoutTurn();
+      const finalRecord = await finalizeSettledWithoutTurn();
+      if (infrastructureFailure !== null) throw infrastructureFailure;
+      return finalRecord;
     }
     turnId = nestedResponseId(response, "turn");
     state = createTurnState(identity.threadId, turnId);
@@ -463,7 +491,8 @@ async function runTurn(
     await notificationSerial;
     const terminalStatus = await settlement;
     await Promise.all([notificationSerial, requestSerial]);
-    await closeOnce();
+    const failure = infrastructureFailure;
+    if (failure === null) await closeOnce();
     const finalSnapshot = requireSnapshotRepository(
       await dependencies.git.readGitSnapshot(identity.repositoryRoot),
       identity.repositoryRoot,
@@ -478,6 +507,10 @@ async function runTurn(
       dependencies.stateRoot,
       finalRecord,
     );
+    if (failure !== null) {
+      await closeOnce();
+      throw failure;
+    }
     return finalRecord;
   } catch (error) {
     throw preserveTypedError(error);
@@ -485,6 +518,7 @@ async function runTurn(
     if (graceTimer !== null) clearTimeout(graceTimer);
     removeNotification();
     removeRequest();
+    removeFailure();
     interruptLatch.unbind();
     await closeOnce();
   }

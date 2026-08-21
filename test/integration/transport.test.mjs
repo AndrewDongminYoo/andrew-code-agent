@@ -239,6 +239,58 @@ test("reports unexpected exit with safe diagnostics", async () => {
   );
 });
 
+test("reports one unexpected failure only after drained notifications", async () => {
+  const notification = JSON.stringify({ method: "turn/completed", params: { authoritative: true } });
+  await withProtocolChild(
+    `import { createInterface } from "node:readline"; const lines = createInterface({ input: process.stdin }); for await (const line of lines) { const message = JSON.parse(line); process.stdout.write(JSON.stringify({ id: message.id, result: {} }) + "\\n" + ${JSON.stringify(notification + "\n")}, () => process.exit(19)); }`,
+    async (child) => {
+      const transport = new (requireTransport().StdioJsonRpcTransport)(
+        child,
+        300,
+      );
+      const order = [];
+      let failureCalls = 0;
+      transport.onNotification(() => order.push("notification"));
+      transport.onFailure(() => {
+        failureCalls += 1;
+        order.push("throwing-listener");
+        throw new Error("listener failure");
+      });
+      transport.onFailure(() => Promise.reject(new Error("async listener failure")));
+      const failure = new Promise((resolve) =>
+        transport.onFailure((error) => {
+          failureCalls += 1;
+          order.push("failure");
+          resolve(error);
+        }),
+      );
+      await transport.request("initialize", {});
+      const error = await failure;
+      assert.equal(error.code, "APP_SERVER_UNEXPECTED_EXIT");
+      assert.deepEqual(order, ["notification", "throwing-listener", "failure"]);
+      assert.equal(failureCalls, 2);
+      await transport.close();
+      assert.equal(failureCalls, 2);
+    },
+  );
+});
+
+test("intentional close never reports an unexpected failure", async () => {
+  await withProtocolChild(`setInterval(() => {}, 1000);`, async (child) => {
+    const transport = new (requireTransport().StdioJsonRpcTransport)(
+      child,
+      300,
+    );
+    let failureCalls = 0;
+    transport.onFailure(() => {
+      failureCalls += 1;
+    });
+    await transport.close();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(failureCalls, 0);
+  });
+});
+
 test("close is idempotent and rejects pending and new work as closed", async () => {
   await withProtocolChild(`setInterval(() => {}, 1000);`, async (child) => {
     const transport = new (requireTransport().StdioJsonRpcTransport)(

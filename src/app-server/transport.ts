@@ -6,6 +6,9 @@ export interface JsonRpcTransport {
   respond(id: string | number, result: unknown): Promise<void>;
   onNotification(listener: (message: unknown) => void): () => void;
   onRequest(listener: (message: unknown) => void): () => void;
+  onFailure(
+    listener: (error: AppServerError) => void | Promise<void>,
+  ): () => void;
   close(): Promise<void>;
 }
 
@@ -114,6 +117,9 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
     (message: unknown) => void
   >();
   private readonly requestListeners = new Set<(message: unknown) => void>();
+  private readonly failureListeners = new Set<
+    (error: AppServerError) => void | Promise<void>
+  >();
   private readonly diagnostics: SafeDiagnostics = {
     stderrRetainedBytes: 0,
     stderrTruncated: false,
@@ -124,6 +130,7 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
   private firstFailure: AppServerError | undefined;
   private closePromise: Promise<void> | undefined;
   private childExited = false;
+  private stdoutEnded = false;
   private resolveChildExited!: () => void;
   private readonly childExitedPromise: Promise<void>;
 
@@ -135,6 +142,10 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
     });
     child.stdout.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => this.consumeStdout(chunk));
+    child.stdout.once("end", () => {
+      this.stdoutEnded = true;
+      this.finishChildExit();
+    });
     child.stdin.on("error", () => {});
     child.stderr.on("data", (chunk: Buffer) =>
       this.accountStderr(chunk.length),
@@ -149,13 +160,7 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
       this.diagnostics.exitCode = exitCode;
       this.diagnostics.signal = signal;
       this.markChildExited();
-      if (this.stdoutBuffer.length > 0 && !this.firstFailure) {
-        this.fail(new AppServerError("MALFORMED_PROTOCOL", this.diagnostics));
-      } else if (!this.closePromise && !this.firstFailure) {
-        this.fail(
-          new AppServerError("APP_SERVER_UNEXPECTED_EXIT", this.diagnostics),
-        );
-      }
+      this.finishChildExit();
     });
   }
 
@@ -263,6 +268,14 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
   onRequest(listener: (message: unknown) => void): () => void {
     this.requestListeners.add(listener);
     return () => this.requestListeners.delete(listener);
+  }
+
+  onFailure(
+    listener: (error: AppServerError) => void | Promise<void>,
+  ): () => void {
+    if (!this.firstFailure && !this.closePromise)
+      this.failureListeners.add(listener);
+    return () => this.failureListeners.delete(listener);
   }
 
   close(): Promise<void> {
@@ -380,6 +393,15 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
     this.firstFailure = error;
     this.closePromise = this.shutdown();
     this.rejectPending(error);
+    const listeners = [...this.failureListeners];
+    this.failureListeners.clear();
+    for (const listener of listeners) {
+      try {
+        void Promise.resolve(listener(error)).catch(() => {});
+      } catch {
+        // Failure observers cannot replace or recursively report the failure.
+      }
+    }
   }
 
   private rejectPending(error: AppServerError): void {
@@ -420,6 +442,17 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
     if (this.childExited) return;
     this.childExited = true;
     this.resolveChildExited();
+  }
+
+  private finishChildExit(): void {
+    if (!this.childExited || !this.stdoutEnded || this.firstFailure) return;
+    if (this.stdoutBuffer.length > 0) {
+      this.fail(new AppServerError("MALFORMED_PROTOCOL", this.diagnostics));
+    } else if (!this.closePromise) {
+      this.fail(
+        new AppServerError("APP_SERVER_UNEXPECTED_EXIT", this.diagnostics),
+      );
+    }
   }
 
   private async shutdown(): Promise<void> {
