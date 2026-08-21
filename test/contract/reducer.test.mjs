@@ -624,3 +624,303 @@ test("rejects top-level and nested proxies in terminal duplicate item values wit
     assert.equal(failure?.code, "INVALID_SERVER_EVENT");
   }
 });
+
+function storedItemProxy(target, kind, counter) {
+  if (kind === "revoked") {
+    const revocable = Proxy.revocable(target, {});
+    revocable.revoke();
+    return revocable.proxy;
+  }
+  return new Proxy(target, {
+    get(value, key, receiver) {
+      counter.calls += 1;
+      if (kind === "throwing") throw new Error("stored item get trap invoked");
+      return Reflect.get(value, key, receiver);
+    },
+    ownKeys(value) {
+      counter.calls += 1;
+      if (kind === "throwing")
+        throw new Error("stored item ownKeys trap invoked");
+      return Reflect.ownKeys(value);
+    },
+    getOwnPropertyDescriptor(value, key) {
+      counter.calls += 1;
+      if (kind === "throwing")
+        throw new Error("stored item descriptor trap invoked");
+      return Reflect.getOwnPropertyDescriptor(value, key);
+    },
+  });
+}
+
+function withStoredItem(state, itemId, stored) {
+  return { ...state, items: new Map([[itemId, stored]]) };
+}
+
+function assertStoredItemRejected(target, invoke) {
+  for (const kind of ["nonthrowing", "throwing", "revoked"]) {
+    const counter = { calls: 0 };
+    let failure = null;
+    try {
+      invoke(storedItemProxy(target, kind, counter));
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal(counter.calls, 0, kind);
+    assert.equal(failure?.name, "ReducerError", kind);
+    assert.equal(failure?.code, "INVALID_SERVER_EVENT", kind);
+  }
+}
+
+test("rejects proxied stored ItemState on active duplicate completion without invoking traps", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "final", phase: null, memoryCitation: null });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    completed(message),
+  );
+  const stored = base.items.get("message-1");
+
+  assertStoredItemRejected(stored, (proxied) =>
+    api.reduceServerMessage(
+      withStoredItem(base, "message-1", proxied),
+      completed(message),
+    ));
+});
+
+test("rejects proxied stored ItemState on terminal duplicate completion without invoking traps", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "final", phase: null, memoryCitation: null });
+  const completedTurn = {
+    id: "turn-1",
+    items: [message],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    { method: "turn/completed", params: { threadId: "thread-1", turn: completedTurn } },
+  );
+  const stored = base.items.get("message-1");
+
+  assertStoredItemRejected(stored, (proxied) =>
+    api.reduceServerMessage(withStoredItem(base, "message-1", proxied), {
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: completedTurn },
+    }));
+});
+
+test("rejects proxied stored ItemState on item started without invoking traps", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "final", phase: null, memoryCitation: null });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    completed(message),
+  );
+  const stored = base.items.get("message-1");
+
+  assertStoredItemRejected(stored, (proxied) =>
+    api.reduceServerMessage(
+      withStoredItem(base, "message-1", proxied),
+      started(message),
+    ));
+});
+
+test("rejects accessor-backed stored ItemState fields without invoking accessors", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "final", phase: null, memoryCitation: null });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    completed(message),
+  );
+  const stored = { ...base.items.get("message-1") };
+  let accessorCalls = 0;
+  Object.defineProperty(stored, "phase", {
+    enumerable: true,
+    get() {
+      accessorCalls += 1;
+      throw new Error("stored ItemState phase accessor invoked");
+    },
+  });
+  let failure = null;
+
+  try {
+    api.reduceServerMessage(
+      withStoredItem(base, "message-1", stored),
+      completed(message),
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.equal(accessorCalls, 0);
+  assert.equal(failure?.name, "ReducerError");
+  assert.equal(failure?.code, "INVALID_SERVER_EVENT");
+});
+
+test("rejects proxied and accessor-backed stored ItemState values on delta without invoking hooks", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "initial", phase: null, memoryCitation: null });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(message),
+  );
+  const stored = base.items.get("message-1");
+  const delta = {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "message-1", delta: " later" },
+  };
+
+  assertStoredItemRejected(stored.value, (proxiedValue) =>
+    api.reduceServerMessage(
+      withStoredItem(base, "message-1", { ...stored, value: proxiedValue }),
+      delta,
+    ));
+
+  let accessorCalls = 0;
+  const accessorValue = {};
+  Object.defineProperty(accessorValue, "text", {
+    enumerable: true,
+    get() {
+      accessorCalls += 1;
+      throw new Error("stored ItemState value accessor invoked");
+    },
+  });
+  let failure = null;
+  try {
+    api.reduceServerMessage(
+      withStoredItem(base, "message-1", { ...stored, value: accessorValue }),
+      delta,
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.equal(accessorCalls, 0);
+  assert.equal(failure?.name, "ReducerError");
+  assert.equal(failure?.code, "INVALID_SERVER_EVENT");
+});
+
+function assertExtraStoredItemAccessorRejected(stored, invoke) {
+  for (const key of ["unexpected", Symbol("unexpected")]) {
+    let accessorCalls = 0;
+    const accessorBacked = { ...stored };
+    Object.defineProperty(accessorBacked, key, {
+      enumerable: true,
+      get() {
+        accessorCalls += 1;
+        throw new Error("extra stored ItemState accessor invoked");
+      },
+    });
+    let failure = null;
+    try {
+      invoke(accessorBacked);
+    } catch (error) {
+      failure = error;
+    }
+    assert.equal(accessorCalls, 0, typeof key);
+    assert.equal(failure?.name, "ReducerError", typeof key);
+    assert.equal(failure?.code, "INVALID_SERVER_EVENT", typeof key);
+  }
+}
+
+test("rejects active stored ItemState extra own accessors before delta update", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "initial", phase: null, memoryCitation: null });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(message),
+  );
+  const stored = base.items.get("message-1");
+  const delta = {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "message-1", delta: " later" },
+  };
+
+  assertExtraStoredItemAccessorRejected(stored, (accessorBacked) =>
+    api.reduceServerMessage(
+      withStoredItem(base, "message-1", accessorBacked),
+      delta,
+    ));
+});
+
+test("rejects omitted stored ItemState extra own accessors before delta update", () => {
+  const api = reducer();
+  let base = api.createTurnState("thread-1", "turn-1");
+  for (let index = 0; index < 64; index += 1) {
+    base = api.reduceServerMessage(
+      base,
+      started(item("agentMessage", `message-${index}`, { text: "x", phase: null, memoryCitation: null })),
+    );
+  }
+  const omittedMessage = item("plan", "omitted-plan", { text: "initial" });
+  base = api.reduceServerMessage(base, started(omittedMessage));
+  const stored = base.omittedItemStates.get("omitted-plan");
+  const delta = {
+    method: "item/plan/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "omitted-plan", delta: " later" },
+  };
+
+  assertExtraStoredItemAccessorRejected(stored, (accessorBacked) => {
+    const omittedItemStates = new Map(base.omittedItemStates);
+    omittedItemStates.set("omitted-plan", accessorBacked);
+    return api.reduceServerMessage({ ...base, omittedItemStates }, delta);
+  });
+});
+
+function assertNonEnumerableStoredItemRejected(stored, invoke) {
+  const nonEnumerable = { ...stored };
+  Object.defineProperty(nonEnumerable, "phase", {
+    value: stored.phase,
+    enumerable: false,
+    writable: true,
+    configurable: true,
+  });
+  assert.throws(
+    () => invoke(nonEnumerable),
+    (error) => error?.name === "ReducerError" && error?.code === "INVALID_SERVER_EVENT",
+  );
+}
+
+test("rejects active stored ItemState with a non-enumerable required field", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "initial", phase: null, memoryCitation: null });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(message),
+  );
+  const stored = base.items.get("message-1");
+  const delta = {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "message-1", delta: " later" },
+  };
+
+  assertNonEnumerableStoredItemRejected(stored, (nonEnumerable) =>
+    api.reduceServerMessage(withStoredItem(base, "message-1", nonEnumerable), delta));
+});
+
+test("rejects omitted stored ItemState with a non-enumerable required field", () => {
+  const api = reducer();
+  let base = api.createTurnState("thread-1", "turn-1");
+  for (let index = 0; index < 64; index += 1) {
+    base = api.reduceServerMessage(
+      base,
+      started(item("agentMessage", `message-${index}`, { text: "x", phase: null, memoryCitation: null })),
+    );
+  }
+  base = api.reduceServerMessage(base, started(item("plan", "omitted-plan", { text: "initial" })));
+  const stored = base.omittedItemStates.get("omitted-plan");
+  const delta = {
+    method: "item/plan/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "omitted-plan", delta: " later" },
+  };
+
+  assertNonEnumerableStoredItemRejected(stored, (nonEnumerable) => {
+    const omittedItemStates = new Map(base.omittedItemStates);
+    omittedItemStates.set("omitted-plan", nonEnumerable);
+    return api.reduceServerMessage({ ...base, omittedItemStates }, delta);
+  });
+});

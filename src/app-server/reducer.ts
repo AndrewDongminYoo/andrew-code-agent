@@ -60,6 +60,7 @@ function descriptorSafeJsonData(
 ): unknown | typeof INVALID_JSON_DATA {
   try {
     if (depth > 32) return INVALID_JSON_DATA;
+    if (isProxy(value)) return INVALID_JSON_DATA;
     if (
       value === null ||
       typeof value === "string" ||
@@ -177,6 +178,48 @@ function structurallyEqual(left: unknown, right: unknown, depth = 0): boolean {
   }
 }
 
+function validatedStoredItem(value: unknown): ItemState | undefined {
+  if (value === undefined) return undefined;
+  if (isProxy(value)) throw new ReducerError("INVALID_SERVER_EVENT");
+  try {
+    const names = Object.getOwnPropertyNames(value);
+    const symbols = Object.getOwnPropertySymbols(value);
+    if (
+      symbols.length !== 0 ||
+      names.length !== 4 ||
+      !["id", "type", "phase", "value"].every((name) => names.includes(name))
+    )
+      throw new ReducerError("INVALID_SERVER_EVENT");
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const id = descriptors.id;
+    const type = descriptors.type;
+    const phase = descriptors.phase;
+    const itemValue = descriptors.value;
+    if (
+      id === undefined ||
+      !("value" in id) ||
+      id.enumerable !== true ||
+      typeof id.value !== "string" ||
+      type === undefined ||
+      !("value" in type) ||
+      type.enumerable !== true ||
+      typeof type.value !== "string" ||
+      phase === undefined ||
+      !("value" in phase) ||
+      phase.enumerable !== true ||
+      (phase.value !== "started" && phase.value !== "completed") ||
+      itemValue === undefined ||
+      !("value" in itemValue) ||
+      itemValue.enumerable !== true ||
+      descriptorSafeJsonData(itemValue.value) === INVALID_JSON_DATA
+    )
+      throw new ReducerError("INVALID_SERVER_EVENT");
+    return value as ItemState;
+  } catch {
+    throw new ReducerError("INVALID_SERVER_EVENT");
+  }
+}
+
 function requireIdentity(state: TurnState, params: RecordValue): void {
   if (params.threadId !== state.threadId || params.turnId !== state.turnId)
     throw new ReducerError("INVALID_SERVER_EVENT");
@@ -261,7 +304,7 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
 
 function replaceItem(state: TurnState, item: ItemState): TurnState {
   const items = new Map(state.items);
-  const omitted = state.omittedItemStates?.get(item.id);
+  const omitted = validatedStoredItem(state.omittedItemStates?.get(item.id));
   if (omitted !== undefined) {
     if (omitted.type !== item.type)
       throw new ReducerError("INVALID_SERVER_EVENT");
@@ -319,7 +362,7 @@ function knownOmittedItem(
   expectedType: string,
 ): ItemState | undefined {
   if (!isKnownOmittedItem(state, itemId, expectedType)) return undefined;
-  const item = state.omittedItemStates?.get(itemId);
+  const item = validatedStoredItem(state.omittedItemStates?.get(itemId));
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
   return item;
@@ -339,7 +382,7 @@ function updateDelta(
     if (omitted.phase === "completed") return state;
     return replaceItem(state, update(omitted));
   }
-  const item = state.items.get(itemId);
+  const item = validatedStoredItem(state.items.get(itemId));
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
   if (item.phase === "completed") return state;
@@ -356,7 +399,7 @@ function terminalDelta(
   const itemId = text(params.itemId);
   if (itemId === null) throw new ReducerError("INVALID_SERVER_EVENT");
   if (isKnownOmittedItem(state, itemId, expectedType)) return state;
-  const item = state.items.get(itemId);
+  const item = validatedStoredItem(state.items.get(itemId));
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
   return state;
@@ -409,7 +452,8 @@ export function reduceServerMessage(
     requireIdentity(state, params);
     const next = safeItem(params.item, "started");
     const previous =
-      state.items.get(next.id) ?? state.omittedItemStates?.get(next.id);
+      validatedStoredItem(state.items.get(next.id)) ??
+      validatedStoredItem(state.omittedItemStates?.get(next.id));
     if (previous?.phase === "completed") {
       if (previous.type !== next.type)
         throw new ReducerError("INVALID_SERVER_EVENT");
@@ -423,7 +467,8 @@ export function reduceServerMessage(
     requireIdentity(state, params);
     const next = safeItem(params.item, "completed");
     const previous =
-      state.items.get(next.id) ?? state.omittedItemStates?.get(next.id);
+      validatedStoredItem(state.items.get(next.id)) ??
+      validatedStoredItem(state.omittedItemStates?.get(next.id));
     if (state.terminalStatus !== "running") {
       if (previous?.type !== next.type || !structurallyEqual(previous, next))
         throw new ReducerError("INVALID_SERVER_EVENT");
