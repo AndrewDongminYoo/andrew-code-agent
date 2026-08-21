@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { closeSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,6 +9,9 @@ import test from "node:test";
 const coordinatorModule = await import(
   "../../dist/app-server/coordinator.js"
 ).catch(() => null);
+const transportModule = await import(
+  "../../dist/app-server/transport.js"
+).catch(() => null);
 
 function coordinator() {
   assert.notEqual(
@@ -16,6 +20,56 @@ function coordinator() {
     "the built app-server coordinator module must be available",
   );
   return coordinatorModule;
+}
+
+function transport() {
+  assert.notEqual(
+    transportModule,
+    null,
+    "the built app-server transport module must be available",
+  );
+  return transportModule;
+}
+
+function transportBackedClient(onMessage) {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = (signal) => {
+    if (child.exitCode !== null || child.signalCode !== null) return false;
+    child.signalCode = signal;
+    child.stdout.end();
+    child.emit("exit", null, signal);
+    return true;
+  };
+  const rpc = new (transport().StdioJsonRpcTransport)(child, 300);
+  rpc.markReady();
+  let input = "";
+  child.stdin.setEncoding("utf8");
+  child.stdin.on("data", (chunk) => {
+    input += chunk;
+    while (input.includes("\n")) {
+      const newline = input.indexOf("\n");
+      const line = input.slice(0, newline);
+      input = input.slice(newline + 1);
+      onMessage(JSON.parse(line), child.stdout);
+    }
+  });
+  return {
+    threadStart: (params) => rpc.request("thread/start", params),
+    threadResume: (params) => rpc.request("thread/resume", params),
+    threadRead: (params) => rpc.request("thread/read", params),
+    turnStart: (params) => rpc.request("turn/start", params),
+    turnInterrupt: (params) => rpc.request("turn/interrupt", params),
+    respond: (id, result) => rpc.respond(id, result),
+    onNotification: (listener) => rpc.onNotification(listener),
+    onRequest: (listener) => rpc.onRequest(listener),
+    onFailure: (listener) => rpc.onFailure(listener),
+    close: () => rpc.close(),
+  };
 }
 
 function terminalNotification(threadId, turnId, status = "completed") {
@@ -53,6 +107,7 @@ class FakeClient {
   closed = 0;
   threadId = "thread-1";
   turnId = "turn-1";
+  threadStatus = { type: "idle" };
   onTurnStart = null;
   onTurnInterrupt = null;
 
@@ -68,7 +123,7 @@ class FakeClient {
 
   async threadRead(params) {
     this.calls.push(["threadRead", params]);
-    return { thread: { id: this.threadId } };
+    return { thread: { id: this.threadId, status: this.threadStatus } };
   }
 
   async turnStart(params) {
@@ -452,26 +507,469 @@ test("finalizes forced pre-response resume interruption but preserves ordinary r
   assert.equal(ordinary.client.closed, 1);
 });
 
-test("reads live status with exact identity and no mutation", async () => {
-  const fixture = harness();
-  const original = fixture.stored();
-  const result = await coordinator().readLiveStatus(
-    "thread-1",
-    fixture.dependencies,
-  );
-  assert.deepEqual(result, original);
-  assert.deepEqual(fixture.client.calls, [
-    ["threadRead", { threadId: "thread-1", includeTurns: false }],
-  ]);
-  assert.equal(fixture.writes.length, 0);
-  assert.equal(fixture.order.some((entry) => entry.startsWith("snapshot:")), false);
-  assert.equal(fixture.client.closed, 1);
+test("returns validated live status snapshots without mutating the local record", async () => {
+  for (const [status, expected] of [
+    [{ type: "idle" }, { type: "idle" }],
+    [{ type: "notLoaded" }, { type: "notLoaded" }],
+    [{ type: "systemError" }, { type: "systemError" }],
+    [
+      { type: "active", activeFlags: ["waitingOnApproval"] },
+      { type: "active" },
+    ],
+  ]) {
+    const fixture = harness();
+    fixture.client.threadStatus = status;
+    const original = fixture.stored();
+    const result = await coordinator().readLiveStatus(
+      "thread-1",
+      fixture.dependencies,
+    );
+    assert.deepEqual(result, { record: original, liveStatus: expected });
+    assert.notStrictEqual(result.record, original);
+    assert.notStrictEqual(result.liveStatus, status);
+    assert.deepEqual(fixture.client.calls, [
+      ["threadRead", { threadId: "thread-1", includeTurns: false }],
+    ]);
+    assert.equal(fixture.writes.length, 0);
+    assert.equal(
+      fixture.order.some((entry) => entry.startsWith("snapshot:")),
+      false,
+    );
+    assert.deepEqual(fixture.stored(), original);
+    assert.equal(fixture.client.closed, 1);
+  }
+});
+
+test("rejects malformed, hostile, inherited, and identity-mismatched live status", async () => {
+  let activeFlagGetterCalls = 0;
+  const cases = [
+    { name: "unknown", status: { type: "unknown" } },
+    { name: "missing active flags", status: { type: "active" } },
+    {
+      name: "accessor",
+      status: Object.defineProperty({}, "type", { get: () => "idle" }),
+    },
+    {
+      name: "inherited",
+      status: Object.create({ type: "idle" }),
+    },
+    {
+      name: "proxy",
+      status: new Proxy({ type: "idle" }, {}),
+    },
+    {
+      name: "active flags accessor",
+      status: {
+        type: "active",
+        activeFlags: Object.defineProperty([], "0", {
+          enumerable: true,
+          get() {
+            activeFlagGetterCalls += 1;
+            return "waitingOnApproval";
+          },
+        }),
+      },
+    },
+  ];
+  for (const fixtureCase of cases) {
+    const fixture = harness();
+    fixture.client.threadStatus = fixtureCase.status;
+    const original = fixture.stored();
+    await assert.rejects(
+      coordinator().readLiveStatus("thread-1", fixture.dependencies),
+      { code: "MALFORMED_APP_SERVER_RESPONSE" },
+      fixtureCase.name,
+    );
+    assert.deepEqual(fixture.stored(), original, fixtureCase.name);
+    assert.equal(fixture.writes.length, 0, fixtureCase.name);
+  }
+  assert.equal(activeFlagGetterCalls, 0);
 
   const mismatch = harness();
   mismatch.client.threadId = "other-thread";
   await assert.rejects(
     coordinator().readLiveStatus("thread-1", mismatch.dependencies),
     { code: "APP_SERVER_IDENTITY_MISMATCH" },
+  );
+});
+
+test("rejects hostile response and thread containers without invoking traps or getters", async () => {
+  let trapCalls = 0;
+  let getterCalls = 0;
+  const proxyHandler = {
+    get(_target, property) {
+      if (property === "then") return undefined;
+      trapCalls += 1;
+      return undefined;
+    },
+    getOwnPropertyDescriptor() {
+      trapCalls += 1;
+      return undefined;
+    },
+    getPrototypeOf() {
+      trapCalls += 1;
+      return Object.prototype;
+    },
+  };
+  const liveResponseProxy = new Proxy({}, proxyHandler);
+  const liveThreadProxy = new Proxy({}, proxyHandler);
+  const { proxy: revokedResponseProxy, revoke: revokeResponse } =
+    Proxy.revocable({}, proxyHandler);
+  const { proxy: revokedThreadProxy, revoke: revokeThread } = Proxy.revocable(
+    {},
+    proxyHandler,
+  );
+  revokeResponse();
+  revokeThread();
+  const validThread = { id: "thread-1", status: { type: "idle" } };
+  const cases = [
+    {
+      name: "response custom prototype",
+      response: Object.assign(Object.create({ inherited: true }), {
+        thread: validThread,
+      }),
+    },
+    {
+      name: "response inherited thread",
+      response: Object.create({ thread: validThread }),
+    },
+    {
+      name: "response accessor",
+      response: Object.defineProperty({}, "thread", {
+        get() {
+          getterCalls += 1;
+          return validThread;
+        },
+      }),
+    },
+    { name: "response live proxy", response: liveResponseProxy },
+    { name: "response revoked proxy", response: revokedResponseProxy },
+    {
+      name: "thread custom prototype",
+      response: {
+        thread: Object.assign(Object.create({ inherited: true }), validThread),
+      },
+    },
+    {
+      name: "thread inherited state",
+      response: { thread: Object.create(validThread) },
+    },
+    {
+      name: "thread accessor",
+      response: {
+        thread: Object.defineProperties(
+          {},
+          {
+            id: { enumerable: true, value: "thread-1" },
+            status: {
+              get() {
+                getterCalls += 1;
+                return { type: "idle" };
+              },
+            },
+          },
+        ),
+      },
+    },
+    { name: "thread live proxy", response: { thread: liveThreadProxy } },
+    { name: "thread revoked proxy", response: { thread: revokedThreadProxy } },
+  ];
+
+  for (const fixtureCase of cases) {
+    const fixture = harness();
+    fixture.client.threadRead = async function (params) {
+      this.calls.push(["threadRead", params]);
+      return fixtureCase.response;
+    };
+    await assert.rejects(
+      coordinator().readLiveStatus("thread-1", fixture.dependencies),
+      { code: "MALFORMED_APP_SERVER_RESPONSE" },
+      fixtureCase.name,
+    );
+  }
+  assert.equal(trapCalls, 0);
+  assert.equal(getterCalls, 0);
+});
+
+test("rejects hostile response operations before then traps can forge authority", async () => {
+  let thenTrapCalls = 0;
+  let errorTrapCalls = 0;
+  const hostile = harness();
+  hostile.client.threadRead = function (params) {
+    this.calls.push(["threadRead", params]);
+    return new Proxy(
+      {},
+      {
+        get(_target, property) {
+          if (property === "then") {
+            thenTrapCalls += 1;
+            throw Object.assign(new Error("hostile assimilation"), {
+              code: "APP_SERVER_REMOTE_ERROR",
+            });
+          }
+          return undefined;
+        },
+      },
+    );
+  };
+
+  await assert.rejects(
+    coordinator().readLiveStatus("thread-1", hostile.dependencies),
+    (error) => {
+      assert.equal(error.name, "CoordinatorError");
+      assert.equal(error.code, "MALFORMED_APP_SERVER_RESPONSE");
+      assert.equal(error.message, "MALFORMED_APP_SERVER_RESPONSE");
+      return true;
+    },
+  );
+  assert.equal(thenTrapCalls, 0);
+
+  const proxiedFailure = harness();
+  const hostileError = new Proxy(
+    Object.assign(new Error("hostile error"), {
+      code: "APP_SERVER_REMOTE_ERROR",
+    }),
+    {
+      getPrototypeOf() {
+        errorTrapCalls += 1;
+        throw new Error("error prototype trap");
+      },
+    },
+  );
+  proxiedFailure.client.threadRead = function (params) {
+    this.calls.push(["threadRead", params]);
+    return new Proxy(
+      {},
+      {
+        get(_target, property) {
+          if (property === "then") throw hostileError;
+          return undefined;
+        },
+      },
+    );
+  };
+  await assert.rejects(
+    coordinator().readLiveStatus("thread-1", proxiedFailure.dependencies),
+    { code: "MALFORMED_APP_SERVER_RESPONSE" },
+  );
+  assert.equal(errorTrapCalls, 0);
+});
+
+test("rejects a Proxy threadRead operation before assimilating a typed trap failure", async () => {
+  let thenTrapCalls = 0;
+  const fixture = harness();
+  fixture.client.threadRead = function (params) {
+    this.calls.push(["threadRead", params]);
+    return new Proxy(
+      {},
+      {
+        get(_target, property) {
+          if (property === "then") {
+            thenTrapCalls += 1;
+            throw new (transport().AppServerError)("APP_SERVER_REMOTE_ERROR");
+          }
+          return undefined;
+        },
+      },
+    );
+  };
+
+  await assert.rejects(
+    coordinator().readLiveStatus("thread-1", fixture.dependencies),
+    { code: "MALFORMED_APP_SERVER_RESPONSE" },
+  );
+  assert.equal(thenTrapCalls, 0);
+});
+
+test("rejects a plain thenable before it can throw a typed failure", async () => {
+  let thenCalls = 0;
+  const fixture = harness();
+  fixture.client.threadRead = function (params) {
+    this.calls.push(["threadRead", params]);
+    return {
+      then() {
+        thenCalls += 1;
+        throw new (transport().AppServerError)("APP_SERVER_REMOTE_ERROR");
+      },
+    };
+  };
+
+  const outcome = await coordinator()
+    .readLiveStatus("thread-1", fixture.dependencies)
+    .then(
+      () => ({ code: "TEST_RESOLVED" }),
+      (error) => error,
+    );
+  assert.deepEqual(
+    { thenCalls, code: outcome.code },
+    { thenCalls: 0, code: "MALFORMED_APP_SERVER_RESPONSE" },
+  );
+});
+
+test("rejects an accessor-backed thenable response without invoking its getter", async () => {
+  let getterCalls = 0;
+  const fixture = harness();
+  fixture.client.threadRead = function (params) {
+    this.calls.push(["threadRead", params]);
+    return Object.defineProperty(
+      { thread: { id: "thread-1", status: { type: "idle" } } },
+      "then",
+      {
+        get() {
+          getterCalls += 1;
+          return undefined;
+        },
+      },
+    );
+  };
+
+  const outcome = await coordinator()
+    .readLiveStatus("thread-1", fixture.dependencies)
+    .then(
+      () => ({ code: "TEST_RESOLVED" }),
+      (error) => error,
+    );
+  assert.deepEqual(
+    { getterCalls, code: outcome.code },
+    { getterCalls: 0, code: "MALFORMED_APP_SERVER_RESPONSE" },
+  );
+});
+
+test("rejects a Promise subclass without invoking its own then getter", async () => {
+  let getterCalls = 0;
+  class HostilePromise extends Promise {}
+  const operation = new HostilePromise((resolve) =>
+    resolve({ thread: { id: "thread-1", status: { type: "idle" } } }),
+  );
+  Object.defineProperty(operation, "then", {
+    get() {
+      getterCalls += 1;
+      throw new (transport().AppServerError)("APP_SERVER_REMOTE_ERROR");
+    },
+  });
+  const fixture = harness();
+  fixture.client.threadRead = function (params) {
+    this.calls.push(["threadRead", params]);
+    return operation;
+  };
+
+  const outcome = await coordinator()
+    .readLiveStatus("thread-1", fixture.dependencies)
+    .then(
+      () => ({ code: "TEST_RESOLVED" }),
+      (error) => error,
+    );
+  assert.deepEqual(
+    { getterCalls, code: outcome.code },
+    { getterCalls: 0, code: "MALFORMED_APP_SERVER_RESPONSE" },
+  );
+});
+
+test("preserves an actual runtime AppServerError by identity", async () => {
+  const typed = harness();
+  const remoteError = new (transport().AppServerError)(
+    "APP_SERVER_REMOTE_ERROR",
+  );
+  typed.client.threadRead = async function (params) {
+    this.calls.push(["threadRead", params]);
+    throw remoteError;
+  };
+  await assert.rejects(
+    coordinator().readLiveStatus("thread-1", typed.dependencies),
+    (error) => error === remoteError,
+  );
+});
+
+test("real transport defers a response-following burst until coordinator turn state exists", async () => {
+  const warnings = Array.from({ length: 300 }, (_, sequence) => ({
+    method: "warning",
+    params: { threadId: "thread-1", message: `warning-${sequence}` },
+  }));
+  const client = transportBackedClient((message, stdout) => {
+    if (message.method === "thread/start") {
+      queueMicrotask(() =>
+        stdout.write(
+          `${JSON.stringify({ id: message.id, result: { thread: { id: "thread-1" } } })}\n`,
+        ),
+      );
+      return;
+    }
+    if (message.method === "turn/start") {
+      const frames = [
+        { id: message.id, result: { turn: { id: "turn-1" } } },
+        ...warnings,
+        terminalNotification("thread-1", "turn-1"),
+      ];
+      queueMicrotask(() =>
+        stdout.write(
+          `${frames.map((frame) => JSON.stringify(frame)).join("\n")}\n`,
+        ),
+      );
+      return;
+    }
+    if (message.method === "turn/interrupt")
+      queueMicrotask(() =>
+        stdout.write(`${JSON.stringify({ id: message.id, result: {} })}\n`),
+      );
+  });
+  const fixture = harness({ record: null, client, interruptGraceMs: 5 });
+
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+
+  assert.equal(result.terminalStatus, "completed");
+  assert.deepEqual(
+    fixture.states.at(-1).warnings,
+    warnings.slice(0, 16).map(({ params }) => params.message),
+  );
+  assert.deepEqual(
+    fixture.writes.map((record) => record.terminalStatus),
+    ["not-started", "running", "completed"],
+  );
+});
+
+test("accepts a schema-valid response-following burst but caps genuine pre-response events", async () => {
+  const responseFollowing = harness({ record: null });
+  responseFollowing.client.onTurnStart = async (client) => {
+    setImmediate(() => {
+      for (let sequence = 0; sequence < 300; sequence += 1) {
+        client.emitNotification({
+          method: "warning",
+          params: { threadId: "thread-1", message: `warning-${sequence}` },
+        });
+      }
+      client.emitNotification(terminalNotification("thread-1", "turn-1"));
+    });
+  };
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    responseFollowing.dependencies,
+  );
+  assert.equal(result.terminalStatus, "completed");
+  assert.deepEqual(
+    responseFollowing.writes.map((record) => record.terminalStatus),
+    ["not-started", "running", "completed"],
+  );
+
+  const preResponse = harness({ record: null, interruptGraceMs: 5 });
+  preResponse.client.onTurnStart = async (client) => {
+    for (let sequence = 0; sequence < 257; sequence += 1) {
+      client.emitNotification({
+        method: "warning",
+        params: { threadId: "thread-1", message: `warning-${sequence}` },
+      });
+    }
+  };
+  const capped = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    preResponse.dependencies,
+  );
+  assert.equal(capped.terminalStatus, "failed");
+  assert.deepEqual(
+    preResponse.writes.map((record) => record.terminalStatus),
+    ["not-started", "running", "failed"],
   );
 });
 

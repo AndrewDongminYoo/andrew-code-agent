@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 
 const transportModule = await import(
@@ -28,6 +30,23 @@ function requireClient() {
     "the built app-server client module must be available",
   );
   return clientModule;
+}
+
+function syntheticChild() {
+  const child = new EventEmitter();
+  child.stdin = new PassThrough();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.exitCode = null;
+  child.signalCode = null;
+  child.kill = (signal) => {
+    if (child.exitCode !== null || child.signalCode !== null) return false;
+    child.signalCode = signal;
+    child.stdout.end();
+    child.emit("exit", null, signal);
+    return true;
+  };
+  return child;
 }
 
 async function withProtocolChild(source, run) {
@@ -291,6 +310,246 @@ test("fails terminally on a duplicate completed response ID", async () => {
       await transport.close();
     },
   );
+});
+
+test("yields after a response before delivering an ordered following burst", async () => {
+  const notifications = Array.from({ length: 300 }, (_, sequence) => ({
+    method: "test/notification",
+    params: { sequence },
+  }));
+  await withProtocolChild(
+    `import { createInterface } from "node:readline"; const lines = createInterface({ input: process.stdin }); for await (const line of lines) { const message = JSON.parse(line); const frames = [{ id: message.id, result: {} }, ...${JSON.stringify(notifications)}]; process.stdout.write(frames.map((frame) => JSON.stringify(frame)).join("\\n") + "\\n"); }`,
+    async (child) => {
+      const transport = new (requireTransport().StdioJsonRpcTransport)(
+        child,
+        300,
+      );
+      const order = [];
+      let resolveDelivered;
+      const delivered = new Promise((resolve) => {
+        resolveDelivered = resolve;
+      });
+      transport.onNotification((message) => {
+        order.push(`notification:${message.params.sequence}`);
+        if (message.params.sequence === notifications.length - 1)
+          resolveDelivered();
+      });
+
+      await transport.request("initialize", {}).then(() => {
+        order.push("response");
+      });
+      await delivered;
+
+      assert.deepEqual(order, [
+        "response",
+        ...notifications.map(
+          ({ params }) => `notification:${params.sequence}`,
+        ),
+      ]);
+      await transport.close();
+    },
+  );
+});
+
+test("serializes reentrant stdout behind an older same-chunk remainder", async () => {
+  const child = syntheticChild();
+  const transport = new (requireTransport().StdioJsonRpcTransport)(child, 300);
+  const order = [];
+  let notifications = 0;
+  let resolveDelivered;
+  const delivered = new Promise((resolve) => {
+    resolveDelivered = resolve;
+  });
+  transport.onNotification((message) => {
+    order.push(message.params.label);
+    notifications += 1;
+    if (notifications === 2) resolveDelivered();
+  });
+  let inject = true;
+  child.stdout.on("data", () => {
+    if (!inject) return;
+    inject = false;
+    child.stdout.emit(
+      "data",
+      `${JSON.stringify({ method: "test/notification", params: { label: "new-chunk" } })}\n`,
+    );
+  });
+
+  const response = transport.request("initialize", {}).then(() => {
+    order.push("response");
+  });
+  child.stdout.write(
+    `${JSON.stringify({ id: 1, result: {} })}\n${JSON.stringify({ method: "test/notification", params: { label: "same-chunk-remainder" } })}\n`,
+  );
+  await Promise.all([response, delivered]);
+
+  assert.deepEqual(order, [
+    "response",
+    "same-chunk-remainder",
+    "new-chunk",
+  ]);
+  await transport.close();
+});
+
+test("keeps a response remainder ahead of stdout emitted by a preceding notification", async () => {
+  const child = syntheticChild();
+  const transport = new (requireTransport().StdioJsonRpcTransport)(child, 300);
+  const order = [];
+  let notifications = 0;
+  let resolveDelivered;
+  const delivered = new Promise((resolve) => {
+    resolveDelivered = resolve;
+  });
+  transport.onNotification((message) => {
+    order.push(message.params.label);
+    notifications += 1;
+    if (message.params.label === "before-notification") {
+      child.stdout.emit(
+        "data",
+        `${JSON.stringify({ method: "test/notification", params: { label: "reentrant-new-chunk" } })}\n`,
+      );
+    }
+    if (notifications === 3) resolveDelivered();
+  });
+
+  const response = transport.request("initialize", {}).then(() => {
+    order.push("response");
+  });
+  child.stdout.write(
+    [
+      { method: "test/notification", params: { label: "before-notification" } },
+      { id: 1, result: {} },
+      { method: "test/notification", params: { label: "same-write-remainder" } },
+    ]
+      .map((frame) => JSON.stringify(frame))
+      .join("\n") + "\n",
+  );
+  await Promise.all([response, delivered]);
+
+  assert.deepEqual(order, [
+    "before-notification",
+    "response",
+    "same-write-remainder",
+    "reentrant-new-chunk",
+  ]);
+  await transport.close();
+});
+
+test("fails closed when reentrant stdout exceeds the bounded pending-input count", async () => {
+  const child = syntheticChild();
+  const transport = new (requireTransport().StdioJsonRpcTransport)(child, 300);
+  let inject = true;
+  child.stdout.on("data", () => {
+    if (!inject) return;
+    inject = false;
+    for (let count = 0; count < 256; count += 1)
+      child.stdout.emit("data", " ");
+  });
+  const failure = new Promise((resolve) => transport.onFailure(resolve));
+  const response = transport.request("initialize", {});
+  child.stdout.write(
+    `${JSON.stringify({ id: 1, result: {} })}\n${JSON.stringify({ method: "test/notification", params: {} })}\n`,
+  );
+  await response;
+
+  const outcome = await Promise.race([
+    failure,
+    new Promise((resolve) =>
+      setTimeout(() => resolve({ code: "TEST_TIMEOUT" }), 50),
+    ),
+  ]);
+  assert.equal(outcome.code, "APP_SERVER_PROTOCOL_LIMIT");
+  await transport.close();
+});
+
+test("accepts an exact 16 MiB response-following line through the barrier", async () => {
+  const maxProtocolLineBytes = 16 * 1024 * 1024;
+  const emptyFrame = JSON.stringify(completedNotification(""));
+  const aggregatedOutput = "x".repeat(
+    maxProtocolLineBytes - Buffer.byteLength(emptyFrame, "utf8"),
+  );
+  const notification = completedNotification(aggregatedOutput);
+  const frame = JSON.stringify(notification);
+  assert.equal(Buffer.byteLength(frame, "utf8"), maxProtocolLineBytes);
+  const child = syntheticChild();
+  const transport = new (requireTransport().StdioJsonRpcTransport)(child, 300);
+  const order = [];
+  let resolveOutcome;
+  const outcome = new Promise((resolve) => {
+    resolveOutcome = resolve;
+  });
+  transport.onNotification((message) => {
+    order.push("notification");
+    resolveOutcome({ kind: "notification", message });
+  });
+  transport.onFailure((error) => {
+    order.push("failure");
+    resolveOutcome({ kind: "failure", error });
+  });
+  const response = transport.request("initialize", {}).then(() => {
+    order.push("response");
+  });
+
+  child.stdout.write(
+    `${JSON.stringify({ id: 1, result: {} })}\n${frame}\n`,
+  );
+  const received = await outcome;
+  await response;
+
+  assert.deepEqual(received, { kind: "notification", message: notification });
+  assert.deepEqual(order, ["response", "notification"]);
+  await transport.close();
+});
+
+test("bounds aggregate pending delimiter bytes before draining them", async () => {
+  const child = syntheticChild();
+  const transport = new (requireTransport().StdioJsonRpcTransport)(child, 300);
+  let inject = true;
+  child.stdout.on("data", () => {
+    if (!inject) return;
+    inject = false;
+    child.stdout.emit("data", "\n".repeat(16 * 1024 * 1024 + 257));
+  });
+  const failure = new Promise((resolve) => transport.onFailure(resolve));
+  const response = transport.request("initialize", {});
+  child.stdout.write(
+    `${JSON.stringify({ id: 1, result: {} })}\n${JSON.stringify({ method: "test/notification", params: {} })}\n`,
+  );
+  await response;
+
+  const error = await failure;
+  assert.equal(error.code, "APP_SERVER_PROTOCOL_LIMIT");
+  await transport.close();
+});
+
+test("drains response-following frames before reporting an unexpected exit", async () => {
+  const child = syntheticChild();
+  const transport = new (requireTransport().StdioJsonRpcTransport)(child, 300);
+  const order = [];
+  const response = transport.request("initialize", {}).then(() => {
+    order.push("response");
+  });
+  transport.onNotification(() => order.push("notification"));
+  const failure = new Promise((resolve) =>
+    transport.onFailure((error) => {
+      order.push("failure");
+      resolve(error);
+    }),
+  );
+
+  child.stdout.write(
+    `${JSON.stringify({ id: 1, result: {} })}\n${JSON.stringify({ method: "test/notification", params: {} })}\n`,
+  );
+  child.stdout.emit("end");
+  child.exitCode = 17;
+  child.emit("exit", 17, null);
+
+  const error = await failure;
+  await response;
+  assert.equal(error.code, "APP_SERVER_UNEXPECTED_EXIT");
+  assert.equal(error.exitCode, 17);
+  assert.deepEqual(order, ["response", "notification", "failure"]);
+  await transport.close();
 });
 
 test("bounds and redacts stderr accounting from protocol failures", async () => {

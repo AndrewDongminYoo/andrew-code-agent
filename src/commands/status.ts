@@ -54,8 +54,13 @@ export async function statusCommand(
       dependencies,
     );
     delegated = true;
-    const record = await dependencies.readLiveStatus(threadId, coordinator);
-    await renderLocalRecord(record, io.stdout);
+    const status = await dependencies.readLiveStatus(threadId, coordinator);
+    await writeLine(io.stdout, "Persisted thread record:");
+    await renderLocalRecord(status.record, io.stdout);
+    await writeLine(
+      io.stdout,
+      `Live App Server status: ${status.liveStatus.type}`,
+    );
     outcome = 0;
   } catch (error) {
     diagnostic =

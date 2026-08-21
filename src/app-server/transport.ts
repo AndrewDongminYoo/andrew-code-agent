@@ -91,6 +91,10 @@ interface PendingRequest {
 }
 
 const MAX_PROTOCOL_LINE_BYTES = 16 * 1024 * 1024;
+const MAX_PENDING_STDOUT_PAYLOAD_BYTES = MAX_PROTOCOL_LINE_BYTES;
+const MAX_PENDING_STDOUT_CHUNKS = 256;
+const MAX_PENDING_STDOUT_WIRE_BYTES =
+  MAX_PENDING_STDOUT_PAYLOAD_BYTES + MAX_PENDING_STDOUT_CHUNKS;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -132,6 +136,11 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
   private nextId = 1;
   private stdoutBuffer = "";
   private stdoutBufferBytes = 0;
+  private stdoutPendingChunks: string[] = [];
+  private stdoutPendingPayloadBytes = 0;
+  private stdoutPendingWireBytes = 0;
+  private stdoutConsuming = false;
+  private stdoutDrainScheduled = false;
   private ready = false;
   private firstFailure: AppServerError | undefined;
   private closePromise: Promise<void> | undefined;
@@ -147,7 +156,7 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
       this.resolveChildExited = resolve;
     });
     child.stdout.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => this.consumeStdout(chunk));
+    child.stdout.on("data", (chunk: string) => this.receiveStdout(chunk));
     child.stdout.once("end", () => {
       this.stdoutEnded = true;
       this.finishChildExit();
@@ -287,6 +296,7 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
   close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     const closed = new AppServerError("APP_SERVER_CLOSED", this.diagnostics);
+    this.clearPendingStdout();
     this.closePromise = this.shutdown();
     this.rejectPending(closed);
     return this.closePromise;
@@ -296,6 +306,74 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
     const remaining = 65_536 - this.diagnostics.stderrRetainedBytes;
     this.diagnostics.stderrRetainedBytes += Math.min(remaining, byteLength);
     if (byteLength > remaining) this.diagnostics.stderrTruncated = true;
+  }
+
+  private receiveStdout(chunk: string): void {
+    if (this.firstFailure || this.closePromise || chunk.length === 0) return;
+    if (this.stdoutConsuming || this.stdoutDrainScheduled) {
+      this.enqueuePendingStdout(chunk);
+      return;
+    }
+    this.stdoutConsuming = true;
+    try {
+      this.consumeStdout(chunk);
+    } finally {
+      this.stdoutConsuming = false;
+      if (this.stdoutPendingChunks.length > 0) this.scheduleStdoutDrain();
+      this.finishChildExit();
+    }
+  }
+
+  private enqueuePendingStdout(chunk: string, prepend = false): boolean {
+    if (this.firstFailure || this.closePromise || chunk.length === 0)
+      return false;
+    let newlineBytes = 0;
+    let newline = chunk.indexOf("\n");
+    while (newline >= 0) {
+      newlineBytes += 1;
+      newline = chunk.indexOf("\n", newline + 1);
+    }
+    const wireBytes = Buffer.byteLength(chunk, "utf8");
+    const payloadBytes = wireBytes - newlineBytes;
+    if (
+      this.stdoutPendingChunks.length >= MAX_PENDING_STDOUT_CHUNKS ||
+      payloadBytes >
+        MAX_PENDING_STDOUT_PAYLOAD_BYTES - this.stdoutPendingPayloadBytes ||
+      wireBytes > MAX_PENDING_STDOUT_WIRE_BYTES - this.stdoutPendingWireBytes
+    ) {
+      this.fail(
+        new AppServerError("APP_SERVER_PROTOCOL_LIMIT", this.diagnostics),
+      );
+      return false;
+    }
+    if (prepend) this.stdoutPendingChunks.unshift(chunk);
+    else this.stdoutPendingChunks.push(chunk);
+    this.stdoutPendingPayloadBytes += payloadBytes;
+    this.stdoutPendingWireBytes += wireBytes;
+    return true;
+  }
+
+  private scheduleStdoutDrain(): void {
+    if (this.stdoutDrainScheduled || this.firstFailure || this.closePromise)
+      return;
+    this.stdoutDrainScheduled = true;
+    queueMicrotask(() => {
+      this.stdoutDrainScheduled = false;
+      if (this.firstFailure || this.closePromise) {
+        this.clearPendingStdout();
+        return;
+      }
+      const pending = this.stdoutPendingChunks.join("");
+      this.clearPendingStdout();
+      this.receiveStdout(pending);
+      this.finishChildExit();
+    });
+  }
+
+  private clearPendingStdout(): void {
+    this.stdoutPendingChunks = [];
+    this.stdoutPendingPayloadBytes = 0;
+    this.stdoutPendingWireBytes = 0;
   }
 
   private consumeStdout(chunk: string): void {
@@ -325,7 +403,17 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
         this.fail(new AppServerError("MALFORMED_PROTOCOL", this.diagnostics));
         return;
       }
+      const isResponse =
+        isRecord(message) &&
+        Object.hasOwn(message, "id") &&
+        !Object.hasOwn(message, "method");
       if (!this.handleMessage(message)) return;
+      if (isResponse) {
+        if (remaining.length > 0 && !this.enqueuePendingStdout(remaining, true))
+          return;
+        this.scheduleStdoutDrain();
+        return;
+      }
     }
   }
 
@@ -409,6 +497,7 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
   private fail(error: AppServerError): void {
     if (this.firstFailure || this.closePromise) return;
     this.firstFailure = error;
+    this.clearPendingStdout();
     this.closePromise = this.shutdown();
     this.rejectPending(error);
     const listeners = [...this.failureListeners];
@@ -464,6 +553,12 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
 
   private finishChildExit(): void {
     if (!this.childExited || !this.stdoutEnded || this.firstFailure) return;
+    if (
+      this.stdoutConsuming ||
+      this.stdoutDrainScheduled ||
+      this.stdoutPendingChunks.length > 0
+    )
+      return;
     if (this.stdoutBuffer.length > 0) {
       this.fail(new AppServerError("MALFORMED_PROTOCOL", this.diagnostics));
     } else if (!this.closePromise) {

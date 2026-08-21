@@ -66,7 +66,7 @@ function operationHarness(repositoryRoot, overrides = {}) {
     async startAppServer() { order.push("app-server"); return client; },
     async startNewThread(_request, commandDependencies) { order.push("start-turn"); await commandDependencies.reportThreadId("thread-1"); await commandDependencies.reportTurnState({ fixture: true }); await client.close(); return record; },
     async resumeThread(_threadId, _prompt, commandDependencies) { order.push("resume-turn"); await commandDependencies.reportTurnState({ fixture: true }); await client.close(); return record; },
-    async readLiveStatus() { order.push("live-read"); await client.close(); return record; },
+    async readLiveStatus() { order.push("live-read"); await client.close(); return { record, liveStatus: { type: "idle" } }; },
     async readThreadRecord() { order.push("read-record"); return record; },
     async findLatestThreadRecord(_stateRoot, input) { order.push("latest-record"); overrides.onFindLatest?.(input); return record; },
     async releaseProcessLock() { order.push("unlock"); if (overrides.releaseError) throw new Error("release"); },
@@ -582,8 +582,34 @@ test("named status holds the lock around one live read", async (t) => {
   const repositoryRoot = await createRepository();
   t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
   const harness = operationHarness(repositoryRoot);
-  assert.equal(await statusModule.statusCommand("thread-1", capture(), harness.dependencies, repositoryRoot), 0);
+  const output = capture();
+  assert.equal(await statusModule.statusCommand("thread-1", output, harness.dependencies, repositoryRoot), 0);
   assert.deepEqual(harness.order, ["paths", "read-record", "lock", "app-server", "live-read", "client-close", "unlock"]);
+  assert.match(output.output().stdout, /^Persisted thread record:\n/m);
+  assert.match(output.output().stdout, /^Terminal status: completed$/m);
+  assert.match(output.output().stdout, /^Live App Server status: idle$/m);
+});
+
+test("local status renders only persisted state without claiming live status", async (t) => {
+  const { statusModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const harness = operationHarness(repositoryRoot);
+  const output = capture();
+
+  assert.equal(
+    await statusModule.statusCommand(
+      undefined,
+      output,
+      harness.dependencies,
+      repositoryRoot,
+    ),
+    0,
+  );
+  assert.match(output.output().stdout, /^Terminal status: completed$/m);
+  assert.equal(output.output().stdout.includes("Live App Server status:"), false);
+  assert.equal(output.output().stdout.includes("Persisted thread record:"), false);
+  assert.deepEqual(harness.order, ["paths", "latest-record"]);
 });
 
 test("resume and named status surface their lock release failures", async (t) => {
@@ -643,7 +669,7 @@ for await (const line of lines) {
   } else if (message.method === "thread/resume") {
     process.stdout.write(JSON.stringify({ id: message.id, result: { thread: { id: "thread-fake" } } }) + "\\n");
   } else if (message.method === "thread/read") {
-    process.stdout.write(JSON.stringify({ id: message.id, result: { thread: { id: "thread-fake" } } }) + "\\n");
+    process.stdout.write(JSON.stringify({ id: message.id, result: { thread: { id: "thread-fake", status: { type: "idle" } } } }) + "\\n");
   } else if (message.method === "turn/start") {
     if (${JSON.stringify(mode)} === true) await writeFile(join(message.params.cwd, "tracked.txt"), "after\\n");
     if (${JSON.stringify(mode)} === "active-exit-run" || ${JSON.stringify(mode)} === "active-exit-resume") {

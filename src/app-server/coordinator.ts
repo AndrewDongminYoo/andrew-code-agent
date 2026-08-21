@@ -1,11 +1,12 @@
 /// <reference types="node" />
 
 import { writeSync } from "node:fs";
-import { isProxy } from "node:util/types";
+import { isPromise, isProxy } from "node:util/types";
 import type { GitSnapshot } from "../runtime/git.js";
 import type { ThreadRecord } from "../runtime/thread-store.js";
 import { answerApproval, type ApprovalPromptWriter } from "./approvals.js";
 import type { AppServerClient } from "./client.js";
+import { AppServerError } from "./transport.js";
 import {
   createTurnState,
   reduceServerMessage,
@@ -74,6 +75,15 @@ export class CoordinatorError extends Error {
 }
 
 type TerminalStatus = ThreadRecord["terminalStatus"];
+export interface LiveThreadStatusSnapshot {
+  readonly type: "notLoaded" | "idle" | "systemError" | "active";
+}
+
+export interface LiveStatusResult {
+  readonly record: ThreadRecord;
+  readonly liveStatus: LiveThreadStatusSnapshot;
+}
+
 type TerminalWrite = (
   fd: number,
   buffer: Uint8Array,
@@ -95,6 +105,10 @@ interface InterruptLatch {
 const MAX_BUFFERED_EVENTS = 256;
 const MAX_TERMINAL_PROMPT_BYTES = 8192;
 
+function isKnownAppServerError(error: unknown): error is AppServerError {
+  return !isProxy(error) && error instanceof AppServerError;
+}
+
 function ownString(value: unknown, key: string): string | null {
   try {
     if (
@@ -115,25 +129,125 @@ function ownString(value: unknown, key: string): string | null {
   }
 }
 
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  try {
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      isProxy(value)
+    )
+      return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === Object.prototype || prototype === null;
+  } catch {
+    return false;
+  }
+}
+
 function nestedResponseId(
   response: unknown,
   container: "thread" | "turn",
 ): string {
   try {
-    if (
-      typeof response !== "object" ||
-      response === null ||
-      Array.isArray(response) ||
-      isProxy(response)
-    )
+    if (!isPlainRecord(response))
       throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
     const descriptor = Object.getOwnPropertyDescriptor(response, container);
     if (descriptor === undefined || !("value" in descriptor))
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    if (!isPlainRecord(descriptor.value))
       throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
     const id = ownString(descriptor.value, "id");
     if (id === null || id.length === 0)
       throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
     return id;
+  } catch (error) {
+    if (error instanceof CoordinatorError) throw error;
+    throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+  }
+}
+
+function nestedLiveStatus(response: unknown): LiveThreadStatusSnapshot {
+  try {
+    if (!isPlainRecord(response))
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const threadDescriptor = Object.getOwnPropertyDescriptor(
+      response,
+      "thread",
+    );
+    if (threadDescriptor === undefined || !("value" in threadDescriptor))
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const thread = threadDescriptor.value;
+    if (!isPlainRecord(thread))
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const statusDescriptor = Object.getOwnPropertyDescriptor(thread, "status");
+    if (statusDescriptor === undefined || !("value" in statusDescriptor))
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const status = statusDescriptor.value;
+    if (
+      !isPlainRecord(status) ||
+      Object.getOwnPropertySymbols(status).length !== 0
+    )
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const descriptors = Object.getOwnPropertyDescriptors(status);
+    const names = Object.getOwnPropertyNames(status);
+    const typeDescriptor = descriptors.type;
+    if (
+      typeDescriptor === undefined ||
+      !("value" in typeDescriptor) ||
+      typeDescriptor.enumerable !== true ||
+      typeof typeDescriptor.value !== "string" ||
+      !["notLoaded", "idle", "systemError", "active"].includes(
+        typeDescriptor.value,
+      )
+    )
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const type = typeDescriptor.value as LiveThreadStatusSnapshot["type"];
+    if (type !== "active") {
+      if (names.length !== 1 || names[0] !== "type")
+        throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+      return { type };
+    }
+    const activeFlagsDescriptor = descriptors.activeFlags;
+    if (
+      names.length !== 2 ||
+      !names.includes("type") ||
+      !names.includes("activeFlags") ||
+      activeFlagsDescriptor === undefined ||
+      !("value" in activeFlagsDescriptor) ||
+      activeFlagsDescriptor.enumerable !== true
+    )
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const activeFlags = activeFlagsDescriptor.value;
+    if (
+      !Array.isArray(activeFlags) ||
+      isProxy(activeFlags) ||
+      Object.getPrototypeOf(activeFlags) !== Array.prototype ||
+      Object.getOwnPropertySymbols(activeFlags).length !== 0
+    )
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    const flagDescriptors = Object.getOwnPropertyDescriptors(activeFlags);
+    const flagNames = Object.getOwnPropertyNames(activeFlags);
+    if (flagNames.length !== activeFlags.length + 1)
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    for (const name of flagNames) {
+      if (name === "length") continue;
+      const index = Number(name);
+      const descriptor = flagDescriptors[name];
+      if (
+        !Number.isSafeInteger(index) ||
+        index < 0 ||
+        index >= activeFlags.length ||
+        String(index) !== name ||
+        descriptor === undefined ||
+        !("value" in descriptor) ||
+        descriptor.enumerable !== true ||
+        (descriptor.value !== "waitingOnApproval" &&
+          descriptor.value !== "waitingOnUserInput")
+      )
+        throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    }
+    return { type };
   } catch (error) {
     if (error instanceof CoordinatorError) throw error;
     throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
@@ -677,7 +791,7 @@ export async function resumeThread(
 export async function readLiveStatus(
   threadId: string,
   dependencies: CoordinatorDependencies,
-): Promise<ThreadRecord> {
+): Promise<LiveStatusResult> {
   try {
     if (!validateString(threadId))
       throw new CoordinatorError("INVALID_COORDINATOR_INPUT");
@@ -685,13 +799,34 @@ export async function readLiveStatus(
       dependencies.stateRoot,
       threadId,
     );
-    const response = await dependencies.client.threadRead({
-      threadId,
-      includeTurns: false,
-    });
+    let response: unknown;
+    try {
+      const operation = dependencies.client.threadRead({
+        threadId,
+        includeTurns: false,
+      });
+      let isExactNativePromise = false;
+      try {
+        isExactNativePromise =
+          !isProxy(operation) &&
+          isPromise(operation) &&
+          Object.getPrototypeOf(operation) === Promise.prototype &&
+          Object.getOwnPropertyDescriptor(operation, "then") === undefined &&
+          Object.getOwnPropertyDescriptor(operation, "constructor") ===
+            undefined;
+      } catch {
+        // Reflection failures are malformed before Promise assimilation.
+      }
+      if (!isExactNativePromise)
+        throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+      response = await operation;
+    } catch (error) {
+      if (isKnownAppServerError(error)) throw error;
+      throw new CoordinatorError("MALFORMED_APP_SERVER_RESPONSE");
+    }
     if (nestedResponseId(response, "thread") !== threadId)
       throw new CoordinatorError("APP_SERVER_IDENTITY_MISMATCH");
-    return record;
+    return { record, liveStatus: nestedLiveStatus(response) };
   } catch (error) {
     throw preserveTypedError(error);
   } finally {
