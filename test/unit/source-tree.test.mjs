@@ -156,14 +156,109 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
   }
 }
 
+async function withDeindexingGitShim(repository, sourcePath, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-code-agent-git-"));
+  const markerPath = join(shimDirectory, "mutated");
+  const outputPath = join(shimDirectory, "ls-files-output");
+  const shimPath = join(shimDirectory, "git");
+  const { stdout } = await execFile("which", ["git"]);
+  const gitPath = stdout.trim();
+  await writeFile(
+    shimPath,
+    `#!/bin/sh
+if [ "$4" = "ls-files" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
+  "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
+  "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" rm --cached --quiet -- "$ANDREW_AGENT_TEST_DEINDEX_PATH" || exit $?
+  printf '%s\\n' "$ANDREW_AGENT_TEST_DEINDEX_PATH" > "$ANDREW_AGENT_TEST_REPOSITORY/.gitignore"
+  "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" add .gitignore || exit $?
+  "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" commit --quiet -m 'deindex source canary' || exit $?
+  : > "$ANDREW_AGENT_TEST_GIT_MARKER"
+  cat "$ANDREW_AGENT_TEST_GIT_OUTPUT"
+  exit 0
+fi
+exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
+`,
+  );
+  await chmod(shimPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
+  process.env.ANDREW_AGENT_TEST_DEINDEX_PATH = sourcePath;
+  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
+  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
+  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
+  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
+  try {
+    await run();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    delete process.env.ANDREW_AGENT_TEST_DEINDEX_PATH;
+    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
+    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
+    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
+    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
+async function withRetargetingGitShim(repository, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-code-agent-git-"));
+  const markerPath = join(shimDirectory, "retargeted");
+  const shimPath = join(shimDirectory, "git");
+  const { stdout } = await execFile("which", ["git"]);
+  const gitPath = stdout.trim();
+  await writeFile(
+    shimPath,
+    `#!/bin/sh
+if [ "$3" = "diff" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
+  /bin/rm -- "$ANDREW_AGENT_TEST_RETARGET_PATH" || exit $?
+  /bin/ln -s new.rules "$ANDREW_AGENT_TEST_RETARGET_PATH" || exit $?
+  "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" add -- rules/selected.rules || exit $?
+  "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" commit --quiet -m 'retarget source canary' || exit $?
+  : > "$ANDREW_AGENT_TEST_GIT_MARKER"
+fi
+exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
+`,
+  );
+  await chmod(shimPath, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
+  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
+  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
+  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
+  process.env.ANDREW_AGENT_TEST_RETARGET_PATH = join(
+    repository,
+    "rules/selected.rules",
+  );
+  try {
+    await run();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
+    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
+    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
+    delete process.env.ANDREW_AGENT_TEST_RETARGET_PATH;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
 async function resolveWithSourceSwap(repository, externalPath, manifest) {
   const sourcePath = await realpath(join(repository, "rules/default.rules"));
   const backupPath = join(repository, "rules/default.rules.test-backup");
   const virtualModule = `
-import { lstat as realLstat, open, readFile as realReadFile, realpath, rename, rm, symlink } from "node:fs/promises";
+import { lstat as realLstat, open, readFile as realReadFile, readlink, realpath, rename, rm, symlink } from "node:fs/promises";
 let sourceLstatCalls = 0;
 let swapped = false;
-export { open, realpath };
+export { open, readlink, realpath };
 export async function lstat(path, options) {
   const result = await realLstat(path, options);
   if (path === process.env.ANDREW_AGENT_TEST_SOURCE_PATH && ++sourceLstatCalls === 2) {
@@ -540,6 +635,277 @@ test("rejects unstaged, staged-only, and untracked source dirt before reading so
       resolveSourceFiles(repository, baseManifest(cleanFiles())),
       (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
     );
+  });
+});
+
+test("rejects an ignored manifest source absent from the Git index", async () => {
+  await withSourceRepository(async (repository) => {
+    await writeFile(join(repository, ".gitignore"), "rules/ignored.rules\n");
+    await execFile("git", ["-C", repository, "add", ".gitignore"]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "ignore source canary",
+    ]);
+    await writeFile(join(repository, "rules/ignored.rules"), "ignored\n");
+
+    await assert.rejects(
+      resolveSourceFiles(
+        repository,
+        baseManifest([
+          {
+            source: "rules/ignored.rules",
+            target: "rules/ignored.rules",
+            mode: "0644",
+            replacements: [],
+          },
+        ]),
+      ),
+      (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+    );
+  });
+});
+
+test("rejects an ignored selected symlink path absent from the Git index", async () => {
+  await withSourceRepository(async (repository) => {
+    await writeFile(join(repository, ".gitignore"), "rules/ignored-link.rules\n");
+    await symlink("default.rules", join(repository, "rules/ignored-link.rules"));
+    await execFile("git", ["-C", repository, "add", ".gitignore"]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "ignore selected path canary",
+    ]);
+
+    await assert.rejects(
+      resolveSourceFiles(
+        repository,
+        baseManifest([
+          {
+            source: "rules/ignored-link.rules",
+            target: "rules/default.rules",
+            mode: "0644",
+            replacements: [],
+          },
+        ]),
+      ),
+      (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+    );
+  });
+});
+
+test("rejects an ignored canonical source path absent from the Git index", async () => {
+  await withSourceRepository(async (repository) => {
+    await writeFile(join(repository, ".gitignore"), "rules/ignored.rules\n");
+    await writeFile(join(repository, "rules/ignored.rules"), "ignored\n");
+    await symlink("ignored.rules", join(repository, "rules/tracked-link.rules"));
+    await execFile("git", [
+      "-C",
+      repository,
+      "add",
+      ".gitignore",
+      "rules/tracked-link.rules",
+    ]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "ignore canonical path canary",
+    ]);
+
+    await assert.rejects(
+      resolveSourceFiles(
+        repository,
+        baseManifest([
+          {
+            source: "rules/tracked-link.rules",
+            target: "rules/ignored.rules",
+            mode: "0644",
+            replacements: [],
+          },
+        ]),
+      ),
+      (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+    );
+  });
+});
+
+test("rejects an ignored intermediate symlink absent from the Git index", async () => {
+  await withSourceRepository(async (repository) => {
+    await writeFile(join(repository, ".gitignore"), "rules/bridge.rules\n");
+    await symlink("default.rules", join(repository, "rules/bridge.rules"));
+    await symlink("bridge.rules", join(repository, "rules/selected.rules"));
+    await execFile("git", [
+      "-C",
+      repository,
+      "add",
+      ".gitignore",
+      "rules/selected.rules",
+    ]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "ignore intermediate symlink canary",
+    ]);
+
+    await assert.rejects(
+      resolveSourceFiles(
+        repository,
+        baseManifest([
+          {
+            source: "rules/selected.rules",
+            target: "rules/default.rules",
+            mode: "0644",
+            replacements: [],
+          },
+        ]),
+      ),
+      (error) => assertSourceTreeError(error, "DIRTY_SOURCE"),
+    );
+  });
+});
+
+test("resolves a fully tracked symlink chain", async () => {
+  await withSourceRepository(async (repository) => {
+    await symlink("default.rules", join(repository, "rules/bridge.rules"));
+    await symlink("bridge.rules", join(repository, "rules/selected.rules"));
+    await execFile("git", [
+      "-C",
+      repository,
+      "add",
+      "rules/bridge.rules",
+      "rules/selected.rules",
+    ]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "tracked symlink chain",
+    ]);
+
+    const files = await resolveSourceFiles(
+      repository,
+      baseManifest([
+        {
+          source: "rules/selected.rules",
+          target: "rules/default.rules",
+          mode: "0644",
+          replacements: [],
+        },
+      ]),
+    );
+
+    assert.equal(
+      new TextDecoder().decode(files[0].bytes),
+      "Always preserve the source boundary.\n",
+    );
+  });
+});
+
+test("does not require a synthetic descendant beneath a tracked symlink", async () => {
+  await withSourceRepository(async (repository) => {
+    await symlink("rules", join(repository, "linked-rules"));
+    await execFile("git", ["-C", repository, "add", "linked-rules"]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "tracked directory symlink",
+    ]);
+
+    const files = await resolveSourceFiles(
+      repository,
+      baseManifest([
+        {
+          source: "linked-rules/default.rules",
+          target: "rules/default.rules",
+          mode: "0644",
+          replacements: [],
+        },
+      ]),
+    );
+
+    assert.equal(
+      new TextDecoder().decode(files[0].bytes),
+      "Always preserve the source boundary.\n",
+    );
+  });
+});
+
+test("rejects a source de-indexed after the initial revision snapshot", async () => {
+  await withSourceRepository(async (repository) => {
+    await withDeindexingGitShim(
+      repository,
+      "rules/default.rules",
+      async () => {
+        await assert.rejects(
+          resolveSourceFiles(
+            repository,
+            baseManifest([
+              {
+                source: "rules/default.rules",
+                target: "rules/default.rules",
+                mode: "0644",
+                replacements: [],
+              },
+            ]),
+          ),
+          (error) =>
+            assertSourceTreeError(error, "SOURCE_CHANGED_DURING_READ"),
+        );
+      },
+    );
+  });
+});
+
+test("uses a symlink target committed before the initial source snapshot", async () => {
+  await withSourceRepository(async (repository) => {
+    await writeFile(join(repository, "rules/old.rules"), "old revision bytes\n");
+    await writeFile(join(repository, "rules/new.rules"), "new revision bytes\n");
+    await symlink("old.rules", join(repository, "rules/selected.rules"));
+    await execFile("git", ["-C", repository, "add", "--all"]);
+    await execFile("git", [
+      "-C",
+      repository,
+      "commit",
+      "--quiet",
+      "-m",
+      "symlink revision canary",
+    ]);
+
+    await withRetargetingGitShim(repository, async () => {
+      const files = await resolveSourceFiles(
+        repository,
+        baseManifest([
+          {
+            source: "rules/selected.rules",
+            target: "rules/selected.rules",
+            mode: "0644",
+            replacements: [],
+          },
+        ]),
+      );
+
+      assert.equal(
+        new TextDecoder().decode(files[0].bytes),
+        "new revision bytes\n",
+      );
+    });
   });
 });
 

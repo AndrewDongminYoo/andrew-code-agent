@@ -2,9 +2,9 @@
 
 import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import type { BigIntStats } from "node:fs";
-import { relative, resolve } from "node:path";
+import { lstat, open, readlink, realpath } from "node:fs/promises";
+import type { BigIntStats, Stats } from "node:fs";
+import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import type { BundleManifest, BundleFileEntry } from "./manifest.js";
@@ -46,6 +46,7 @@ export class SourceTreeError extends Error {
 
 interface ResolvedEntry {
   readonly entry: BundleFileEntry;
+  readonly trackedPaths: readonly string[];
   readonly sourcePath: string;
 }
 
@@ -55,8 +56,9 @@ export async function resolveSourceFiles(
 ): Promise<readonly ResolvedSourceFile[]> {
   const canonicalSourceRoot = await resolveSourceRoot(sourceRoot);
   await assertGitWorktreeRoot(canonicalSourceRoot);
-  const entries = await resolveEntries(canonicalSourceRoot, manifest.files);
   const initialRevision = await readCleanGitSnapshot(canonicalSourceRoot);
+  const entries = await resolveEntries(canonicalSourceRoot, manifest.files);
+  await assertIndexedSourcePaths(canonicalSourceRoot, entries);
 
   const resolvedFiles = await Promise.all(
     entries.map(async ({ entry, sourcePath }) => {
@@ -238,32 +240,155 @@ async function resolveEntries(
         );
       }
 
-      let sourcePath: string;
+      const { sourcePath, trackedPaths } = await resolveSourcePath(
+        sourceRoot,
+        requestedPath,
+        entry,
+      );
+      return { entry, trackedPaths, sourcePath };
+    }),
+  );
+}
+
+async function resolveSourcePath(
+  sourceRoot: string,
+  requestedPath: string,
+  entry: BundleFileEntry,
+): Promise<{ readonly sourcePath: string; readonly trackedPaths: string[] }> {
+  const trackedPaths: string[] = [];
+  let unresolvedPath = requestedPath;
+  let remainingSymlinkTraversals = 40;
+
+  while (true) {
+    const unresolvedRelativePath = relative(sourceRoot, unresolvedPath);
+    if (!isContainedBy(sourceRoot, unresolvedPath)) {
+      throw new SourceTreeError(
+        "SOURCE_PATH_ESCAPE",
+        `Manifest source for target ${entry.target} escapes the source root.`,
+      );
+    }
+    const components =
+      unresolvedRelativePath === "" ? [] : unresolvedRelativePath.split(sep);
+    let currentPath = sourceRoot;
+    let finalSource: Stats | undefined;
+    let followedSymlink = false;
+
+    for (const [index, component] of components.entries()) {
+      currentPath = resolve(currentPath, component);
+      let source;
       try {
-        sourcePath = await realpath(requestedPath);
+        source = await lstat(currentPath);
       } catch {
         throw new SourceTreeError(
           "SOURCE_PATH_ESCAPE",
           `Manifest source for target ${entry.target} cannot be resolved.`,
         );
       }
-      if (!isContainedBy(sourceRoot, sourcePath)) {
-        throw new SourceTreeError(
-          "SOURCE_PATH_ESCAPE",
-          `Manifest source for target ${entry.target} escapes the source root.`,
-        );
+      if (!source.isSymbolicLink()) {
+        if (index === components.length - 1) {
+          finalSource = source;
+        }
+        continue;
       }
 
-      const source = await lstat(sourcePath);
-      if (!source.isFile()) {
+      if (remainingSymlinkTraversals === 0) {
         throw new SourceTreeError(
-          "NON_REGULAR_SOURCE",
-          `Manifest source for target ${entry.target} is not a regular file.`,
+          "SOURCE_PATH_ESCAPE",
+          `Manifest source for target ${entry.target} cannot be resolved.`,
         );
       }
-      return { entry, sourcePath };
-    }),
-  );
+      remainingSymlinkTraversals -= 1;
+      trackedPaths.push(currentPath);
+
+      let target: string;
+      try {
+        target = await readlink(currentPath);
+      } catch {
+        throw new SourceTreeError(
+          "SOURCE_PATH_ESCAPE",
+          `Manifest source for target ${entry.target} cannot be resolved.`,
+        );
+      }
+      unresolvedPath = resolve(
+        currentPath,
+        "..",
+        target,
+        ...components.slice(index + 1),
+      );
+      followedSymlink = true;
+      break;
+    }
+
+    if (followedSymlink) {
+      continue;
+    }
+
+    let sourcePath: string;
+    try {
+      sourcePath = await realpath(unresolvedPath);
+    } catch {
+      throw new SourceTreeError(
+        "SOURCE_PATH_ESCAPE",
+        `Manifest source for target ${entry.target} cannot be resolved.`,
+      );
+    }
+    if (!isContainedBy(sourceRoot, sourcePath)) {
+      throw new SourceTreeError(
+        "SOURCE_PATH_ESCAPE",
+        `Manifest source for target ${entry.target} escapes the source root.`,
+      );
+    }
+    const source = finalSource ?? (await lstat(sourcePath));
+    if (!source.isFile()) {
+      throw new SourceTreeError(
+        "NON_REGULAR_SOURCE",
+        `Manifest source for target ${entry.target} is not a regular file.`,
+      );
+    }
+    trackedPaths.push(sourcePath);
+    return { sourcePath, trackedPaths };
+  }
+}
+
+async function assertIndexedSourcePaths(
+  sourceRoot: string,
+  entries: readonly ResolvedEntry[],
+): Promise<void> {
+  const exactPaths = [
+    ...new Set(
+      entries.flatMap(({ trackedPaths }) =>
+        trackedPaths.map((path) => relative(sourceRoot, path)),
+      ),
+    ),
+  ];
+  if (exactPaths.length === 0) {
+    return;
+  }
+
+  let indexed: string;
+  try {
+    ({ stdout: indexed } = await execFile("git", [
+      "--literal-pathspecs",
+      "-C",
+      sourceRoot,
+      "ls-files",
+      "--cached",
+      "--full-name",
+      "-z",
+      "--",
+      ...exactPaths,
+    ]));
+  } catch {
+    throw new SourceTreeError(
+      "SOURCE_GIT_ERROR",
+      "Source repository cannot be inspected.",
+    );
+  }
+
+  const indexedPaths = new Set(indexed.split("\0").filter(Boolean));
+  if (exactPaths.some((path) => !indexedPaths.has(path))) {
+    throw new SourceTreeError("DIRTY_SOURCE", "Source repository is dirty.");
+  }
 }
 
 function assertOutputTarget(
