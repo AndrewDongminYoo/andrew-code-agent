@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { delimiter, dirname, isAbsolute } from "node:path";
 import { promisify } from "node:util";
 import { REQUIRED_CODEX_VERSION } from "../constants.js";
 import type { RequestId } from "../generated/codex-app-server/RequestId.js";
@@ -62,13 +63,26 @@ function isInitializeResponse(value: unknown): value is InitializeResponse {
   );
 }
 
+function buildChildPath(): string {
+  const entries = [
+    dirname(process.execPath),
+    ...(process.env.PATH ?? "")
+      .split(delimiter)
+      .filter((entry) => entry !== "" && isAbsolute(entry)),
+    "/usr/bin",
+    "/bin",
+  ];
+  return [...new Set(entries)].join(delimiter);
+}
+
 export async function startAppServer(
   input: StartAppServerInput,
 ): Promise<AppServerClient> {
+  const childPath = buildChildPath();
   let version: string;
   try {
     const result = await execFileAsync(input.codexBinary, ["--version"], {
-      env: {},
+      env: { PATH: childPath },
       encoding: "utf8",
       maxBuffer: 1024,
     });
@@ -84,7 +98,7 @@ export async function startAppServer(
     input.codexBinary,
     ["app-server", "--strict-config", "--stdio"],
     {
-      env: { CODEX_HOME: input.codexHome },
+      env: { CODEX_HOME: input.codexHome, PATH: childPath },
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     },

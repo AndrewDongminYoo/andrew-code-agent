@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join, relative } from "node:path";
+import { basename, delimiter, dirname, join, relative } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
@@ -58,13 +58,13 @@ async function withFakeCodex(
   const codexHome = join(root, "home");
   const binary = join(root, "codex");
   const server = join(root, "server.mjs");
-  const launcher = join(root, "codex.c");
+  const launcher = join(root, "codex.mjs");
   await writeFile(join(root, "scenario"), scenario);
   await writeFile(
     launcher,
-    `#include <stdio.h>\n#include <stdlib.h>\n#include <string.h>\n#include <unistd.h>\nint main(int argc, char **argv) {\n  if (argc == 2 && strcmp(argv[1], "--version") == 0) { puts(${JSON.stringify(version)}); return 0; }\n  char **args = calloc((size_t)argc + 2, sizeof(char *));\n  args[0] = ${JSON.stringify(process.execPath)};\n  args[1] = ${JSON.stringify(server)};\n  for (int index = 1; index < argc; index++) args[index + 1] = argv[index];\n  execv(args[0], args);\n  return 127;\n}\n`,
+    `#!/usr/bin/env node\nimport { spawn } from "node:child_process";\nimport { writeFile } from "node:fs/promises";\nconst root = ${JSON.stringify(root)};\nif (process.argv[2] === "--version") {\n  await writeFile(root + "/version-env.json", JSON.stringify(process.env));\n  console.log(${JSON.stringify(version)});\n  process.exit(0);\n}\nconst child = spawn(${JSON.stringify(process.execPath)}, [${JSON.stringify(server)}, ...process.argv.slice(2)], { stdio: "inherit" });\nchild.on("exit", (code) => process.exit(code ?? 1));\n`,
   );
-  await execFileAsync("cc", [launcher, "-o", binary]);
+  await writeFile(binary, await readFile(launcher));
   await chmod(binary, 0o700);
   await writeFile(
     server,
@@ -290,23 +290,58 @@ test("forwards typed turn/interrupt calls through the public client", async () =
   });
 });
 
-test("spawns only the strict stdio argv with the managed CODEX_HOME environment", async () => {
+test("starts a PATH-dependent launcher with sanitized child environments", async () => {
   await withFakeCodex("normal", async ({ binary, codexHome, root }) => {
-    const client = await requireClient().startAppServer(
-      startInput(binary, codexHome),
+    const inheritedPath = process.env.PATH;
+    const customEntry = join(root, "custom-bin");
+    try {
+      process.env.PATH = [
+        "relative-bin",
+        "",
+        customEntry,
+        dirname(process.execPath),
+        "/usr/bin",
+      ].join(delimiter);
+      const client = await requireClient().startAppServer(
+        startInput(binary, codexHome),
+      );
+      await client.close();
+    } finally {
+      if (inheritedPath === undefined) delete process.env.PATH;
+      else process.env.PATH = inheritedPath;
+    }
+    const expectedPath = [
+      dirname(process.execPath),
+      customEntry,
+      "/usr/bin",
+      "/bin",
+    ].join(delimiter);
+    const versionEnvironment = JSON.parse(
+      await readFile(join(root, "version-env.json"), "utf8"),
     );
-    await client.close();
     const spawn = JSON.parse(await readFile(join(root, "spawn.json"), "utf8"));
+    const expectedVersionEnvironment = { PATH: expectedPath };
+    if (
+      process.platform === "darwin" &&
+      "__CF_USER_TEXT_ENCODING" in versionEnvironment
+    ) {
+      expectedVersionEnvironment.__CF_USER_TEXT_ENCODING =
+        versionEnvironment.__CF_USER_TEXT_ENCODING;
+    }
+    assert.deepEqual(versionEnvironment, expectedVersionEnvironment);
     assert.deepEqual(spawn.argv, ["app-server", "--strict-config", "--stdio"]);
-    const expectedEnvironment = { CODEX_HOME: codexHome };
+    const expectedSpawnEnvironment = {
+      CODEX_HOME: codexHome,
+      PATH: expectedPath,
+    };
     if (
       process.platform === "darwin" &&
       "__CF_USER_TEXT_ENCODING" in spawn.env
     ) {
-      expectedEnvironment.__CF_USER_TEXT_ENCODING =
+      expectedSpawnEnvironment.__CF_USER_TEXT_ENCODING =
         spawn.env.__CF_USER_TEXT_ENCODING;
     }
-    assert.deepEqual(spawn.env, expectedEnvironment);
+    assert.deepEqual(spawn.env, expectedSpawnEnvironment);
   });
 });
 
