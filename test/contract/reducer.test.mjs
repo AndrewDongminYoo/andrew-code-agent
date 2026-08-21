@@ -427,3 +427,90 @@ test("rejects inherited root and nested accessors without invoking them", () => 
   }
   assert.equal(getterCalls, 0);
 });
+
+test("compares active duplicate completions without invoking inherited toJSON", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "final", phase: null, memoryCitation: null });
+  let state = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), completed(message));
+  let toJsonCalls = 0;
+  Object.defineProperty(Object.prototype, "toJSON", {
+    configurable: true,
+    value() {
+      toJsonCalls += 1;
+      throw new Error("inherited toJSON must not run");
+    },
+  });
+
+  try {
+    assert.equal(api.reduceServerMessage(state, completed(message)), state);
+    assert.throws(
+      () => api.reduceServerMessage(state, completed(item("agentMessage", "message-1", { text: "changed", phase: null, memoryCitation: null }))),
+      { code: "INVALID_SERVER_EVENT" },
+    );
+  } finally {
+    delete Object.prototype.toJSON;
+  }
+  assert.equal(toJsonCalls, 0);
+});
+
+test("compares terminal duplicate and conflicting inventories without invoking inherited toJSON", () => {
+  const api = reducer();
+  const completedTurn = {
+    id: "turn-1",
+    items: [item("agentMessage", "message-1", { text: "final", phase: null, memoryCitation: null })],
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  const state = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: completedTurn },
+  });
+  let toJsonCalls = 0;
+  Object.defineProperty(Object.prototype, "toJSON", {
+    configurable: true,
+    value() {
+      toJsonCalls += 1;
+      throw new Error("inherited toJSON must not run");
+    },
+  });
+
+  try {
+    assert.equal(
+      api.reduceServerMessage(state, { method: "turn/completed", params: { threadId: "thread-1", turn: completedTurn } }),
+      state,
+    );
+    assert.throws(
+      () => api.reduceServerMessage(state, {
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: { ...completedTurn, items: [item("agentMessage", "message-1", { text: "changed", phase: null, memoryCitation: null })] },
+        },
+      }),
+      { code: "INVALID_SERVER_EVENT" },
+    );
+  } finally {
+    delete Object.prototype.toJSON;
+  }
+  assert.equal(toJsonCalls, 0);
+});
+
+test("rejects prototype property names as terminal statuses", () => {
+  const api = reducer();
+  for (const statusName of ["toString", "constructor", "__proto__"]) {
+    assert.throws(
+      () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: { id: "turn-1", items: [], itemsView: "full", status: statusName, error: null, startedAt: null, completedAt: null, durationMs: null },
+        },
+      }),
+      { code: "INVALID_SERVER_EVENT" },
+    );
+  }
+});

@@ -129,6 +129,43 @@ function bounded(value: string): string {
     : `${value.slice(0, MAX_TEXT_LENGTH - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
+function structurallyEqual(left: unknown, right: unknown, depth = 0): boolean {
+  if (Object.is(left, right)) return true;
+  if (
+    depth > 32 ||
+    typeof left !== "object" ||
+    left === null ||
+    typeof right !== "object" ||
+    right === null ||
+    Array.isArray(left) !== Array.isArray(right)
+  )
+    return false;
+  const leftDescriptors = Object.getOwnPropertyDescriptors(left);
+  const rightDescriptors = Object.getOwnPropertyDescriptors(right);
+  const leftNames = Object.getOwnPropertyNames(left).filter(
+    (name) => name !== "length",
+  );
+  const rightNames = Object.getOwnPropertyNames(right).filter(
+    (name) => name !== "length",
+  );
+  if (
+    leftNames.length !== rightNames.length ||
+    leftNames.some((name, index) => name !== rightNames[index])
+  )
+    return false;
+  return leftNames.every((name) => {
+    const leftDescriptor = leftDescriptors[name];
+    const rightDescriptor = rightDescriptors[name];
+    return (
+      leftDescriptor !== undefined &&
+      rightDescriptor !== undefined &&
+      "value" in leftDescriptor &&
+      "value" in rightDescriptor &&
+      structurallyEqual(leftDescriptor.value, rightDescriptor.value, depth + 1)
+    );
+  });
+}
+
 function requireIdentity(state: TurnState, params: RecordValue): void {
   if (params.threadId !== state.threadId || params.turnId !== state.turnId)
     throw new ReducerError("INVALID_SERVER_EVENT");
@@ -219,7 +256,7 @@ function replaceItem(state: TurnState, item: ItemState): TurnState {
       throw new ReducerError("INVALID_SERVER_EVENT");
     if (omitted.phase === "completed") {
       if (item.phase === "started") return state;
-      if (JSON.stringify(omitted) === JSON.stringify(item)) return state;
+      if (structurallyEqual(omitted, item)) return state;
       throw new ReducerError("INVALID_SERVER_EVENT");
     }
     const omittedItemStates = new Map(state.omittedItemStates);
@@ -377,15 +414,12 @@ export function reduceServerMessage(
     const previous =
       state.items.get(next.id) ?? state.omittedItemStates?.get(next.id);
     if (state.terminalStatus !== "running") {
-      if (
-        previous?.type !== next.type ||
-        JSON.stringify(previous) !== JSON.stringify(next)
-      )
+      if (previous?.type !== next.type || !structurallyEqual(previous, next))
         throw new ReducerError("INVALID_SERVER_EVENT");
       return state;
     }
     if (previous?.phase === "completed") {
-      if (JSON.stringify(previous) === JSON.stringify(next)) return state;
+      if (structurallyEqual(previous, next)) return state;
       throw new ReducerError("INVALID_SERVER_EVENT");
     }
     return replaceItem(state, next);
@@ -515,7 +549,10 @@ export function reduceServerMessage(
       failed: "failed",
       interrupted: "interrupted",
     };
-    if (typeof turn.status !== "string" || !(turn.status in statuses))
+    if (
+      typeof turn.status !== "string" ||
+      !Object.hasOwn(statuses, turn.status)
+    )
       throw new ReducerError("INVALID_SERVER_EVENT");
     const items = new Map<string, ItemState>();
     const seenIds = new Set<string>();
@@ -573,16 +610,18 @@ export function reduceServerMessage(
     if (state.terminalStatus === "running") return next;
     if (
       state.terminalStatus === next.terminalStatus &&
-      JSON.stringify([...state.items]) === JSON.stringify([...next.items]) &&
-      JSON.stringify(state.observedCommands) ===
-        JSON.stringify(next.observedCommands) &&
+      structurallyEqual([...state.items], [...next.items]) &&
+      structurallyEqual(state.observedCommands, next.observedCommands) &&
       state.omittedItems === next.omittedItems &&
-      JSON.stringify([...state.omittedItemIds]) ===
-        JSON.stringify([...next.omittedItemIds]) &&
-      JSON.stringify([...(state.omittedItemTypes ?? [])]) ===
-        JSON.stringify([...(next.omittedItemTypes ?? [])]) &&
-      JSON.stringify([...(state.omittedItemStates ?? [])]) ===
-        JSON.stringify([...(next.omittedItemStates ?? [])]) &&
+      structurallyEqual([...state.omittedItemIds], [...next.omittedItemIds]) &&
+      structurallyEqual(
+        [...(state.omittedItemTypes ?? [])],
+        [...(next.omittedItemTypes ?? [])],
+      ) &&
+      structurallyEqual(
+        [...(state.omittedItemStates ?? [])],
+        [...(next.omittedItemStates ?? [])],
+      ) &&
       state.omittedCommands === next.omittedCommands
     )
       return state;

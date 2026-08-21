@@ -23,6 +23,10 @@ export type ApprovalOutcome =
       readonly audit: ApprovalAuditRecord;
     };
 
+export interface ApprovalPromptWriter {
+  writePrompt(value: string, signal: AbortSignal): Promise<void>;
+}
+
 const MAX_AUDIT_BYTES = 256;
 const MAX_FIELD_BYTES = 256;
 const MAX_PROMPT_BYTES = 8192;
@@ -1100,43 +1104,31 @@ function prompt(
   return `${[...lines, choiceBlock].join("\n")} `;
 }
 function writePrompt(
-  output: NodeJS.WritableStream,
+  writer: ApprovalPromptWriter,
   value: string,
   timeoutMs: number,
 ): Promise<boolean> {
-  const destroyable = output as NodeJS.WritableStream & {
-    destroy?: () => unknown;
-  };
-  const destroy = destroyable.destroy;
-  if (typeof destroy !== "function") return Promise.resolve(false);
+  const controller = new AbortController();
   return new Promise((resolve) => {
     let settled = false;
-    const onError = () => finish(false);
-    const onClose = () => finish(false);
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      output.removeListener("error", onError);
-      output.removeListener("close", onClose);
       resolve(ok);
     };
     const timer = setTimeout(
       () => {
-        try {
-          destroy.call(output);
-        } finally {
-          finish(false);
-        }
+        controller.abort();
+        finish(false);
       },
       Math.max(1, Math.min(timeoutMs, 60_000)),
     );
-    output.once("error", onError);
-    output.once("close", onClose);
     try {
-      output.write(value, (error) => {
-        if (!error) finish(true);
-      });
+      writer.writePrompt(value, controller.signal).then(
+        () => finish(true),
+        () => finish(false),
+      );
     } catch {
       finish(false);
     }
@@ -1222,32 +1214,26 @@ function readLine(
 export async function answerApproval(
   request: unknown,
   input: NodeJS.ReadableStream,
-  output: NodeJS.WritableStream,
+  writer: ApprovalPromptWriter,
   timeoutMs: number,
 ): Promise<ApprovalOutcome> {
   try {
     const valid = validate(request);
     if ("kind" in valid) return valid;
     const terminalInput = input as NodeJS.ReadableStream & { isTTY?: boolean };
-    const terminalOutput = output as NodeJS.WritableStream & {
-      isTTY?: boolean;
-    };
-    if (terminalInput.isTTY !== true || terminalOutput.isTTY !== true)
-      return safest(valid);
+    if (terminalInput.isTTY !== true) return safest(valid);
     const available = choices(valid);
     if (!hasPromptableListSizes(valid)) return safest(valid);
     if (!hasCompletePromptContext(valid, available)) return safest(valid);
     const rendered = prompt(valid, available);
     if (
       rendered === null ||
-      !(await writePrompt(output, rendered, timeoutMs)) ||
-      terminalInput.isTTY !== true ||
-      terminalOutput.isTTY !== true
+      !(await writePrompt(writer, rendered, timeoutMs)) ||
+      terminalInput.isTTY !== true
     )
       return safest(valid);
     const selected = await readLine(input, timeoutMs);
-    if (terminalInput.isTTY !== true || terminalOutput.isTTY !== true)
-      return safest(valid);
+    if (terminalInput.isTTY !== true) return safest(valid);
     const choice = available.find((candidate) => candidate.id === selected);
     return choice ? response(valid, choice) : safest(valid);
   } catch {

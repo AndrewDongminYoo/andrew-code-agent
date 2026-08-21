@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { PassThrough, Readable, Writable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 
 const approvalsModule = await import("../../dist/app-server/approvals.js").catch(() => null);
@@ -26,17 +25,17 @@ function input(line, tty = true) {
 
 function output({ tty = true, fail = false } = {}) {
   const chunks = [];
-  const stream = new Writable({
-    write(chunk, _encoding, callback) {
-      if (fail) callback(new Error("write failed"));
-      else {
-        chunks.push(chunk.toString());
-        callback();
-      }
+  let calls = 0;
+  const stream = {
+    async writePrompt(value, signal) {
+      calls += 1;
+      if (!tty) throw new Error("output is not a TTY");
+      if (fail) throw new Error("write failed");
+      if (signal.aborted) throw signal.reason;
+      chunks.push(value);
     },
-  });
-  Object.defineProperty(stream, "isTTY", { value: tty });
-  return { stream, text: () => chunks.join("") };
+  };
+  return { stream, text: () => chunks.join(""), calls: () => calls };
 }
 
 test("renders bounded command context and maps opaque decisions to exact responses", async () => {
@@ -45,6 +44,7 @@ test("renders bounded command context and maps opaque decisions to exact respons
   const accepted = await approvals().answerApproval(command, input("1\n"), sink.stream, 100);
   assert.deepEqual(accepted.response, { decision: "accept" });
   assert.equal(accepted.acceptedForSession, false);
+  assert.equal(sink.calls(), 1);
   assert.match(sink.text(), /thread-1|turn-1|command-1|curl https:\/\/example.com|\/repo|Needs network/);
   const session = await approvals().answerApproval(command, input("2\n"), output().stream, 100);
   assert.deepEqual(session.response, { decision: "acceptForSession" });
@@ -107,119 +107,108 @@ test("fails closed or safely declines for noninteractive and malformed input pat
   assert.equal(unsupported.code, "UNKNOWN_SERVER_REQUEST");
 });
 
-test("declines when either terminal loses TTY authority after the prompt callback", async () => {
+test("declines when input loses TTY authority after the prompt is written", async () => {
   const [command] = await requests();
-  for (const lost of ["input", "output"]) {
-    const source = new PassThrough();
-    Object.defineProperty(source, "isTTY", { value: true, writable: true });
-    const sink = new Writable({
-      write(_chunk, _encoding, callback) {
-        callback();
-        setImmediate(() => {
-          if (lost === "input") source.isTTY = false;
-          else sink.isTTY = false;
-          source.write("1\n");
-        });
-      },
-    });
-    Object.defineProperty(sink, "isTTY", { value: true, writable: true });
+  const source = new PassThrough();
+  Object.defineProperty(source, "isTTY", { value: true, writable: true });
+  const writer = {
+    async writePrompt() {
+      source.isTTY = false;
+      source.write("1\n");
+    },
+  };
 
-    const result = await approvals().answerApproval(command, source, sink, 100);
+  const result = await approvals().answerApproval(command, source, writer, 100);
 
-    assert.deepEqual(result.response, { decision: "decline" });
-    source.destroy();
-    sink.destroy();
-  }
+  assert.deepEqual(result.response, { decision: "decline" });
+  source.destroy();
 });
 
-test("bounds a stalled prompt write by the approval timeout and removes its error listener", async () => {
+test("aborts a stalled writer and settles when the writer ignores abort", async () => {
   const [command] = await requests();
-  const sink = new Writable({
-    write() {},
-  });
-  Object.defineProperty(sink, "isTTY", { value: true });
+  let writerSignal = null;
+  const writer = {
+    writePrompt(_value, signal) {
+      writerSignal = signal;
+      return new Promise(() => {});
+    },
+  };
 
   const result = await Promise.race([
-    approvals().answerApproval(command, input("1\n"), sink, 10),
+    approvals().answerApproval(command, input("1\n"), writer, 10),
     new Promise((resolve) => setTimeout(() => resolve(null), 250)),
   ]);
 
-  assert.notEqual(result, null, "a stalled prompt write must settle within the bounded margin");
+  assert.notEqual(result, null, "an abort-ignoring writer must not hold the approval open");
   assert.deepEqual(result.response, { decision: "decline" });
-  assert.equal(sink.listenerCount("error"), 0);
-  sink.destroy();
+  assert.equal(writerSignal?.aborted, true);
 });
 
-test("settles and removes listeners when a stalled prompt stream suppresses close", async () => {
+test("absorbs a writer rejection that arrives after the timeout", async () => {
   const [command] = await requests();
-  const sink = new Writable({
-    emitClose: false,
-    write() {},
-  });
-  Object.defineProperty(sink, "isTTY", { value: true });
+  let unhandled = null;
+  let calls = 0;
+  const onUnhandled = (reason) => {
+    unhandled = reason;
+  };
+  process.once("unhandledRejection", onUnhandled);
+  const writer = {
+    writePrompt() {
+      calls += 1;
+      return new Promise((_, reject) => {
+        setTimeout(() => reject(new Error("late writer failure")), 40);
+      });
+    },
+  };
 
-  const result = await Promise.race([
-    approvals().answerApproval(command, input("1\n"), sink, 5),
-    new Promise((resolve) => setTimeout(() => resolve(null), 100)),
-  ]);
-
-  assert.notEqual(result, null, "a destroyed prompt write must settle without a close event");
-  assert.deepEqual(result.response, { decision: "decline" });
-  assert.equal(sink.destroyed, true);
-  assert.equal(sink.listenerCount("error"), 0);
-  assert.equal(sink.listenerCount("close"), 0);
+  try {
+    const result = await approvals().answerApproval(command, input("1\n"), writer, 5);
+    assert.deepEqual(result.response, { decision: "decline" });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    assert.equal(calls, 1);
+    assert.equal(unhandled, null);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+  }
 });
 
-test("absorbs a late prompt write error after timeout and removes terminal listeners", async () => {
-  const script = String.raw`
-    import { readFile } from "node:fs/promises";
-    import { Readable, Writable } from "node:stream";
-    import { answerApproval } from "./dist/app-server/approvals.js";
+test("fails safely for writer rejection and non-TTY input", async () => {
+  const [command] = await requests();
+  let calls = 0;
+  const writer = {
+    async writePrompt() {
+      calls += 1;
+      throw new Error("output is not a TTY");
+    },
+  };
 
-    const request = JSON.parse((await readFile("test/fixtures/protocol/approval-requests.jsonl", "utf8")).split("\n")[0]);
-    const source = Readable.from(["1\n"]);
-    Object.defineProperty(source, "isTTY", { value: true });
-    const sink = new Writable({
-      write(_chunk, _encoding, callback) {
-        setTimeout(() => callback(new Error("late write failure")), 40);
+  const rejected = await approvals().answerApproval(command, input("1\n"), writer, 100);
+  const nonTty = await approvals().answerApproval(command, input("1\n", false), writer, 100);
+
+  assert.deepEqual(rejected.response, { decision: "decline" });
+  assert.deepEqual(nonTty.response, { decision: "decline" });
+  assert.equal(calls, 1);
+});
+
+test("uses only the writer capability and never stream lifecycle methods", async () => {
+  const [command] = await requests();
+  let forbiddenAccesses = 0;
+  const writer = {
+    async writePrompt() {},
+  };
+  for (const key of ["write", "once", "removeListener", "destroy", "isTTY"]) {
+    Object.defineProperty(writer, key, {
+      get() {
+        forbiddenAccesses += 1;
+        throw new Error(`answerApproval accessed ${key}`);
       },
     });
-    Object.defineProperty(sink, "isTTY", { value: true });
-    let uncaught = null;
-    process.once("uncaughtException", (error) => {
-      uncaught = error.message;
-    });
+  }
 
-    const result = await answerApproval(request, source, sink, 5);
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    console.log(JSON.stringify({
-      decision: result.decision,
-      errorListeners: sink.listenerCount("error"),
-      closeListeners: sink.listenerCount("close"),
-      uncaught,
-    }));
-  `;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
-    cwd: process.cwd(),
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8").on("data", (chunk) => {
-    stdout += chunk;
-  });
-  child.stderr.setEncoding("utf8").on("data", (chunk) => {
-    stderr += chunk;
-  });
-  const exitCode = await new Promise((resolve) => child.once("close", resolve));
+  const result = await approvals().answerApproval(command, input("1\n"), writer, 100);
 
-  assert.equal(exitCode, 0, stderr);
-  assert.deepEqual(JSON.parse(stdout), {
-    decision: "decline",
-    errorListeners: 0,
-    closeListeners: 0,
-    uncaught: null,
-  });
+  assert.deepEqual(result.response, { decision: "accept" });
+  assert.equal(forbiddenAccesses, 0);
 });
 
 test("rejects extra generated-request keys and grants a fresh non-null permission subset", async () => {
@@ -671,13 +660,7 @@ test("restores an initially paused input across sequential approvals without lea
 test("rejects an oversized interactive chunk before concatenating it", async () => {
   const [command] = await requests();
   const oversizedInput = input(new Uint8Array(65));
-  const sink = new Writable({
-    decodeStrings: false,
-    write(_chunk, _encoding, callback) {
-      callback();
-    },
-  });
-  Object.defineProperty(sink, "isTTY", { value: true });
+  const sink = output().stream;
   const originalFrom = Buffer.from;
   const originalConcat = Buffer.concat;
   let fromCalls = 0;
