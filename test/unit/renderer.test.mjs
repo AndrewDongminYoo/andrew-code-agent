@@ -50,6 +50,27 @@ test("bounds externally supplied IDs and types and renders projection omission m
   assert.doesNotMatch(lines.join("\n"), /credential|hidden/);
 });
 
+test("distinguishes active omission lower bounds from exact terminal counts", () => {
+  const base = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map(),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    omittedItems: 64,
+    omittedCommands: 0,
+    omittedWarnings: 0,
+  };
+
+  const activeLines = renderer().renderTurnState({ ...base, omittedItemsComplete: false, terminalStatus: "running" });
+  const terminalLines = renderer().renderTurnState({ ...base, omittedItemsComplete: true, terminalStatus: "completed" });
+
+  assert.ok(activeLines.includes("At least 64 item(s) omitted"));
+  assert.ok(terminalLines.includes("64 item(s) omitted"));
+  assert.ok(!terminalLines.includes("At least 64 item(s) omitted"));
+});
+
 test("uses UTF-8 bounds externally and renders neutral MCP lifecycle details", () => {
   const state = {
     threadId: "🙂".repeat(200),

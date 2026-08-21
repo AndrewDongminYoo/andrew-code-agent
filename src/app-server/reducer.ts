@@ -1,3 +1,4 @@
+import { createHash, type Hash } from "node:crypto";
 import { isProxy } from "node:util/types";
 
 export interface ItemState {
@@ -19,11 +20,13 @@ export interface TurnState {
   readonly diff: string | null;
   readonly warnings: readonly string[];
   readonly omittedItems: number;
+  readonly omittedItemsComplete: boolean;
   readonly omittedItemIds: ReadonlySet<string>;
   readonly omittedItemTypes?: ReadonlyMap<string, string>;
   readonly omittedItemStates?: ReadonlyMap<string, ItemState>;
   readonly omittedCommands: number;
   readonly omittedWarnings: number;
+  readonly terminalInventoryDigest: string | null;
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
 }
 
@@ -175,6 +178,54 @@ function structurallyEqual(left: unknown, right: unknown, depth = 0): boolean {
     });
   } catch {
     return false;
+  }
+}
+
+function updateInventoryHash(hash: Hash, value: unknown): void {
+  if (value === null) {
+    hash.update("null;");
+    return;
+  }
+  if (typeof value === "string") {
+    hash
+      .update("string:")
+      .update(String(value.length))
+      .update(":")
+      .update(value, "utf16le");
+    return;
+  }
+  if (typeof value === "number") {
+    hash
+      .update("number:")
+      .update(Object.is(value, -0) ? "-0" : String(value))
+      .update(";");
+    return;
+  }
+  if (typeof value === "boolean") {
+    hash.update(value ? "boolean:true;" : "boolean:false;");
+    return;
+  }
+  if (Array.isArray(value)) {
+    hash.update("array:").update(String(value.length)).update(":");
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (let index = 0; index < value.length; index += 1) {
+      const descriptor = descriptors[String(index)];
+      if (descriptor === undefined || !("value" in descriptor))
+        throw new ReducerError("INVALID_SERVER_EVENT");
+      updateInventoryHash(hash, descriptor.value);
+    }
+    return;
+  }
+  if (typeof value !== "object") throw new ReducerError("INVALID_SERVER_EVENT");
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  const names = Object.getOwnPropertyNames(value);
+  hash.update("object:").update(String(names.length)).update(":");
+  for (const name of names) {
+    const descriptor = descriptors[name];
+    if (descriptor === undefined || !("value" in descriptor))
+      throw new ReducerError("INVALID_SERVER_EVENT");
+    updateInventoryHash(hash, name);
+    updateInventoryHash(hash, descriptor.value);
   }
 }
 
@@ -355,7 +406,7 @@ function replaceItem(state: TurnState, item: ItemState): TurnState {
       return state;
     }
     if ((state.omittedItemStates?.size ?? 0) >= MAX_OMITTED_ITEM_AUTHORITY)
-      throw new ReducerError("INVALID_SERVER_EVENT");
+      return state;
     const omittedItemIds = new Set(state.omittedItemIds);
     const omittedItemTypes = new Map(state.omittedItemTypes ?? []);
     const omittedItemStates = new Map(state.omittedItemStates ?? []);
@@ -406,13 +457,20 @@ function updateDelta(
 ): TurnState {
   requireIdentity(state, params);
   const itemId = text(params.itemId);
-  if (itemId === null) throw new ReducerError("INVALID_SERVER_EVENT");
+  if (itemId === null || !requireProtocolId(itemId))
+    throw new ReducerError("INVALID_SERVER_EVENT");
   const omitted = knownOmittedItem(state, itemId, expectedType);
   if (omitted) {
     if (omitted.phase === "completed") return state;
     return replaceItem(state, update(omitted));
   }
   const item = validatedStoredItem(state.items.get(itemId));
+  if (
+    !item &&
+    !state.omittedItemsComplete &&
+    (state.omittedItemStates?.size ?? 0) >= MAX_OMITTED_ITEM_AUTHORITY
+  )
+    return state;
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
   if (item.phase === "completed") return state;
@@ -427,9 +485,11 @@ function terminalDelta(
   if (state.terminalStatus === "running") return null;
   requireIdentity(state, params);
   const itemId = text(params.itemId);
-  if (itemId === null) throw new ReducerError("INVALID_SERVER_EVENT");
+  if (itemId === null || !requireProtocolId(itemId))
+    throw new ReducerError("INVALID_SERVER_EVENT");
   if (isKnownOmittedItem(state, itemId, expectedType)) return state;
   const item = validatedStoredItem(state.items.get(itemId));
+  if (!item && state.terminalInventoryDigest !== null) return state;
   if (!item || item.type !== expectedType)
     throw new ReducerError("INVALID_SERVER_EVENT");
   return state;
@@ -455,11 +515,13 @@ export function createTurnState(threadId: string, turnId: string): TurnState {
     diff: null,
     warnings: [],
     omittedItems: 0,
+    omittedItemsComplete: false,
     omittedItemIds: new Set(),
     omittedItemTypes: new Map(),
     omittedItemStates: new Map(),
     omittedCommands: 0,
     omittedWarnings: 0,
+    terminalInventoryDigest: null,
     terminalStatus: "running",
   };
 }
@@ -500,6 +562,8 @@ export function reduceServerMessage(
       validatedStoredItem(state.items.get(next.id)) ??
       validatedStoredItem(state.omittedItemStates?.get(next.id));
     if (state.terminalStatus !== "running") {
+      if (previous === undefined && state.terminalInventoryDigest !== null)
+        return state;
       if (previous?.type !== next.type || !structurallyEqual(previous, next))
         throw new ReducerError("INVALID_SERVER_EVENT");
       return state;
@@ -511,7 +575,8 @@ export function reduceServerMessage(
     return replaceItem(state, next);
   }
   if (message.method === "item/agentMessage/delta") {
-    if (!params) throw new ReducerError("INVALID_SERVER_EVENT");
+    if (!params || typeof params.delta !== "string")
+      throw new ReducerError("INVALID_SERVER_EVENT");
     const terminal = terminalDelta(state, params, "agentMessage");
     if (terminal) return terminal;
     return updateDelta(state, params, "agentMessage", (item) =>
@@ -519,7 +584,8 @@ export function reduceServerMessage(
     );
   }
   if (message.method === "item/plan/delta") {
-    if (!params) throw new ReducerError("INVALID_SERVER_EVENT");
+    if (!params || typeof params.delta !== "string")
+      throw new ReducerError("INVALID_SERVER_EVENT");
     const terminal = terminalDelta(state, params, "plan");
     if (terminal) return terminal;
     return updateDelta(state, params, "plan", (item) =>
@@ -652,10 +718,12 @@ export function reduceServerMessage(
     const omittedItemIds = new Set<string>();
     const omittedItemTypes = new Map<string, string>();
     const omittedItemStates = new Map<string, ItemState>();
+    const inventoryHash = createHash("sha256");
     for (const raw of turn.items) {
       const safe = safeItem(raw, "completed");
       if (seenIds.has(safe.id)) throw new ReducerError("INVALID_SERVER_EVENT");
       seenIds.add(safe.id);
+      updateInventoryHash(inventoryHash, safe);
       if (safe.type === "commandExecution" && isRecord(safe.value)) {
         if (observedCommands.length >= MAX_COMMANDS) omittedCommands += 1;
         else if (
@@ -672,12 +740,12 @@ export function reduceServerMessage(
           });
       }
       if (items.size >= MAX_ITEMS) {
-        if (omittedItemStates.size >= MAX_OMITTED_ITEM_AUTHORITY)
-          throw new ReducerError("INVALID_SERVER_EVENT");
-        omittedItemIds.add(safe.id);
-        omittedItemTypes.set(safe.id, safe.type);
-        omittedItemStates.set(safe.id, safe);
-        omittedItems = omittedItemIds.size;
+        omittedItems += 1;
+        if (omittedItemStates.size < MAX_OMITTED_ITEM_AUTHORITY) {
+          omittedItemIds.add(safe.id);
+          omittedItemTypes.set(safe.id, safe.type);
+          omittedItemStates.set(safe.id, safe);
+        }
         continue;
       }
       items.set(safe.id, safe);
@@ -687,10 +755,12 @@ export function reduceServerMessage(
       items,
       observedCommands,
       omittedItems,
+      omittedItemsComplete: true,
       omittedItemIds,
       omittedItemTypes,
       omittedItemStates,
       omittedCommands,
+      terminalInventoryDigest: inventoryHash.digest("hex"),
       terminalStatus: statuses[turn.status]!,
     };
     if (state.terminalStatus === "running") return next;
@@ -703,6 +773,7 @@ export function reduceServerMessage(
       structurallyEqual(storedItems, [...next.items]) &&
       structurallyEqual(state.observedCommands, next.observedCommands) &&
       state.omittedItems === next.omittedItems &&
+      state.omittedItemsComplete === next.omittedItemsComplete &&
       structurallyEqual([...state.omittedItemIds], [...next.omittedItemIds]) &&
       structurallyEqual(
         [...(state.omittedItemTypes ?? [])],
@@ -711,7 +782,8 @@ export function reduceServerMessage(
       structurallyEqual(storedOmittedItemStates, [
         ...(next.omittedItemStates ?? []),
       ]) &&
-      state.omittedCommands === next.omittedCommands
+      state.omittedCommands === next.omittedCommands &&
+      state.terminalInventoryDigest === next.terminalInventoryDigest
     )
       return state;
     throw new ReducerError("INVALID_SERVER_EVENT");

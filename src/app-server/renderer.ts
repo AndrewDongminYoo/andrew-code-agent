@@ -94,11 +94,14 @@ export function renderTurnState(state: TurnState): readonly string[] {
     lines.push(bounded(`Warning: ${warning}`));
   const omissions = state as TurnState & {
     readonly omittedItems?: number;
+    readonly omittedItemsComplete?: boolean;
     readonly omittedCommands?: number;
     readonly omittedWarnings?: number;
   };
   if (typeof omissions.omittedItems === "number" && omissions.omittedItems > 0)
-    lines.push(`${omissions.omittedItems} item(s) omitted`);
+    lines.push(
+      `${omissions.omittedItemsComplete === false ? "At least " : ""}${omissions.omittedItems} item(s) omitted`,
+    );
   if (
     typeof omissions.omittedCommands === "number" &&
     omissions.omittedCommands > 0

@@ -371,31 +371,94 @@ test("requires a full terminal inventory and summarizes commands beyond the item
   assert.equal(terminal.omittedCommands, 1);
 });
 
-test("fails closed when active omitted-item authority exceeds its deterministic bound", () => {
+test("keeps active overflow bounded and accepts later lifecycle events for unretained items", () => {
   const api = reducer();
   let state = api.createTurnState("thread-1", "turn-1");
   for (let index = 0; index < 128; index += 1) {
     state = api.reduceServerMessage(state, started(item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null })));
   }
+  state = api.reduceServerMessage(state, started(item("plan", "unretained-plan", { text: "initial" })));
+  state = api.reduceServerMessage(state, { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "unretained-plan", delta: " later" } });
+  state = api.reduceServerMessage(state, completed(item("plan", "unretained-plan", { text: "initial later" })));
+
   assert.equal(state.items.size, 64);
   assert.equal(state.omittedItemStates.size, 64);
+  assert.equal(state.omittedItemIds.size, 64);
+  assert.equal(state.omittedItemTypes.size, 64);
+  assert.equal(state.omittedItems, 64);
+  assert.equal(state.omittedItemsComplete, false);
+});
+
+test("accepts large terminal inventories with bounded resident state and full duplicate authority", () => {
+  const api = reducer();
+  for (const itemCount of [129, 1_000]) {
+    const items = Array.from({ length: itemCount }, (_, index) => item("agentMessage", `message-${index}`, { text: `message-${index}`, phase: null, memoryCitation: null }));
+    const completedTurn = { id: "turn-1", items, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null };
+    const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: completedTurn },
+    });
+
+    assert.equal(terminal.items.size, 64);
+    assert.equal(terminal.omittedItemStates.size, 64);
+    assert.equal(terminal.omittedItemIds.size, 64);
+    assert.equal(terminal.omittedItemTypes.size, 64);
+    assert.equal(terminal.omittedItems, itemCount - 64);
+    assert.equal(terminal.omittedItemsComplete, true);
+    assert.match(terminal.terminalInventoryDigest, /^[0-9a-f]{64}$/);
+    assert.equal(api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: completedTurn } }), terminal);
+
+    const conflictingItems = items.slice();
+    conflictingItems[itemCount - 1] = item("agentMessage", `message-${itemCount - 1}`, { text: "conflict beyond retained detail", phase: null, memoryCitation: null });
+    assert.throws(
+      () => api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: { ...completedTurn, items: conflictingItems } } }),
+      { code: "INVALID_SERVER_EVENT" },
+    );
+  }
+});
+
+test("rejects a negative-zero conflict beyond retained item and command details", () => {
+  const api = reducer();
+  const leadingItems = Array.from({ length: 128 }, (_, index) => item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null }));
+  const commands = Array.from({ length: 33 }, (_, index) => item("commandExecution", `command-${index}`, { command: `command-${index}`, cwd: "/repo", exitCode: index === 32 ? -0 : index, aggregatedOutput: null }));
+  const items = [...leadingItems, ...commands];
+  const completedTurn = { id: "turn-1", items, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null };
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: completedTurn },
+  });
+
+  assert.equal(terminal.items.size, 64);
+  assert.equal(terminal.omittedItemStates.size, 64);
+  assert.equal(terminal.observedCommands.length, 32);
+  assert.equal(terminal.omittedCommands, 1);
+  const conflictingItems = items.slice();
+  conflictingItems[160] = item("commandExecution", "command-32", { command: "command-32", cwd: "/repo", exitCode: 0, aggregatedOutput: null });
   assert.throws(
-    () => api.reduceServerMessage(state, started(item("agentMessage", "message-overflow", { text: "message", phase: null, memoryCitation: null }))),
+    () => api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: { ...completedTurn, items: conflictingItems } } }),
     { code: "INVALID_SERVER_EVENT" },
   );
 });
 
-test("fails closed when terminal omitted-item authority exceeds its deterministic bound", () => {
+test("rejects a lone-surrogate conflict beyond retained item details", () => {
   const api = reducer();
-  const items = Array.from({ length: 129 }, (_, index) => item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null }));
+  const items = [
+    ...Array.from({ length: 128 }, (_, index) => item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null })),
+    item("agentMessage", "message-128", { text: "\ud800", phase: null, memoryCitation: null }),
+  ];
+  const completedTurn = { id: "turn-1", items, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null };
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: completedTurn },
+  });
+
+  assert.equal(terminal.items.size, 64);
+  assert.equal(terminal.omittedItemStates.size, 64);
+  assert.equal(terminal.omittedItems, 65);
+  const conflictingItems = items.slice();
+  conflictingItems[128] = item("agentMessage", "message-128", { text: "\ufffd", phase: null, memoryCitation: null });
   assert.throws(
-    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
-      method: "turn/completed",
-      params: {
-        threadId: "thread-1",
-        turn: { id: "turn-1", items, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null },
-      },
-    }),
+    () => api.reduceServerMessage(terminal, { method: "turn/completed", params: { threadId: "thread-1", turn: { ...completedTurn, items: conflictingItems } } }),
     { code: "INVALID_SERVER_EVENT" },
   );
 });
