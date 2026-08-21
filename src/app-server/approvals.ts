@@ -1,3 +1,8 @@
+import {
+  escapeTerminalControls,
+  fitsEscapedTerminalBytes,
+} from "./terminal.js";
+
 export interface ApprovalAuditRecord {
   readonly requestId: string;
   readonly threadId: string | null;
@@ -34,7 +39,6 @@ const MAX_LINE_BYTES = 64;
 const MAX_CHOICE_LABEL_BYTES = 96;
 const MAX_APPROVAL_LIST_ITEMS = 8;
 const TRUNCATION_MARKER = " [truncated]";
-const TERMINAL_CONTROL_PATTERN = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 type RecordValue = Record<string, unknown>;
 type KnownMethod =
   | "item/commandExecution/requestApproval"
@@ -67,20 +71,6 @@ function boundedBytes(value: string, limit: number): string {
     result += part;
   }
   return `${result}${TRUNCATION_MARKER}`;
-}
-function escapeTerminalPart(part: string): string {
-  if (TERMINAL_CONTROL_PATTERN.test(part)) {
-    const codePoint = part.codePointAt(0);
-    if (codePoint === undefined) return "";
-    const hex = codePoint.toString(16).toUpperCase();
-    return codePoint <= 0xff ? `\\x${hex.padStart(2, "0")}` : `\\u{${hex}}`;
-  }
-  return part;
-}
-function escapeTerminalControls(value: string): string {
-  let result = "";
-  for (const part of value) result += escapeTerminalPart(part);
-  return result;
 }
 function bounded(value: string): string {
   return boundedBytes(value, MAX_FIELD_BYTES);
@@ -890,12 +880,7 @@ function hasPromptableListSizes(request: ValidRequest): boolean {
 }
 
 function fitsDisplayed(value: string, limit = MAX_FIELD_BYTES): boolean {
-  let byteLength = 0;
-  for (const part of value) {
-    byteLength += Buffer.byteLength(escapeTerminalPart(part), "utf8");
-    if (byteLength > limit) return false;
-  }
-  return true;
+  return fitsEscapedTerminalBytes(value, limit);
 }
 
 function commandActionFields(action: RecordValue): readonly string[] {

@@ -1,17 +1,11 @@
 import type { ItemState, TurnState } from "./reducer.js";
+import { boundedTerminalText } from "./terminal.js";
 
 const MAX_RENDERED_VALUE = 512;
 const TRUNCATION_MARKER = " [truncated]";
 
 function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
-  if (Buffer.byteLength(value, "utf8") <= limit) return value;
-  let result = "";
-  for (const part of value) {
-    if (Buffer.byteLength(result + part + TRUNCATION_MARKER, "utf8") > limit)
-      break;
-    result += part;
-  }
-  return `${result}${TRUNCATION_MARKER}`;
+  return boundedTerminalText(value, limit, TRUNCATION_MARKER);
 }
 
 function record(value: unknown): Record<string, unknown> | null {

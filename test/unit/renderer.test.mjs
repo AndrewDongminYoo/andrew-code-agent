@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
 
 const rendererModule = await import("../../dist/app-server/renderer.js").catch(() => null);
@@ -112,4 +113,78 @@ test("keeps command output visible when command context is long and bounds termi
   assert.ok(lines.some((line) => line === "Command output: real output marker"));
   assert.ok(lines.some((line) => line.startsWith("Terminal status: ") && line.endsWith(" [truncated]")));
   for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+});
+
+test("visibly escapes terminal controls across every externally supplied rendered field before bounding lines", () => {
+  const hugeOutput = `output\u001b]0;owned\u0007safe\u001b]2;again\u0007${"\u2028".repeat(600)}`;
+  const state = {
+    threadId: "thread\u0000\u001b",
+    turnId: "turn\u000d\u202e",
+    items: new Map([
+      ["agent", { id: "agent\u000a\u2028", type: "agentMessage", phase: "completed", value: { text: "text\u007f\u2029" } }],
+      ["command", { id: "command", type: "commandExecution", phase: "completed", value: { command: "printf\u009b\u001b", cwd: "/repo\u0007\u202e", exitCode: 0, output: hugeOutput } }],
+      ["files", { id: "files", type: "fileChange", phase: "completed", value: { files: [{ path: "/repo/file\u000a\u2028" }] } }],
+      ["mcp", { id: "mcp", type: "mcpToolCall", phase: "completed", value: { server: "server\u000d\u2029", tool: "tool\u0000\u001b" } }],
+      ["subagent", { id: "subagent", type: "subAgentActivity", phase: "completed", value: { label: "helper\u202e" } }],
+      ["future", { id: "item\u001b", type: "future\u2029", phase: "started", value: { label: "label\u2028" } }],
+    ]),
+    observedCommands: [{ command: "observed\u009b\u2029", cwd: "/observed\u007f\u001b", exitCode: 1 }],
+    diff: "diff\u202e",
+    warnings: ["warning\u0007\u2028"],
+    terminalStatus: "completed",
+  };
+
+  const lines = renderer().renderTurnState(state);
+  const rendered = lines.join("|");
+
+  for (const line of lines)
+    assert.doesNotMatch(line, /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u);
+  for (const expected of [
+    "thread\\x00\\x1B",
+    "turn\\x0D\\u{202E}",
+    "agent\\x0A\\u{2028}",
+    "text\\x7F\\u{2029}",
+    "printf\\x9B\\x1B",
+    "/repo\\x07\\u{202E}",
+    "output\\x1B]0;owned\\x07safe\\x1B]2;again\\x07\\u{2028}",
+    "/repo/file\\x0A\\u{2028}",
+    "server\\x0D\\u{2029}",
+    "tool\\x00\\x1B",
+    "helper\\u{202E}",
+    "item\\x1B",
+    "future\\u{2029}",
+    "label\\u{2028}",
+    "observed\\x9B\\u{2029}",
+    "/observed\\x7F\\x1B",
+    "diff\\u{202E}",
+    "warning\\x07\\u{2028}",
+  ]) assert.ok(rendered.includes(expected), expected);
+  for (const line of lines)
+    assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+});
+
+test("bounds control-heavy renderer input without allocating a full escaped copy", () => {
+  const script = `
+    import { renderTurnState } from ${JSON.stringify(new URL("../../dist/app-server/renderer.js", import.meta.url).href)};
+    const huge = "\\u2028".repeat(4_000_000);
+    const lines = renderTurnState({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      items: new Map([["agent", { id: "agent", type: "agentMessage", phase: "completed", value: { text: huge } }]]),
+      observedCommands: [],
+      diff: null,
+      warnings: [],
+      terminalStatus: "completed",
+    });
+    if (!lines.some((line) => line.includes("\\\\u{2028}") && line.endsWith(" [truncated]"))) process.exit(2);
+    if (!lines.every((line) => Buffer.byteLength(line, "utf8") <= 512)) process.exit(3);
+  `;
+  const child = spawnSync(
+    process.execPath,
+    ["--max-old-space-size=32", "--input-type=module", "--eval", script],
+    { encoding: "utf8", killSignal: "SIGKILL", maxBuffer: 1024 * 1024, timeout: 10_000 },
+  );
+
+  assert.equal(child.signal, null, child.stderr);
+  assert.equal(child.status, 0, child.stderr);
 });
