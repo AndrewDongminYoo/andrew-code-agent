@@ -54,6 +54,7 @@ export type CoordinatorErrorCode =
   | "APP_SERVER_IDENTITY_MISMATCH"
   | "BUNDLE_DIGEST_MISMATCH"
   | "COORDINATOR_FAILURE"
+  | "COORDINATOR_INTERRUPTED"
   | "EVENT_BUFFER_OVERFLOW"
   | "INVALID_COORDINATOR_INPUT"
   | "MALFORMED_APP_SERVER_RESPONSE"
@@ -517,12 +518,19 @@ export async function startNewThread(
         repositoryRoot,
       ),
     );
-    const response = await dependencies.client.threadStart({
-      cwd: repositoryRoot,
-      approvalPolicy: "on-request",
-      approvalsReviewer: "user",
-      sandbox: "workspace-write",
-    });
+    let response;
+    try {
+      response = await dependencies.client.threadStart({
+        cwd: repositoryRoot,
+        approvalPolicy: "on-request",
+        approvalsReviewer: "user",
+        sandbox: "workspace-write",
+      });
+    } catch (error) {
+      if (interruptLatch.count() >= 2)
+        throw new CoordinatorError("COORDINATOR_INTERRUPTED");
+      throw error;
+    }
     const threadId = nestedResponseId(response, "thread");
     const initialRecord: ThreadRecord = {
       threadId,
