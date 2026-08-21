@@ -113,15 +113,41 @@ async function withSourceRepository(run) {
   }
 }
 
+async function withPoisonedGitEnvironment(environment, run) {
+  const previous = new Map(
+    Object.keys(environment).map((name) => [name, process.env[name]]),
+  );
+  Object.assign(process.env, environment);
+  try {
+    return await run();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 async function withMutatingGitShim(repository, run) {
   const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-code-agent-git-"));
   const markerPath = join(shimDirectory, "mutated");
   const shimPath = join(shimDirectory, "git");
   const { stdout } = await execFile("which", ["git"]);
   const gitPath = stdout.trim();
+  const mutatePath = join(repository, "rules/default.rules");
   await writeFile(
     shimPath,
     `#!/bin/sh
+ANDREW_AGENT_TEST_GIT_MARKER=${shellQuote(markerPath)}
+ANDREW_AGENT_TEST_MUTATE_PATH=${shellQuote(mutatePath)}
+ANDREW_AGENT_TEST_REAL_GIT=${shellQuote(gitPath)}
 if [ "$3" = "rev-parse" ] && [ "$4" = "HEAD" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
   "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
   printf '%s\\n' 'changed after source snapshot' > "$ANDREW_AGENT_TEST_MUTATE_PATH"
@@ -135,12 +161,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
-  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
-  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
-  process.env.ANDREW_AGENT_TEST_MUTATE_PATH = join(
-    repository,
-    "rules/default.rules",
-  );
   try {
     await run();
   } finally {
@@ -149,9 +169,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
     } else {
       process.env.PATH = originalPath;
     }
-    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
-    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
-    delete process.env.ANDREW_AGENT_TEST_MUTATE_PATH;
     await rm(shimDirectory, { recursive: true, force: true });
   }
 }
@@ -166,6 +183,11 @@ async function withDeindexingGitShim(repository, sourcePath, run) {
   await writeFile(
     shimPath,
     `#!/bin/sh
+ANDREW_AGENT_TEST_DEINDEX_PATH=${shellQuote(sourcePath)}
+ANDREW_AGENT_TEST_GIT_MARKER=${shellQuote(markerPath)}
+ANDREW_AGENT_TEST_GIT_OUTPUT=${shellQuote(outputPath)}
+ANDREW_AGENT_TEST_REAL_GIT=${shellQuote(gitPath)}
+ANDREW_AGENT_TEST_REPOSITORY=${shellQuote(repository)}
 if [ "$4" = "ls-files" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
   "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
   "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" rm --cached --quiet -- "$ANDREW_AGENT_TEST_DEINDEX_PATH" || exit $?
@@ -183,11 +205,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
-  process.env.ANDREW_AGENT_TEST_DEINDEX_PATH = sourcePath;
-  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
-  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
-  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
-  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
   try {
     await run();
   } finally {
@@ -196,11 +213,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
     } else {
       process.env.PATH = originalPath;
     }
-    delete process.env.ANDREW_AGENT_TEST_DEINDEX_PATH;
-    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
-    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
-    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
-    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
     await rm(shimDirectory, { recursive: true, force: true });
   }
 }
@@ -212,9 +224,16 @@ async function withLsFilesGitShim(repository, mode, sourcePath, run) {
   const shimPath = join(shimDirectory, "git");
   const { stdout } = await execFile("which", ["git"]);
   const gitPath = stdout.trim();
+  const mutatePath = join(repository, sourcePath);
   await writeFile(
     shimPath,
     `#!/bin/sh
+ANDREW_AGENT_TEST_GIT_LS_FILES_MODE=${shellQuote(mode)}
+ANDREW_AGENT_TEST_GIT_MARKER=${shellQuote(markerPath)}
+ANDREW_AGENT_TEST_GIT_OUTPUT=${shellQuote(outputPath)}
+ANDREW_AGENT_TEST_MUTATE_PATH=${shellQuote(mutatePath)}
+ANDREW_AGENT_TEST_REAL_GIT=${shellQuote(gitPath)}
+ANDREW_AGENT_TEST_REPOSITORY=${shellQuote(repository)}
 if [ "$4" = "ls-files" ] && [ "$5" = "--cached" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
   "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
   case "$ANDREW_AGENT_TEST_GIT_LS_FILES_MODE" in
@@ -246,12 +265,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
-  process.env.ANDREW_AGENT_TEST_GIT_LS_FILES_MODE = mode;
-  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
-  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
-  process.env.ANDREW_AGENT_TEST_MUTATE_PATH = join(repository, sourcePath);
-  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
-  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
   try {
     await run();
   } finally {
@@ -260,12 +273,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
     } else {
       process.env.PATH = originalPath;
     }
-    delete process.env.ANDREW_AGENT_TEST_GIT_LS_FILES_MODE;
-    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
-    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
-    delete process.env.ANDREW_AGENT_TEST_MUTATE_PATH;
-    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
-    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
     await rm(shimDirectory, { recursive: true, force: true });
   }
 }
@@ -276,9 +283,14 @@ async function withRetargetingGitShim(repository, run) {
   const shimPath = join(shimDirectory, "git");
   const { stdout } = await execFile("which", ["git"]);
   const gitPath = stdout.trim();
+  const retargetPath = join(repository, "rules/selected.rules");
   await writeFile(
     shimPath,
     `#!/bin/sh
+ANDREW_AGENT_TEST_GIT_MARKER=${shellQuote(markerPath)}
+ANDREW_AGENT_TEST_REAL_GIT=${shellQuote(gitPath)}
+ANDREW_AGENT_TEST_REPOSITORY=${shellQuote(repository)}
+ANDREW_AGENT_TEST_RETARGET_PATH=${shellQuote(retargetPath)}
 if [ "$3" = "diff" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
   /bin/rm -- "$ANDREW_AGENT_TEST_RETARGET_PATH" || exit $?
   /bin/ln -s new.rules "$ANDREW_AGENT_TEST_RETARGET_PATH" || exit $?
@@ -293,13 +305,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
-  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
-  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
-  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
-  process.env.ANDREW_AGENT_TEST_RETARGET_PATH = join(
-    repository,
-    "rules/selected.rules",
-  );
   try {
     await run();
   } finally {
@@ -308,10 +313,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
     } else {
       process.env.PATH = originalPath;
     }
-    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
-    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
-    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
-    delete process.env.ANDREW_AGENT_TEST_RETARGET_PATH;
     await rm(shimDirectory, { recursive: true, force: true });
   }
 }
@@ -426,6 +427,49 @@ function assertSourceTreeError(error, code) {
     error instanceof sourceTreeModule.SourceTreeError && error.code === code
   );
 }
+
+test("reads source repo A under inherited Git repository redirects", async () => {
+  await withSourceRepository(async (sourceRoot) => {
+    await withSourceRepository(async (poisonRoot) => {
+      await writeFile(
+        join(poisonRoot, "rules", "default.rules"),
+        "poison repository bytes\n",
+      );
+      await execFile("git", [
+        "-C",
+        poisonRoot,
+        "add",
+        "--",
+        "rules/default.rules",
+      ]);
+
+      const files = await withPoisonedGitEnvironment(
+        {
+          GIT_DIR: join(poisonRoot, ".git"),
+          GIT_WORK_TREE: sourceRoot,
+          GIT_INDEX_FILE: join(poisonRoot, ".git", "index"),
+        },
+        () =>
+          resolveSourceFiles(
+            sourceRoot,
+            baseManifest([
+              {
+                source: "rules/default.rules",
+                target: "rules/default.rules",
+                mode: "0644",
+                replacements: [],
+              },
+            ]),
+          ),
+      );
+
+      assert.equal(
+        Buffer.from(files[0].bytes).toString("utf8"),
+        "Always preserve the source boundary.\n",
+      );
+    });
+  });
+});
 
 test("rejects an exact manifest source that escapes through a symlink", async () => {
   await withSourceRepository(async (repository) => {

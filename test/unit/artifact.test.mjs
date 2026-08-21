@@ -137,6 +137,28 @@ async function withSourceRepository(run) {
   }
 }
 
+async function withPoisonedGitEnvironment(environment, run) {
+  const previous = new Map(
+    Object.keys(environment).map((name) => [name, process.env[name]]),
+  );
+  Object.assign(process.env, environment);
+  try {
+    return await run();
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) {
+        delete process.env[name];
+      } else {
+        process.env[name] = value;
+      }
+    }
+  }
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 async function withArtifactsRoot(run) {
   const artifactsRoot = await mkdtemp(
     join(tmpdir(), "andrew-code-agent-artifacts-"),
@@ -167,9 +189,16 @@ async function withSecondSnapshotCommit(repository, run) {
   const shimPath = join(shimDirectory, "git");
   const { stdout } = await execFile("which", ["git"]);
   const gitPath = stdout.trim();
+  const mutatePath = join(repository, "rules/default.rules");
   await writeFile(
     shimPath,
     `#!/bin/sh
+ANDREW_AGENT_TEST_FIRST_MARKER=${shellQuote(firstMarkerPath)}
+ANDREW_AGENT_TEST_GIT_OUTPUT=${shellQuote(outputPath)}
+ANDREW_AGENT_TEST_MUTATE_PATH=${shellQuote(mutatePath)}
+ANDREW_AGENT_TEST_REAL_GIT=${shellQuote(gitPath)}
+ANDREW_AGENT_TEST_REPOSITORY=${shellQuote(repository)}
+ANDREW_AGENT_TEST_SECOND_MARKER=${shellQuote(secondMarkerPath)}
 if [ "$3" = "rev-parse" ] && [ "$4" = "HEAD" ]; then
   "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
   if [ ! -e "$ANDREW_AGENT_TEST_FIRST_MARKER" ]; then
@@ -190,15 +219,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
-  process.env.ANDREW_AGENT_TEST_FIRST_MARKER = firstMarkerPath;
-  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
-  process.env.ANDREW_AGENT_TEST_MUTATE_PATH = join(
-    repository,
-    "rules/default.rules",
-  );
-  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
-  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
-  process.env.ANDREW_AGENT_TEST_SECOND_MARKER = secondMarkerPath;
   try {
     await run();
   } finally {
@@ -207,12 +227,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
     } else {
       process.env.PATH = originalPath;
     }
-    delete process.env.ANDREW_AGENT_TEST_FIRST_MARKER;
-    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
-    delete process.env.ANDREW_AGENT_TEST_MUTATE_PATH;
-    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
-    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
-    delete process.env.ANDREW_AGENT_TEST_SECOND_MARKER;
     await rm(shimDirectory, { recursive: true, force: true });
   }
 }
@@ -229,6 +243,10 @@ async function withPostIndexMutationGitShim(repository, run) {
   await writeFile(
     shimPath,
     `#!/bin/sh
+ANDREW_AGENT_TEST_GIT_MARKER=${shellQuote(markerPath)}
+ANDREW_AGENT_TEST_GIT_OUTPUT=${shellQuote(outputPath)}
+ANDREW_AGENT_TEST_REAL_GIT=${shellQuote(gitPath)}
+ANDREW_AGENT_TEST_REPOSITORY=${shellQuote(repository)}
 if [ "$4" = "ls-files" ] && [ "$5" = "--cached" ] && [ ! -e "$ANDREW_AGENT_TEST_GIT_MARKER" ]; then
   "$ANDREW_AGENT_TEST_REAL_GIT" "$@" > "$ANDREW_AGENT_TEST_GIT_OUTPUT" || exit $?
   "$ANDREW_AGENT_TEST_REAL_GIT" -C "$ANDREW_AGENT_TEST_REPOSITORY" update-index --assume-unchanged -- agent-bundle.toml || exit $?
@@ -244,10 +262,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
 
   const originalPath = process.env.PATH;
   process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
-  process.env.ANDREW_AGENT_TEST_GIT_MARKER = markerPath;
-  process.env.ANDREW_AGENT_TEST_GIT_OUTPUT = outputPath;
-  process.env.ANDREW_AGENT_TEST_REAL_GIT = gitPath;
-  process.env.ANDREW_AGENT_TEST_REPOSITORY = repository;
   try {
     await run();
   } finally {
@@ -256,10 +270,6 @@ exec "$ANDREW_AGENT_TEST_REAL_GIT" "$@"
     } else {
       process.env.PATH = originalPath;
     }
-    delete process.env.ANDREW_AGENT_TEST_GIT_MARKER;
-    delete process.env.ANDREW_AGENT_TEST_GIT_OUTPUT;
-    delete process.env.ANDREW_AGENT_TEST_REAL_GIT;
-    delete process.env.ANDREW_AGENT_TEST_REPOSITORY;
     await rm(shimDirectory, { recursive: true, force: true });
   }
 }
@@ -367,6 +377,72 @@ async function expectedMetadata(sourceRoot) {
   return withArtifactsRoot(async (artifactsRoot) =>
     buildBundle(bundleInput(sourceRoot, artifactsRoot)),
   );
+}
+
+for (const redirectCase of [
+  {
+    name: "GIT_DIR",
+    environment: (sourceRoot, poisonRoot) => ({
+      GIT_DIR: join(poisonRoot, ".git"),
+    }),
+  },
+  {
+    name: "GIT_WORK_TREE",
+    environment: (sourceRoot, poisonRoot) => ({
+      GIT_WORK_TREE: poisonRoot,
+    }),
+  },
+  {
+    name: "GIT_INDEX_FILE",
+    environment: (sourceRoot, poisonRoot) => ({
+      GIT_INDEX_FILE: join(poisonRoot, ".git", "index"),
+    }),
+  },
+  {
+    name: "combined Git redirects",
+    environment: (sourceRoot, poisonRoot) => ({
+      GIT_DIR: join(poisonRoot, ".git"),
+      GIT_WORK_TREE: sourceRoot,
+      GIT_INDEX_FILE: join(poisonRoot, ".git", "index"),
+    }),
+  },
+]) {
+  test(`binds artifact identity to source repo A under inherited ${redirectCase.name}`, async () => {
+    await withSourceRepository(async (sourceRoot) => {
+      await withSourceRepository(async (poisonRoot) => {
+        const { stdout: sourceRevision } = await execFile("git", [
+          "-C",
+          sourceRoot,
+          "rev-parse",
+          "HEAD",
+        ]);
+        await writeFile(
+          join(poisonRoot, "rules", "default.rules"),
+          "poison repository bytes\n",
+        );
+        await execFile("git", [
+          "-C",
+          poisonRoot,
+          "add",
+          "--",
+          "rules/default.rules",
+        ]);
+
+        await withArtifactsRoot(async (artifactsRoot) => {
+          const result = await withPoisonedGitEnvironment(
+            redirectCase.environment(sourceRoot, poisonRoot),
+            () => buildBundle(bundleInput(sourceRoot, artifactsRoot)),
+          );
+
+          assert.equal(result.metadata.sourceRevision, sourceRevision.trim());
+          assert.equal(
+            await readFile(join(result.artifactRoot, "rules/default.rules"), "utf8"),
+            "Always preserve the source boundary.\n",
+          );
+        });
+      });
+    });
+  });
 }
 
 test("builds byte-identical immutable artifacts from the same committed source", async () => {

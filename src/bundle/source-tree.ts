@@ -1,15 +1,13 @@
 /// <reference types="node" />
 
-import { execFile as execFileCallback } from "node:child_process";
 import { constants } from "node:fs";
 import { lstat, open, readlink, realpath } from "node:fs/promises";
 import type { BigIntStats, Stats } from "node:fs";
 import { relative, resolve, sep } from "node:path";
-import { promisify } from "node:util";
 
+import { executeGit } from "../git/process.js";
 import type { BundleManifest, BundleFileEntry } from "./manifest.js";
 
-const execFile = promisify(execFileCallback);
 const outputRoot = "/andrew-code-agent-portable-output";
 
 export interface ResolvedSourceFile {
@@ -234,12 +232,7 @@ function isAcceptedSourceMode(
 async function assertGitWorktreeRoot(sourceRoot: string): Promise<void> {
   let topLevel: string;
   try {
-    ({ stdout: topLevel } = await execFile("git", [
-      "-C",
-      sourceRoot,
-      "rev-parse",
-      "--show-toplevel",
-    ]));
+    topLevel = await executeGit(sourceRoot, ["rev-parse", "--show-toplevel"]);
   } catch {
     throw new SourceTreeError(
       "SOURCE_ROOT_NOT_GIT_ROOT",
@@ -418,10 +411,8 @@ async function assertIndexedSourcePaths(
 
   let indexed: string;
   try {
-    ({ stdout: indexed } = await execFile("git", [
+    indexed = await executeGit(sourceRoot, [
       "--literal-pathspecs",
-      "-C",
-      sourceRoot,
       "ls-files",
       "--cached",
       "--full-name",
@@ -429,7 +420,7 @@ async function assertIndexedSourcePaths(
       "-z",
       "--",
       ...exactPaths,
-    ]));
+    ]);
   } catch {
     throw new SourceTreeError(
       "SOURCE_GIT_ERROR",
@@ -536,13 +527,11 @@ async function readCleanGitSnapshot(sourceRoot: string): Promise<string> {
 
   let untracked: string;
   try {
-    ({ stdout: untracked } = await execFile("git", [
-      "-C",
-      sourceRoot,
+    untracked = await executeGit(sourceRoot, [
       "ls-files",
       "--others",
       "--exclude-standard",
-    ]));
+    ]);
   } catch {
     throw new SourceTreeError(
       "SOURCE_GIT_ERROR",
@@ -575,7 +564,7 @@ async function runGit(
   arguments_: readonly string[],
 ): Promise<number> {
   try {
-    await execFile("git", ["-C", sourceRoot, ...arguments_]);
+    await executeGit(sourceRoot, arguments_);
     return 0;
   } catch (error) {
     return typeof error === "object" &&
@@ -589,12 +578,7 @@ async function runGit(
 
 async function runGitRevision(sourceRoot: string): Promise<string> {
   try {
-    const { stdout } = await execFile("git", [
-      "-C",
-      sourceRoot,
-      "rev-parse",
-      "HEAD",
-    ]);
+    const stdout = await executeGit(sourceRoot, ["rev-parse", "HEAD"]);
     return stdout.trim();
   } catch {
     throw new SourceTreeError(

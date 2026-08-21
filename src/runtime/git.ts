@@ -1,10 +1,8 @@
 /// <reference types="node" />
 
-import { execFile as execFileCallback } from "node:child_process";
 import { realpath } from "node:fs/promises";
-import { promisify } from "node:util";
 
-const execFile = promisify(execFileCallback);
+import { executeGit } from "../git/process.js";
 
 export interface GitSnapshot {
   readonly repositoryRoot: string;
@@ -225,21 +223,5 @@ async function runGit(
   repositoryRoot: string,
   args: readonly string[],
 ): Promise<string> {
-  const { stdout } = await execFile("git", ["-C", repositoryRoot, ...args], {
-    encoding: "utf8",
-    env: gitEnvironment(),
-  });
-  return stdout;
-}
-
-function gitEnvironment(): NodeJS.ProcessEnv {
-  return {
-    HOME: process.env.HOME,
-    PATH: process.env.PATH,
-    TMPDIR: process.env.TMPDIR,
-    GIT_OPTIONAL_LOCKS: "0",
-    GIT_NO_REPLACE_OBJECTS: "1",
-    LANG: "C",
-    LC_ALL: "C",
-  };
+  return executeGit(repositoryRoot, args);
 }

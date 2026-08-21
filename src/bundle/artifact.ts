@@ -1,4 +1,3 @@
-import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
   lstat,
@@ -13,8 +12,8 @@ import {
 } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { relative, resolve } from "node:path";
-import { promisify } from "node:util";
 
+import { executeGit } from "../git/process.js";
 import { parseBundleManifest, type FileMode } from "./manifest.js";
 import { renderBundle, type CapabilityInputs } from "./render.js";
 import {
@@ -26,7 +25,6 @@ import {
 const metadataPath = "bundle-metadata.json";
 const stagingPrefix = ".bundle-staging-";
 const lockSuffix = ".lock";
-const execFile = promisify(execFileCallback);
 
 export interface BundleMetadata {
   readonly schemaVersion: 1;
@@ -295,9 +293,7 @@ async function resolveGitRoot(sourceRoot: string): Promise<string> {
   let canonicalSourceRoot: string;
   try {
     canonicalSourceRoot = await realpath(sourceRoot);
-    const { stdout } = await execFile("git", [
-      "-C",
-      canonicalSourceRoot,
+    const stdout = await executeGit(canonicalSourceRoot, [
       "rev-parse",
       "--show-toplevel",
     ]);
@@ -330,9 +326,7 @@ async function readCleanGitHead(sourceRoot: string): Promise<string> {
     }
   }
   try {
-    const { stdout: untracked } = await execFile("git", [
-      "-C",
-      sourceRoot,
+    const untracked = await executeGit(sourceRoot, [
       "ls-files",
       "--others",
       "--exclude-standard",
@@ -340,12 +334,7 @@ async function readCleanGitHead(sourceRoot: string): Promise<string> {
     if (untracked.length > 0) {
       throw new ArtifactError("DIRTY_SOURCE", "Source repository is dirty.");
     }
-    const { stdout: revision } = await execFile("git", [
-      "-C",
-      sourceRoot,
-      "rev-parse",
-      "HEAD",
-    ]);
+    const revision = await executeGit(sourceRoot, ["rev-parse", "HEAD"]);
     return revision.trim();
   } catch (error) {
     if (error instanceof ArtifactError) {
@@ -363,7 +352,7 @@ async function gitStatus(
   arguments_: readonly string[],
 ): Promise<number> {
   try {
-    await execFile("git", ["-C", sourceRoot, ...arguments_]);
+    await executeGit(sourceRoot, arguments_);
     return 0;
   } catch (error) {
     return typeof error === "object" &&
