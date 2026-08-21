@@ -290,6 +290,7 @@ async function runTurn(
   let removeRequest = () => {};
   let removeFailure = () => {};
   let resolveSettlement!: (status: TerminalStatus) => void;
+  const approvalController = new AbortController();
   const settlement = new Promise<TerminalStatus>((resolve) => {
     resolveSettlement = resolve;
   });
@@ -305,6 +306,7 @@ async function runTurn(
     if (settled) return false;
     settled = true;
     if (graceTimer !== null) clearTimeout(graceTimer);
+    approvalController.abort();
     resolveSettlement(fatalFailure ? "failed" : status);
     return true;
   };
@@ -376,6 +378,7 @@ async function runTurn(
       dependencies.approvalInput,
       dependencies.approvalWriter,
       dependencies.approvalTimeoutMs,
+      approvalController.signal,
     );
     if (outcome.kind === "failClosed") {
       failClosed();
@@ -515,6 +518,7 @@ async function runTurn(
   } catch (error) {
     throw preserveTypedError(error);
   } finally {
+    approvalController.abort();
     if (graceTimer !== null) clearTimeout(graceTimer);
     removeNotification();
     removeRequest();

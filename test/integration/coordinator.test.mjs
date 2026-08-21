@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { closeSync, openSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Readable } from "node:stream";
+import { PassThrough, Readable } from "node:stream";
 import test from "node:test";
 
 const coordinatorModule = await import(
@@ -192,9 +192,9 @@ function harness(overrides = {}) {
       productVersion: "0.1.0",
       codexVersion: "0.148.0",
     },
-    approvalInput: ttyInput(),
+    approvalInput: overrides.approvalInput ?? ttyInput(),
     approvalWriter: overrides.approvalWriter ?? { async writePrompt() {} },
-    approvalTimeoutMs: 50,
+    approvalTimeoutMs: overrides.approvalTimeoutMs ?? 50,
     subscribeInterrupt(listener) {
       interruptListener = listener;
       order.push("subscribeInterrupt");
@@ -824,6 +824,74 @@ test("does not answer an approval after force interruption settles", async () =>
     fixture.client.calls.some(([method]) => method === "respond"),
     false,
   );
+});
+
+test("App Server failure cancels an open approval and preserves the failure", async () => {
+  const approvalInput = new PassThrough();
+  Object.defineProperty(approvalInput, "isTTY", { value: true });
+  approvalInput.pause();
+  const failure = Object.assign(new Error("infrastructure"), {
+    code: "APP_SERVER_UNEXPECTED_EXIT",
+  });
+  let fixture;
+  fixture = harness({
+    record: null,
+    approvalInput,
+    approvalTimeoutMs: 10_000,
+    approvalWriter: {
+      async writePrompt() {
+        setImmediate(() => fixture.client.emitFailure(failure));
+      },
+    },
+  });
+  fixture.client.onTurnStart = async (client) => {
+    client.emitRequest({
+      method: "item/commandExecution/requestApproval",
+      id: "pending-request",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        itemId: "command-1",
+        startedAtMs: 1,
+        environmentId: null,
+        reason: "Needed",
+        command: "pwd",
+        cwd: "/repo",
+        commandActions: [],
+        proposedExecpolicyAmendment: null,
+        proposedNetworkPolicyAmendments: [],
+      },
+    });
+  };
+  const operation = coordinator()
+    .startNewThread(
+      { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+      fixture.dependencies,
+    )
+    .then(
+      (value) => ({ value }),
+      (error) => ({ error }),
+    );
+  const marker = Symbol("coordinator remained open");
+  let outcome;
+  try {
+    outcome = await Promise.race([
+      operation,
+      new Promise((resolve) =>
+        setImmediate(() => setImmediate(() => resolve(marker))),
+      ),
+    ]);
+    assert.notEqual(outcome, marker);
+    assert.strictEqual(outcome.error, failure);
+    assert.equal(approvalInput.listenerCount("data"), 0);
+    assert.equal(approvalInput.listenerCount("end"), 0);
+    assert.equal(approvalInput.listenerCount("error"), 0);
+    assert.equal(approvalInput.isPaused(), true);
+    assert.equal(fixture.client.closed, 1);
+  } finally {
+    approvalInput.end();
+    await operation;
+  }
 });
 
 test("lets a terminal notification beat grace while approval interaction is pending", async () => {

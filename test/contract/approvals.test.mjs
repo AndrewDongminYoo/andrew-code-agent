@@ -144,6 +144,42 @@ test("aborts a stalled writer and settles when the writer ignores abort", async 
   assert.equal(writerSignal?.aborted, true);
 });
 
+test("external cancellation declines and releases an open approval input", async () => {
+  const [command] = await requests();
+  const source = new PassThrough();
+  Object.defineProperty(source, "isTTY", { value: true });
+  source.pause();
+  const controller = new AbortController();
+  const operation = approvals().answerApproval(
+    command,
+    source,
+    {
+      async writePrompt() {
+        controller.abort();
+      },
+    },
+    10_000,
+    controller.signal,
+  );
+  const marker = Symbol("approval remained open");
+  let outcome;
+  try {
+    outcome = await Promise.race([
+      operation,
+      new Promise((resolve) => setImmediate(() => resolve(marker))),
+    ]);
+    assert.notEqual(outcome, marker);
+    assert.deepEqual(outcome.response, { decision: "decline" });
+    assert.equal(source.listenerCount("data"), 0);
+    assert.equal(source.listenerCount("end"), 0);
+    assert.equal(source.listenerCount("error"), 0);
+    assert.equal(source.isPaused(), true);
+  } finally {
+    source.end();
+    await operation;
+  }
+});
+
 test("absorbs a writer rejection that arrives after the timeout", async () => {
   const [command] = await requests();
   let unhandled = null;

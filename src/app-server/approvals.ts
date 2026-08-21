@@ -1107,23 +1107,35 @@ function writePrompt(
   writer: ApprovalPromptWriter,
   value: string,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const controller = new AbortController();
   return new Promise((resolve) => {
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const onAbort = () => {
+      controller.abort(signal?.reason);
+      finish(false);
+    };
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
       resolve(ok);
     };
-    const timer = setTimeout(
+    timer = setTimeout(
       () => {
         controller.abort();
         finish(false);
       },
       Math.max(1, Math.min(timeoutMs, 60_000)),
     );
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       writer.writePrompt(value, controller.signal).then(
         () => finish(true),
@@ -1137,6 +1149,7 @@ function writePrompt(
 function readLine(
   input: NodeJS.ReadableStream,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<string | null> {
   return new Promise((resolve) => {
     let settled = false;
@@ -1151,6 +1164,7 @@ function readLine(
       if (wasFlowing) input.resume();
       else readable.pause();
     };
+    const onAbort = () => finish(null);
     const finish = (line: string | null) => {
       if (settled) return;
       settled = true;
@@ -1158,6 +1172,7 @@ function readLine(
       input.removeListener("data", onData);
       input.removeListener("end", onEnd);
       input.removeListener("error", onEnd);
+      signal?.removeEventListener("abort", onAbort);
       restoreState();
       resolve(line);
     };
@@ -1208,6 +1223,11 @@ function readLine(
     input.on("data", onData);
     input.once("end", onEnd);
     input.once("error", onEnd);
+    if (signal?.aborted) {
+      finish(null);
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     input.resume();
   });
 }
@@ -1216,6 +1236,7 @@ export async function answerApproval(
   input: NodeJS.ReadableStream,
   writer: ApprovalPromptWriter,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<ApprovalOutcome> {
   try {
     const valid = validate(request);
@@ -1225,14 +1246,15 @@ export async function answerApproval(
     const available = choices(valid);
     if (!hasPromptableListSizes(valid)) return safest(valid);
     if (!hasCompletePromptContext(valid, available)) return safest(valid);
+    if (signal?.aborted) return safest(valid);
     const rendered = prompt(valid, available);
     if (
       rendered === null ||
-      !(await writePrompt(writer, rendered, timeoutMs)) ||
+      !(await writePrompt(writer, rendered, timeoutMs, signal)) ||
       terminalInput.isTTY !== true
     )
       return safest(valid);
-    const selected = await readLine(input, timeoutMs);
+    const selected = await readLine(input, timeoutMs, signal);
     if (terminalInput.isTTY !== true) return safest(valid);
     const choice = available.find((candidate) => candidate.id === selected);
     return choice ? response(valid, choice) : safest(valid);
