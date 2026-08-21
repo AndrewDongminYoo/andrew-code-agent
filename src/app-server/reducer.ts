@@ -195,6 +195,10 @@ function validatedStoredItem(value: unknown): ItemState | undefined {
     const type = descriptors.type;
     const phase = descriptors.phase;
     const itemValue = descriptors.value;
+    const safeValue =
+      itemValue !== undefined && "value" in itemValue
+        ? descriptorSafeJsonData(itemValue.value)
+        : INVALID_JSON_DATA;
     if (
       id === undefined ||
       !("value" in id) ||
@@ -211,10 +215,36 @@ function validatedStoredItem(value: unknown): ItemState | undefined {
       itemValue === undefined ||
       !("value" in itemValue) ||
       itemValue.enumerable !== true ||
-      descriptorSafeJsonData(itemValue.value) === INVALID_JSON_DATA
+      safeValue === INVALID_JSON_DATA ||
+      ((type.value === "agentMessage" || type.value === "plan") &&
+        (!isRecord(safeValue) ||
+          !Object.hasOwn(safeValue, "text") ||
+          typeof safeValue.text !== "string"))
     )
       throw new ReducerError("INVALID_SERVER_EVENT");
-    return value as ItemState;
+    return {
+      id: id.value,
+      type: type.value,
+      phase: phase.value,
+      value: safeValue,
+    };
+  } catch {
+    throw new ReducerError("INVALID_SERVER_EVENT");
+  }
+}
+
+function validatedStoredEntries(
+  entries: ReadonlyMap<string, ItemState> | undefined,
+): [string, ItemState][] {
+  try {
+    const result: [string, ItemState][] = [];
+    for (const [key, value] of entries ?? []) {
+      const item = validatedStoredItem(value);
+      if (item === undefined || key !== item.id)
+        throw new ReducerError("INVALID_SERVER_EVENT");
+      result.push([key, item]);
+    }
+    return result;
   } catch {
     throw new ReducerError("INVALID_SERVER_EVENT");
   }
@@ -664,9 +694,13 @@ export function reduceServerMessage(
       terminalStatus: statuses[turn.status]!,
     };
     if (state.terminalStatus === "running") return next;
+    const storedItems = validatedStoredEntries(state.items);
+    const storedOmittedItemStates = validatedStoredEntries(
+      state.omittedItemStates,
+    );
     if (
       state.terminalStatus === next.terminalStatus &&
-      structurallyEqual([...state.items], [...next.items]) &&
+      structurallyEqual(storedItems, [...next.items]) &&
       structurallyEqual(state.observedCommands, next.observedCommands) &&
       state.omittedItems === next.omittedItems &&
       structurallyEqual([...state.omittedItemIds], [...next.omittedItemIds]) &&
@@ -674,10 +708,9 @@ export function reduceServerMessage(
         [...(state.omittedItemTypes ?? [])],
         [...(next.omittedItemTypes ?? [])],
       ) &&
-      structurallyEqual(
-        [...(state.omittedItemStates ?? [])],
-        [...(next.omittedItemStates ?? [])],
-      ) &&
+      structurallyEqual(storedOmittedItemStates, [
+        ...(next.omittedItemStates ?? []),
+      ]) &&
       state.omittedCommands === next.omittedCommands
     )
       return state;

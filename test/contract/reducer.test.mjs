@@ -924,3 +924,129 @@ test("rejects omitted stored ItemState with a non-enumerable required field", ()
     return api.reduceServerMessage({ ...base, omittedItemStates }, delta);
   });
 });
+
+function corruptedStoredItem(stored, kind) {
+  if (kind === "item symbol") {
+    const corrupted = { ...stored };
+    corrupted[Symbol("unexpected")] = true;
+    return corrupted;
+  }
+  if (kind === "non-enumerable phase") {
+    const corrupted = { ...stored };
+    Object.defineProperty(corrupted, "phase", {
+      value: stored.phase,
+      enumerable: false,
+      writable: true,
+      configurable: true,
+    });
+    return corrupted;
+  }
+  const value = { ...stored.value };
+  value[Symbol("unexpected")] = true;
+  return { ...stored, value };
+}
+
+function assertTerminalStoredCorruptionRejected(api, state, completedTurn, location) {
+  const itemId = location === "visible" ? "message-0" : "message-64";
+  const stored = location === "visible"
+    ? state.items.get(itemId)
+    : state.omittedItemStates.get(itemId);
+  const kinds = ["item symbol", "non-enumerable phase", "nested value symbol"];
+  const results = [];
+  for (const kind of kinds) {
+    const corrupted = corruptedStoredItem(stored, kind);
+    const candidate = location === "visible"
+      ? { ...state, items: new Map(state.items).set(itemId, corrupted) }
+      : {
+          ...state,
+          omittedItemStates: new Map(state.omittedItemStates).set(itemId, corrupted),
+        };
+    let failure = null;
+    try {
+      api.reduceServerMessage(candidate, {
+        method: "turn/completed",
+        params: { threadId: "thread-1", turn: completedTurn },
+      });
+    } catch (error) {
+      failure = error;
+    }
+    results.push({ kind, name: failure?.name, code: failure?.code });
+  }
+  assert.deepEqual(
+    results,
+    kinds.map((kind) => ({ kind, name: "ReducerError", code: "INVALID_SERVER_EVENT" })),
+    location,
+  );
+}
+
+function terminalStateWithOmittedItem(api) {
+  const items = Array.from({ length: 65 }, (_, index) =>
+    item("agentMessage", `message-${index}`, {
+      text: `message ${index}`,
+      phase: null,
+      memoryCitation: null,
+    }));
+  const completedTurn = {
+    id: "turn-1",
+    items,
+    itemsView: "full",
+    status: "completed",
+    error: null,
+    startedAt: null,
+    completedAt: null,
+    durationMs: null,
+  };
+  const state = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+    method: "turn/completed",
+    params: { threadId: "thread-1", turn: completedTurn },
+  });
+  return { state, completedTurn };
+}
+
+test("terminal duplicate rejects visible stored ItemState corruption", () => {
+  const api = reducer();
+  const { state, completedTurn } = terminalStateWithOmittedItem(api);
+  assertTerminalStoredCorruptionRejected(api, state, completedTurn, "visible");
+});
+
+test("terminal duplicate rejects omitted stored ItemState corruption", () => {
+  const api = reducer();
+  const { state, completedTurn } = terminalStateWithOmittedItem(api);
+  assertTerminalStoredCorruptionRejected(api, state, completedTurn, "omitted");
+});
+
+test("active agentMessage delta rejects a stored value inherited text getter without invoking it", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "initial", phase: null, memoryCitation: null });
+  const base = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(message),
+  );
+  const stored = base.items.get("message-1");
+  const hostile = withStoredItem(base, "message-1", { ...stored, value: {} });
+  const delta = {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thread-1", turnId: "turn-1", itemId: "message-1", delta: " later" },
+  };
+  let getterCalls = 0;
+  let failure = null;
+  Object.defineProperty(Object.prototype, "text", {
+    configurable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error("inherited text getter invoked");
+    },
+  });
+
+  try {
+    api.reduceServerMessage(hostile, delta);
+  } catch (error) {
+    failure = error;
+  } finally {
+    delete Object.prototype.text;
+  }
+
+  assert.equal(getterCalls, 0);
+  assert.equal(failure?.name, "ReducerError");
+  assert.equal(failure?.code, "INVALID_SERVER_EVENT");
+});
