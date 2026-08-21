@@ -17,6 +17,7 @@ export type AppServerErrorCode =
   | "APP_SERVER_START_FAILED"
   | "APP_SERVER_HANDSHAKE_TIMEOUT"
   | "APP_SERVER_REQUEST_TIMEOUT"
+  | "APP_SERVER_PROTOCOL_LIMIT"
   | "MALFORMED_PROTOCOL"
   | "DUPLICATE_RESPONSE_ID"
   | "ORPHAN_RESPONSE_ID"
@@ -38,6 +39,8 @@ const ERROR_MESSAGES: Record<AppServerErrorCode, string> = {
   APP_SERVER_START_FAILED: "The Codex App Server could not be started.",
   APP_SERVER_HANDSHAKE_TIMEOUT: "The Codex App Server handshake timed out.",
   APP_SERVER_REQUEST_TIMEOUT: "A Codex App Server request timed out.",
+  APP_SERVER_PROTOCOL_LIMIT:
+    "The Codex App Server protocol message exceeded the resource limit.",
   MALFORMED_PROTOCOL: "The Codex App Server sent a malformed protocol message.",
   DUPLICATE_RESPONSE_ID:
     "The Codex App Server repeated a completed response identifier.",
@@ -87,7 +90,7 @@ interface PendingRequest {
   readonly timer: NodeJS.Timeout;
 }
 
-const MAX_PROTOCOL_LINE_BYTES = 65_536;
+const MAX_PROTOCOL_LINE_BYTES = 16 * 1024 * 1024;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -303,7 +306,9 @@ export class StdioJsonRpcTransport implements JsonRpcTransport {
       const segment = newline < 0 ? remaining : remaining.slice(0, newline);
       const segmentBytes = Buffer.byteLength(segment, "utf8");
       if (segmentBytes > MAX_PROTOCOL_LINE_BYTES - this.stdoutBufferBytes) {
-        this.fail(new AppServerError("MALFORMED_PROTOCOL", this.diagnostics));
+        this.fail(
+          new AppServerError("APP_SERVER_PROTOCOL_LIMIT", this.diagnostics),
+        );
         return;
       }
       this.stdoutBuffer += segment;

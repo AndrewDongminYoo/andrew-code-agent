@@ -41,6 +41,9 @@ node --test \
   test/contract/client.test.mjs
 ```
 
+Version 0.1 accepts JSONL protocol lines up to 16 MiB, measured as UTF-8 wire bytes.
+This resource policy is not a generated App Server schema maximum.
+
 The generated TypeScript package uses the CommonJS boundary in `src/generated/package.json`.
 The build copies that boundary to `dist/generated/package.json`.
 Verify source and output remain identical with

@@ -49,10 +49,60 @@ async function withProtocolChild(source, run) {
   }
 }
 
+async function waitForChildExit(child, timeoutMs = 1000) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  await new Promise((resolve, reject) => {
+    const onExit = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      child.off("exit", onExit);
+      reject(new Error("protocol child did not exit after transport failure"));
+    }, timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
 function errorCode(code) {
   return (error) => {
     assert.equal(error.code, code);
     return true;
+  };
+}
+
+function completedNotification(aggregatedOutput) {
+  return {
+    method: "turn/completed",
+    params: {
+      threadId: "thread-1",
+      turn: {
+        id: "turn-1",
+        items: [
+          {
+            type: "commandExecution",
+            id: "item-1",
+            pluginId: null,
+            scriptPath: null,
+            command: "printf output",
+            cwd: "/tmp",
+            processId: null,
+            source: "agent",
+            status: "completed",
+            commandActions: [],
+            aggregatedOutput,
+            exitCode: 0,
+            durationMs: 1,
+          },
+        ],
+        itemsView: "full",
+        status: "completed",
+        error: null,
+        startedAt: 1,
+        completedAt: 2,
+        durationMs: 1,
+      },
+    },
   };
 }
 
@@ -102,9 +152,61 @@ test("fails malformed JSONL terminally, reaps the child, and emits no thread sta
   }
 });
 
-test("rejects an oversized newline-free protocol line and reaps the child", async () => {
+test("delivers a schema-compatible turn/completed notification larger than 64 KiB", async () => {
+  const aggregatedOutput = "command-output:" + "x".repeat(70_000);
+  const notification = completedNotification(aggregatedOutput);
+  const frame = JSON.stringify(notification);
+  assert.equal(Buffer.byteLength(frame, "utf8") > 65_536, true);
   await withProtocolChild(
-    `process.stdout.write("x".repeat(65537)); setInterval(() => {}, 1000);`,
+    `process.stdout.write(${JSON.stringify(frame + "\n")}); setInterval(() => {}, 1000);`,
+    async (child) => {
+      const transport = new (requireTransport().StdioJsonRpcTransport)(
+        child,
+        300,
+      );
+      const outcome = await new Promise((resolve) => {
+        transport.onNotification((received) =>
+          resolve({ notification: received }),
+        );
+        transport.onFailure((failure) => resolve({ failure }));
+      });
+      assert.deepEqual(outcome, { notification });
+      await transport.close();
+    },
+  );
+});
+
+test("accepts a valid JSONL frame exactly at the 16 MiB wire-byte limit", async () => {
+  const maxProtocolLineBytes = 16 * 1024 * 1024;
+  const emptyFrame = JSON.stringify(completedNotification(""));
+  const aggregatedOutput = "x".repeat(
+    maxProtocolLineBytes - Buffer.byteLength(emptyFrame, "utf8"),
+  );
+  const notification = completedNotification(aggregatedOutput);
+  const frame = JSON.stringify(notification);
+  assert.equal(Buffer.byteLength(frame, "utf8"), 16 * 1024 * 1024);
+  await withProtocolChild(
+    `process.stdout.write(${JSON.stringify(frame + "\n")}); setInterval(() => {}, 1000);`,
+    async (child) => {
+      const transport = new (requireTransport().StdioJsonRpcTransport)(
+        child,
+        1000,
+      );
+      const outcome = await new Promise((resolve) => {
+        transport.onNotification((received) =>
+          resolve({ notification: received }),
+        );
+        transport.onFailure((failure) => resolve({ failure }));
+      });
+      assert.deepEqual(outcome, { notification });
+      await transport.close();
+    },
+  );
+});
+
+test("rejects a newline-free protocol line over 16 MiB without disclosing it and reaps the child", async () => {
+  await withProtocolChild(
+    `process.stdout.write("private-payload:" + "x".repeat(16 * 1024 * 1024)); setInterval(() => {}, 1000);`,
     async (child) => {
       const transport = new (requireTransport().StdioJsonRpcTransport)(
         child,
@@ -114,10 +216,30 @@ test("rejects an oversized newline-free protocol line and reaps the child", asyn
       await transport.request("initialize", {}).catch((error) => {
         failure = error;
       });
-      await transport.close();
-      assert.equal(failure.code, "MALFORMED_PROTOCOL");
-      assert.doesNotMatch(String(failure), /xxx/u);
+      assert.equal(failure.code, "APP_SERVER_PROTOCOL_LIMIT");
+      assert.doesNotMatch(String(failure), /private-payload/u);
+      await waitForChildExit(child);
       assert.notEqual(child.exitCode ?? child.signalCode, null);
+      await transport.close();
+    },
+  );
+});
+
+test("measures the 16 MiB protocol line limit in UTF-8 wire bytes", async () => {
+  await withProtocolChild(
+    `process.stdout.write("é".repeat(8 * 1024 * 1024 + 1)); setInterval(() => {}, 1000);`,
+    async (child) => {
+      const transport = new (requireTransport().StdioJsonRpcTransport)(
+        child,
+        300,
+      );
+      await assert.rejects(
+        transport.request("initialize", {}),
+        errorCode("APP_SERVER_PROTOCOL_LIMIT"),
+      );
+      await waitForChildExit(child);
+      assert.notEqual(child.exitCode ?? child.signalCode, null);
+      await transport.close();
     },
   );
 });
