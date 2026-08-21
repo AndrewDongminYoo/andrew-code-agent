@@ -15,6 +15,7 @@ import {
   type CoordinatorDependencies,
 } from "../app-server/coordinator.js";
 import { renderTurnState } from "../app-server/renderer.js";
+import { boundedTerminalText } from "../app-server/terminal.js";
 import { buildBundle } from "../bundle/artifact.js";
 import { installBundle, recoverInterruptedInstall } from "../bundle/install.js";
 import { runDoctor } from "./doctor.js";
@@ -285,7 +286,7 @@ export async function renderFinalRecord(
     output,
     `Turn ID: ${bounded(record.turnId ?? "unavailable")}`,
   );
-  await writeLine(output, `Terminal status: ${record.terminalStatus}`);
+  await writeLine(output, `Terminal status: ${bounded(record.terminalStatus)}`);
   await writeLine(
     output,
     `Final Git status: ${bounded(record.finalGitStatus ?? "unavailable")}`,
@@ -382,16 +383,7 @@ async function writeDiagnostic(output: CommandIO["stderr"], value: string) {
 }
 
 function bounded(value: string, limit = MAX_FIELD_BYTES): string {
-  if (Buffer.byteLength(value, "utf8") <= limit) return value;
-  let result = "";
-  for (const character of value) {
-    if (
-      Buffer.byteLength(result + character + TRUNCATION_MARKER, "utf8") > limit
-    )
-      break;
-    result += character;
-  }
-  return `${result}${TRUNCATION_MARKER}`;
+  return boundedTerminalText(value, limit, TRUNCATION_MARKER);
 }
 
 function diagnosticFor(error: unknown, phase: string): string {

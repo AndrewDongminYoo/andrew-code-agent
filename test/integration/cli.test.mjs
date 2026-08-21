@@ -252,6 +252,60 @@ test("a healthy slow Writable callback completes within the write deadline", asy
   assert.equal(slow.listenerCount("error"), initialErrorListeners);
 });
 
+test("terminal record rendering escapes controls within stable byte bounds", async () => {
+  const { runModule } = modules();
+  const controls = "\u001b[31m\u001b]0;owned\u0007\r\n\u009b31m\u202e";
+  const longField = `${controls}${"가".repeat(2_000)}`;
+  const record = {
+    ...terminalRecord("/repo"),
+    threadId: `thread-${longField}`,
+    repositoryRoot: `repository-${longField}`,
+    turnId: `turn-${longField}`,
+    terminalStatus: `status-${longField}`,
+    finalGitStatus: `git-${longField}`,
+  };
+  const originalRecord = structuredClone(record);
+  const output = capture();
+
+  await runModule.renderLocalRecord(record, output.stdout);
+
+  const transcript = output.output().stdout;
+  const lines = transcript.split("\n");
+  assert.equal(lines.pop(), "");
+  assert.equal(lines.length, 7);
+  assert.equal(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/u.test(transcript), false);
+  for (const visibleEscape of ["\\x1B", "\\x07", "\\x0D", "\\x0A", "\\x9B", "\\u{202E}"])
+    assert.equal(transcript.includes(visibleEscape), true, visibleEscape);
+  for (const label of [
+    "Thread ID: ",
+    "Repository: ",
+    "Turn ID: ",
+    "Terminal status: ",
+    "Final Git status: ",
+  ]) {
+    const line = lines.find((candidate) => candidate.startsWith(label));
+    assert.notEqual(line, undefined, label);
+    const field = line.slice(label.length);
+    assert.ok(Buffer.byteLength(field, "utf8") <= 4 * 1024, label);
+    assert.equal(field.endsWith(" [truncated]"), true, label);
+  }
+  assert.deepEqual(record, originalRecord);
+
+  const writeOutput = capture();
+  await runModule.writeLine(
+    writeOutput.stdout,
+    `${controls}${"나".repeat(30_000)}`,
+  );
+  const write = writeOutput.output().stdout;
+  assert.ok(Buffer.byteLength(write, "utf8") <= 64 * 1024);
+  assert.equal(write.endsWith(" [truncated]\n"), true);
+  assert.equal(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/u.test(write), false);
+
+  const ordinary = capture();
+  await runModule.writeLine(ordinary.stdout, "ordinary output");
+  assert.equal(ordinary.output().stdout, "ordinary output\n");
+});
+
 test("run rejects tracked and untracked dirt before runtime mutation", async (t) => {
   const { runModule } = modules();
   const repositoryRoot = await createRepository();
