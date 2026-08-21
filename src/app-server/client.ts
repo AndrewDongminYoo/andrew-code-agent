@@ -4,12 +4,16 @@ import { REQUIRED_CODEX_VERSION } from "../constants.js";
 import type { RequestId } from "../generated/codex-app-server/RequestId.js";
 import type { ServerNotification } from "../generated/codex-app-server/ServerNotification.js";
 import type { ServerRequest } from "../generated/codex-app-server/ServerRequest.js";
+import type { ThreadReadParams } from "../generated/codex-app-server/v2/ThreadReadParams.js";
+import type { ThreadReadResponse } from "../generated/codex-app-server/v2/ThreadReadResponse.js";
 import type { ThreadResumeParams } from "../generated/codex-app-server/v2/ThreadResumeParams.js";
 import type { ThreadResumeResponse } from "../generated/codex-app-server/v2/ThreadResumeResponse.js";
 import type { ThreadStartParams } from "../generated/codex-app-server/v2/ThreadStartParams.js";
 import type { ThreadStartResponse } from "../generated/codex-app-server/v2/ThreadStartResponse.js";
 import type { TurnStartParams } from "../generated/codex-app-server/v2/TurnStartParams.js";
 import type { TurnStartResponse } from "../generated/codex-app-server/v2/TurnStartResponse.js";
+import type { TurnInterruptParams } from "../generated/codex-app-server/v2/TurnInterruptParams.js";
+import type { TurnInterruptResponse } from "../generated/codex-app-server/v2/TurnInterruptResponse.js";
 import { AppServerError, StdioJsonRpcTransport } from "./transport.js";
 
 const execFileAsync = promisify(execFile);
@@ -25,7 +29,9 @@ export interface StartAppServerInput {
 export interface AppServerClient {
   threadStart(params: ThreadStartParams): Promise<ThreadStartResponse>;
   threadResume(params: ThreadResumeParams): Promise<ThreadResumeResponse>;
+  threadRead(params: ThreadReadParams): Promise<ThreadReadResponse>;
   turnStart(params: TurnStartParams): Promise<TurnStartResponse>;
+  turnInterrupt(params: TurnInterruptParams): Promise<TurnInterruptResponse>;
   respond(id: RequestId, result: unknown): Promise<void>;
   onNotification(listener: (message: ServerNotification) => void): () => void;
   onRequest(listener: (message: ServerRequest) => void): () => void;
@@ -112,8 +118,12 @@ export async function startAppServer(
       transport.request<ThreadStartResponse>("thread/start", params),
     threadResume: (params) =>
       transport.request<ThreadResumeResponse>("thread/resume", params),
+    threadRead: (params) =>
+      transport.request<ThreadReadResponse>("thread/read", params),
     turnStart: (params) =>
       transport.request<TurnStartResponse>("turn/start", params),
+    turnInterrupt: (params) =>
+      transport.request<TurnInterruptResponse>("turn/interrupt", params),
     respond: (id, result) => transport.respond(id, result),
     onNotification: (listener) =>
       transport.onNotification((message) =>

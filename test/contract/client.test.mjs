@@ -241,6 +241,47 @@ test("uses connection-local monotonic IDs and correlates out-of-order typed resp
   });
 });
 
+test("forwards typed thread/read calls through the public client", async () => {
+  await withFakeCodex("normal", async ({ binary, codexHome }) => {
+    const client = await requireClient().startAppServer(
+      startInput(binary, codexHome),
+    );
+    try {
+      assert.deepEqual(
+        await client.threadRead({ threadId: "thread-1", includeTurns: true }),
+        {
+          method: "thread/read",
+          params: { threadId: "thread-1", includeTurns: true },
+        },
+      );
+    } finally {
+      await client.close();
+    }
+  });
+});
+
+test("forwards typed turn/interrupt calls through the public client", async () => {
+  await withFakeCodex("normal", async ({ binary, codexHome }) => {
+    const client = await requireClient().startAppServer(
+      startInput(binary, codexHome),
+    );
+    try {
+      assert.deepEqual(
+        await client.turnInterrupt({
+          threadId: "thread-1",
+          turnId: "turn-1",
+        }),
+        {
+          method: "turn/interrupt",
+          params: { threadId: "thread-1", turnId: "turn-1" },
+        },
+      );
+    } finally {
+      await client.close();
+    }
+  });
+});
+
 test("spawns only the strict stdio argv with the managed CODEX_HOME environment", async () => {
   await withFakeCodex("normal", async ({ binary, codexHome, root }) => {
     const client = await requireClient().startAppServer(
