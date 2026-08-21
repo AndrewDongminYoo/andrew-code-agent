@@ -68,7 +68,7 @@ function operationHarness(repositoryRoot, overrides = {}) {
     async resumeThread(_threadId, _prompt, commandDependencies) { order.push("resume-turn"); await commandDependencies.reportTurnState({ fixture: true }); await client.close(); return record; },
     async readLiveStatus() { order.push("live-read"); await client.close(); return record; },
     async readThreadRecord() { order.push("read-record"); return record; },
-    async findLatestThreadRecord() { order.push("latest-record"); return record; },
+    async findLatestThreadRecord(_stateRoot, input) { order.push("latest-record"); overrides.onFindLatest?.(input); return record; },
     async releaseProcessLock() { order.push("unlock"); if (overrides.releaseError) throw new Error("release"); },
     renderTurnState() { return ["event", "event", "Terminal status: completed"]; },
     createTerminalApprovalPromptWriter() { return { async writePrompt() {} }; },
@@ -485,6 +485,32 @@ test("promptless resume and local status only read records", async (t) => {
   const statusHarness = operationHarness(repositoryRoot);
   assert.equal(await statusModule.statusCommand(undefined, capture(), statusHarness.dependencies, repositoryRoot), 0);
   assert.deepEqual(statusHarness.order, ["paths", "latest-record"]);
+});
+
+test("local status resolves a repository subdirectory before latest lookup", async (t) => {
+  const { statusModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const subdirectory = join(repositoryRoot, "nested", "working-directory");
+  await mkdir(subdirectory, { recursive: true });
+  let lookupRoot = null;
+  const harness = operationHarness(repositoryRoot, {
+    onFindLatest(value) {
+      lookupRoot = value;
+    },
+  });
+
+  assert.equal(
+    await statusModule.statusCommand(
+      undefined,
+      capture(),
+      harness.dependencies,
+      subdirectory,
+    ),
+    0,
+  );
+  assert.equal(lookupRoot, repositoryRoot);
+  assert.deepEqual(harness.order, ["paths", "latest-record"]);
 });
 
 test("read-only summaries succeed even when they describe a failed turn", async (t) => {

@@ -2,6 +2,7 @@
 
 import type { ProcessLockHandle } from "../runtime/lock.js";
 import type { AppServerClient } from "../app-server/client.js";
+import { resolveRepositoryRoot } from "../runtime/git.js";
 import { ThreadStoreError } from "../runtime/thread-store.js";
 import {
   appServerInput,
@@ -29,9 +30,10 @@ export async function statusCommand(
   try {
     const paths = await dependencies.resolveRuntimePaths();
     if (threadId === undefined) {
+      const repositoryRoot = await resolveRepositoryRoot(cwd);
       const record = await dependencies.findLatestThreadRecord(
         paths.stateRoot,
-        cwd,
+        repositoryRoot,
       );
       await renderLocalRecord(record, io.stdout);
       outcome = 0;
