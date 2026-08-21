@@ -1,3 +1,5 @@
+import { isProxy } from "node:util/types";
+
 import {
   escapeTerminalControls,
   fitsEscapedTerminalBytes,
@@ -12,6 +14,12 @@ export interface ApprovalAuditRecord {
   readonly decision: string;
 }
 
+export interface ApprovalCorrelation {
+  readonly method: string;
+  readonly threadId: string;
+  readonly turnId: string | null;
+}
+
 export type ApprovalOutcome =
   | {
       readonly kind: "response";
@@ -19,6 +27,7 @@ export type ApprovalOutcome =
       readonly acceptedForSession: boolean;
       readonly response: unknown;
       readonly audit: ApprovalAuditRecord;
+      readonly correlation: ApprovalCorrelation;
     }
   | {
       readonly kind: "failClosed";
@@ -50,6 +59,7 @@ interface ValidRequest {
   readonly id: string;
   readonly params: RecordValue;
   readonly audit: Omit<ApprovalAuditRecord, "decision">;
+  readonly correlation: ApprovalCorrelation;
 }
 interface Choice {
   readonly id: string;
@@ -135,6 +145,7 @@ function validJson(
       return true;
     if (typeof value === "number") return Number.isFinite(value);
     if (typeof value !== "object") return false;
+    if (isProxy(value)) return false;
     const array = Array.isArray(value);
     if (
       (array && Object.getPrototypeOf(value) !== Array.prototype) ||
@@ -696,13 +707,20 @@ function validate(request: unknown): ValidRequest | ApprovalOutcome {
   if (!supported.includes(request.method as KnownMethod))
     return failClosed(request, "UNKNOWN_SERVER_REQUEST");
   const method = request.method as KnownMethod;
-  if (!validParams(method, request.params))
+  const params = request.params;
+  if (!validParams(method, params))
     return failClosed(request, "MALFORMED_APPROVAL_REQUEST");
+  const correlation = Object.freeze({
+    method,
+    threadId: params.threadId as string,
+    turnId: params.turnId as string | null,
+  });
   return {
     method,
     id: String(request.id),
-    params: request.params,
+    params,
     audit: auditFrom(request, ""),
+    correlation,
   };
 }
 function response(request: ValidRequest, choice: Choice): ApprovalOutcome {
@@ -712,6 +730,7 @@ function response(request: ValidRequest, choice: Choice): ApprovalOutcome {
     acceptedForSession: choice.acceptedForSession,
     response: choice.response,
     audit: { ...request.audit, decision: choice.decision },
+    correlation: request.correlation,
   };
 }
 function safest(request: ValidRequest): ApprovalOutcome {

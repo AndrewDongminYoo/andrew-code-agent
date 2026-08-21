@@ -28,6 +28,23 @@ function terminalNotification(threadId, turnId, status = "completed") {
   };
 }
 
+function mcpElicitationRequest(id, threadId, turnId) {
+  return {
+    method: "mcpServer/elicitation/request",
+    id,
+    params: {
+      threadId,
+      turnId,
+      serverName: "fixture-server",
+      mode: "url",
+      _meta: null,
+      message: "Open the fixture URL?",
+      url: "https://example.invalid/fixture",
+      elicitationId: "elicitation-1",
+    },
+  };
+}
+
 class FakeClient {
   calls = [];
   notifications = new Set();
@@ -683,6 +700,211 @@ test("answers approvals once and fail-closes unsupported requests without invent
   );
   assert.equal(
     failed.client.calls.filter(([method]) => method === "turnInterrupt").length,
+    1,
+  );
+});
+
+test("allows null-turn MCP elicitation only for the active thread", async (t) => {
+  await t.test("declines a null-turn elicitation and preserves the later terminal result", async () => {
+    const fixture = harness({ record: null });
+    fixture.client.onTurnStart = async (client) => {
+      client.emitRequest(
+        mcpElicitationRequest("request-null-turn", "thread-1", null),
+      );
+      setTimeout(
+        () =>
+          client.emitNotification(
+            terminalNotification("thread-1", "turn-1", "completed"),
+          ),
+        10,
+      );
+    };
+
+    const result = await coordinator().startNewThread(
+      { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+      fixture.dependencies,
+    );
+
+    assert.equal(result.terminalStatus, "completed");
+    assert.deepEqual(
+      fixture.client.calls.filter(([method]) => method === "respond"),
+      [
+        [
+          "respond",
+          "request-null-turn",
+          { action: "decline", content: null, _meta: null },
+        ],
+      ],
+    );
+    assert.equal(
+      fixture.client.calls.some(([method]) => method === "turnInterrupt"),
+      false,
+    );
+  });
+
+  for (const [name, threadId, turnId] of [
+    ["mismatched thread", "other-thread", null],
+    ["mismatched non-null turn", "thread-1", "other-turn"],
+  ]) {
+    await t.test(name, async () => {
+      const fixture = harness({ record: null, interruptGraceMs: 5 });
+      fixture.client.onTurnStart = async (client) => {
+        client.emitRequest(
+          mcpElicitationRequest(`request-${name}`, threadId, turnId),
+        );
+        setTimeout(
+          () =>
+            client.emitNotification(
+              terminalNotification("thread-1", "turn-1", "completed"),
+            ),
+          20,
+        );
+      };
+
+      const result = await coordinator().startNewThread(
+        { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+        fixture.dependencies,
+      );
+
+      assert.equal(result.terminalStatus, "failed");
+      assert.equal(
+        fixture.client.calls.some(([method]) => method === "respond"),
+        false,
+      );
+      assert.equal(
+        fixture.client.calls.filter(([method]) => method === "turnInterrupt")
+          .length,
+        1,
+      );
+    });
+  }
+});
+
+test("fails closed when a long MCP thread ID collides with its bounded audit value", async () => {
+  const auditPrefix = "t".repeat(244);
+  const activeThreadId = `${auditPrefix} [truncated]`;
+  const distinctLongThreadId = `${auditPrefix}-different-thread`;
+  const fixture = harness({ record: null, interruptGraceMs: 5 });
+  fixture.client.threadId = activeThreadId;
+  fixture.client.onTurnStart = async (client) => {
+    client.emitRequest(
+      mcpElicitationRequest(
+        "request-colliding-thread",
+        distinctLongThreadId,
+        null,
+      ),
+    );
+    setTimeout(
+      () =>
+        client.emitNotification(
+          terminalNotification(activeThreadId, "turn-1", "completed"),
+        ),
+      20,
+    );
+  };
+
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+
+  assert.equal(result.terminalStatus, "failed");
+  assert.equal(
+    fixture.client.calls.some(([method]) => method === "respond"),
+    false,
+  );
+  assert.equal(
+    fixture.client.calls.filter(([method]) => method === "turnInterrupt")
+      .length,
+    1,
+  );
+});
+
+test("fails closed when a long MCP turn ID collides with its bounded audit value", async () => {
+  const auditPrefix = "u".repeat(244);
+  const activeTurnId = `${auditPrefix} [truncated]`;
+  const distinctLongTurnId = `${auditPrefix}-different-turn`;
+  const fixture = harness({ record: null, interruptGraceMs: 5 });
+  fixture.client.turnId = activeTurnId;
+  fixture.client.onTurnStart = async (client) => {
+    client.emitRequest(
+      mcpElicitationRequest(
+        "request-colliding-turn",
+        "thread-1",
+        distinctLongTurnId,
+      ),
+    );
+    setTimeout(
+      () =>
+        client.emitNotification(
+          terminalNotification("thread-1", activeTurnId, "completed"),
+        ),
+      20,
+    );
+  };
+
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+
+  assert.equal(result.terminalStatus, "failed");
+  assert.equal(
+    fixture.client.calls.some(([method]) => method === "respond"),
+    false,
+  );
+  assert.equal(
+    fixture.client.calls.filter(([method]) => method === "turnInterrupt")
+      .length,
+    1,
+  );
+});
+
+test("fails closed when a later nested Proxy hook mutates MCP correlation to the active turn", async () => {
+  const fixture = harness({ record: null, interruptGraceMs: 5 });
+  fixture.client.onTurnStart = async (client) => {
+    const request = mcpElicitationRequest(
+      "request-mutated-correlation",
+      "other-thread",
+      "other-turn",
+    );
+    let validationPasses = 0;
+    request.params._meta = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          validationPasses += 1;
+          if (validationPasses === 2) {
+            request.params.threadId = "thread-1";
+            request.params.turnId = "turn-1";
+          }
+          return Object.prototype;
+        },
+      },
+    );
+    client.emitRequest(request);
+    setTimeout(
+      () =>
+        client.emitNotification(
+          terminalNotification("thread-1", "turn-1", "completed"),
+        ),
+      20,
+    );
+  };
+
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+
+  assert.equal(result.terminalStatus, "failed");
+  assert.equal(
+    fixture.client.calls.some(([method]) => method === "respond"),
+    false,
+  );
+  assert.equal(
+    fixture.client.calls.filter(([method]) => method === "turnInterrupt")
+      .length,
     1,
   );
 });

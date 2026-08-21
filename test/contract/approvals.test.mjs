@@ -1063,6 +1063,77 @@ test("fails closed without invoking getters on the approval envelope or direct p
   assert.deepEqual(getterCalls, { method: 0, id: 0, params: 0, threadId: 0 });
 });
 
+test("returns immutable exact correlation from the post-validation request", async () => {
+  const [fixtureCommand] = await requests();
+  const longThreadId = `thread-${"t".repeat(300)}`;
+  const longTurnId = `turn-${"u".repeat(300)}`;
+  const request = structuredClone(fixtureCommand);
+  request.params.threadId = longThreadId;
+  request.params.turnId = longTurnId;
+
+  const result = await approvals().answerApproval(
+    request,
+    input("1\n"),
+    output().stream,
+    100,
+  );
+
+  assert.equal(result.kind, "response");
+  assert.deepEqual(result.correlation, {
+    method: "item/commandExecution/requestApproval",
+    threadId: longThreadId,
+    turnId: longTurnId,
+  });
+  assert.equal(Object.isFrozen(result.correlation), true);
+  assert.ok(Buffer.byteLength(result.audit.threadId, "utf8") <= 256);
+  assert.ok(Buffer.byteLength(result.audit.turnId, "utf8") <= 256);
+  assert.notEqual(result.audit.threadId, longThreadId);
+  assert.notEqual(result.audit.turnId, longTurnId);
+  request.params.threadId = "changed-after-validation";
+  request.params.turnId = "changed-after-validation";
+  assert.equal(result.correlation.threadId, longThreadId);
+  assert.equal(result.correlation.turnId, longTurnId);
+});
+
+test("fails closed for every nested Proxy without invoking its traps", async () => {
+  const [, , , fixtureMcp] = await requests();
+  let trapCalls = 0;
+  const handler = {
+    getPrototypeOf() {
+      trapCalls += 1;
+      return Object.prototype;
+    },
+    ownKeys() {
+      trapCalls += 1;
+      return [];
+    },
+    getOwnPropertyDescriptor() {
+      trapCalls += 1;
+      return undefined;
+    },
+  };
+  const liveProxy = new Proxy({}, handler);
+  const revocable = Proxy.revocable({}, handler);
+  revocable.revoke();
+
+  for (const nestedProxy of [liveProxy, revocable.proxy]) {
+    const request = structuredClone(fixtureMcp);
+    request.params._meta = { nestedProxy };
+    const sink = output();
+    const result = await approvals().answerApproval(
+      request,
+      input("1\n"),
+      sink.stream,
+      100,
+    );
+
+    assert.equal(result.kind, "failClosed");
+    assert.equal(result.code, "MALFORMED_APPROVAL_REQUEST");
+    assert.equal(sink.text(), "");
+  }
+  assert.equal(trapCalls, 0);
+});
+
 test("fails closed without evaluating hostile direct JSON properties", async () => {
   const [, , , fixtureMcp] = await requests();
   let getterCalls = 0;

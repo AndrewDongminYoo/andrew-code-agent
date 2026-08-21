@@ -384,9 +384,12 @@ async function runTurn(
       failClosed();
       return;
     }
+    const allowsUncorrelatedTurn =
+      outcome.correlation.method === "mcpServer/elicitation/request" &&
+      outcome.correlation.turnId === null;
     if (
-      outcome.audit.threadId !== identity.threadId ||
-      outcome.audit.turnId !== turnId
+      outcome.correlation.threadId !== identity.threadId ||
+      (!allowsUncorrelatedTurn && outcome.correlation.turnId !== turnId)
     ) {
       failClosed();
       return;
