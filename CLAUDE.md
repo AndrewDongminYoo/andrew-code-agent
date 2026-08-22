@@ -44,9 +44,22 @@ a layer that contributes no coverage.
 Check that the directory holds the files you expect before reading a green
 aggregate as evidence.
 
-`test/integration/live-manifest.test.mjs` skips itself unless
-`ANDREW_AGENT_CODEX_SOURCE` is set; it is the only test that reads a real
-bundle source tree.
+Two gates are opt-in, so a default green `pnpm check` does not cover them:
+
+- `test/contract/client.test.mjs` verifies the generated trees byte-for-byte
+  only when `ANDREW_AGENT_PINNED_CODEX_BIN` points at a `codex` binary whose
+  version matches `REQUIRED_CODEX_VERSION`.
+  Unset skips with a printed notice; a mismatched version fails.
+  This variable steers that one test, not the product runtime.
+- `test/integration/live-manifest.test.mjs` skips itself unless
+  `ANDREW_AGENT_CODEX_SOURCE` is set; it is the only test that reads a real
+  bundle source tree.
+
+Run the pinned form before trusting the generated contract:
+
+```bash
+ANDREW_AGENT_PINNED_CODEX_BIN=<path to the pinned codex> pnpm test:contract
+```
 
 ## Runtime environment
 
