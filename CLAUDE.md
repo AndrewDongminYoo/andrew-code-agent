@@ -127,19 +127,10 @@ without patching modules.
 
 ### Exit codes
 
-Verified across `src/cli.ts`, `src/commands/run.ts`, `src/commands/resume.ts`,
-and `src/commands/status.ts`:
-
-- `0` — success, or a turn whose terminal status is `completed`.
-- `1` — terminal status `failed`, output-stream failure, thread not found, or
-  an unexpected top-level error.
-- `2` — invalid command usage.
-- `3` — preflight or runtime-preparation failure, including a failed Doctor
-  preflight.
-- `4` — App Server operation or cleanup failure.
-- `130` — interrupted turn.
-
-`doctor` itself returns 0 with no blocker and 1 with any blocker.
+`README.md` owns the operator-facing table.
+It was verified against the `return` and `outcome =` sites in `src/cli.ts`,
+`src/commands/run.ts`, `src/commands/resume.ts`, and `src/commands/status.ts`;
+re-derive it there rather than from memory if the mapping changes.
 
 ### Fail-closed invariants
 
