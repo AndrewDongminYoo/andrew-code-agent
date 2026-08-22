@@ -272,8 +272,15 @@ test("first install writes only the candidate ownership inventory", async () => 
     const active = JSON.parse(
       await readFile(join(context.stateRoot, "active-install.json"), "utf8"),
     );
+    assert.equal(active.schemaVersion, 2);
     assert.equal(active.bundleDigest, artifact.metadata.bundleDigest);
-    assert.deepEqual(active.files, artifact.metadata.files);
+    assert.deepEqual(
+      active.files,
+      artifact.metadata.files.map((file) => ({
+        ...file,
+        lifecycle: file.path === "config.toml" ? "reset-before-run" : "immutable",
+      })),
+    );
     await assert.rejects(
       lstat(join(context.stateRoot, "install-journal.json")),
       { code: "ENOENT" },
@@ -341,6 +348,56 @@ test("a runtime rewrite of the managed config is reset by the next install", asy
   });
 });
 
+test("an unowned reset-before-run target is refused without mutation", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    const first = await createArtifact(
+      context.artifactsRoot,
+      "first",
+      firstEntries,
+    );
+    await seedProtected(context.stateRoot);
+    await writeFile(
+      join(context.stateRoot, "codex-home/config.toml"),
+      "third-party config\n",
+      { mode: 0o644 },
+    );
+    const before = await snapshotTree(context.stateRoot);
+    await assertInstallError(
+      installer.installBundle(context.stateRoot, first),
+      "OWNERSHIP_CONFLICT",
+    );
+    assert.deepEqual(await snapshotTree(context.stateRoot), before);
+  });
+});
+
+test("a schema 1 active record is migrated in memory rather than rejected", async () => {
+  await withFixture(async (context) => {
+    const { installer, first } = await installBaseline(context);
+    await writeCanonicalControl(
+      join(context.stateRoot, "active-install.json"),
+      {
+        schemaVersion: 1,
+        bundleDigest: first.metadata.bundleDigest,
+        files: first.metadata.files,
+      },
+    );
+    const inspection = await installer.inspectInstallState(context.stateRoot);
+    assert.deepEqual(inspection.issues, []);
+    assert.equal(inspection.active.schemaVersion, 2);
+    assert.equal(
+      inspection.active.files.find((file) => file.path === "config.toml")
+        .lifecycle,
+      "reset-before-run",
+    );
+    const config = join(context.stateRoot, "codex-home", "config.toml");
+    const rendered = await readFile(config, "utf8");
+    await writeFile(config, `${rendered}[projects."/tmp/repository"]\n`);
+    await installer.installBundle(context.stateRoot, first);
+    assert.equal(await readFile(config, "utf8"), rendered);
+  });
+});
+
 test("ownership conflicts and managed drift are rejected without mutation", async () => {
   for (const scenario of ["matching-unowned", "managed-drift"]) {
     await withFixture(async (context) => {
@@ -358,7 +415,7 @@ test("ownership conflicts and managed drift are rejected without mutation", asyn
         );
       else
         await writeFile(
-          join(context.stateRoot, "codex-home/config.toml"),
+          join(context.stateRoot, "codex-home/AGENTS.md"),
           "third-party drift\n",
         );
       const before = await snapshotTree(context.stateRoot);
@@ -475,7 +532,6 @@ test("all journal-published ordinary failures roll back immediately", async () =
       "operation:1",
       "operation:2",
       "operation:3",
-      "operation:4",
       "active-metadata-published",
       "installation-verified",
     ]);
@@ -719,9 +775,13 @@ test("inspectInstallState is a strictly read-only stable snapshot", async () => 
     const inspection = await installer.inspectInstallState(context.stateRoot);
     assert.deepEqual(inspection, {
       active: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         bundleDigest: first.metadata.bundleDigest,
-        files: first.metadata.files,
+        files: first.metadata.files.map((file) => ({
+          ...file,
+          lifecycle:
+            file.path === "config.toml" ? "reset-before-run" : "immutable",
+        })),
       },
       journal: null,
       issues: [],
@@ -897,7 +957,7 @@ test("inspection reports drift and invalid recovery material without mutation", 
       const { installer } = await installBaseline(context);
       if (scenario === "managed-drift") {
         await writeFile(
-          join(context.stateRoot, "codex-home/config.toml"),
+          join(context.stateRoot, "codex-home/AGENTS.md"),
           "inspection drift\n",
         );
       } else {

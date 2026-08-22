@@ -523,10 +523,25 @@ test("classifies missing and drifted active installations", async (t) => {
   });
   await t.test("managed state drift", async () => {
     await withFixture({}, async (fixture) => {
-      await writeFile(join(fixture.paths.codexHome, "config.toml"), "drift\n");
+      await writeFile(join(fixture.paths.codexHome, "AGENTS.md"), "drift\n");
       const result = await runUnchanged(fixture);
       assert.equal(result.exitCode, 1);
       assert.equal(finding(result, "ACTIVE_INSTALL").severity, "blocker");
+    });
+  });
+  await t.test("a reset-before-run rewrite is not drift", async () => {
+    await withFixture({}, async (fixture) => {
+      const config = join(fixture.paths.codexHome, "config.toml");
+      const rendered = await readFile(config, "utf8");
+      await writeFile(
+        config,
+        `${rendered}\n[projects."/tmp/repository"]\ntrust_level = "trusted"\n`,
+      );
+      await chmod(config, 0o600);
+      const result = await runUnchanged(fixture);
+      assert.equal(result.exitCode, 0);
+      assert.equal(finding(result, "ACTIVE_INSTALL").severity, "ready");
+      assert.equal(finding(result, "STRICT_CONFIG").severity, "ready");
     });
   });
   await t.test("valid candidate difference requires installation", async () => {

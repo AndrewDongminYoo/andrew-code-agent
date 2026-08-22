@@ -20,6 +20,7 @@ import { buildBundle, type BundleArtifact } from "../bundle/artifact.js";
 import {
   inspectInstallState,
   type ActiveInstallMetadata,
+  type OwnedFile,
   type InstallInspection,
 } from "../bundle/install.js";
 import { parseBundleManifest } from "../bundle/manifest.js";
@@ -955,13 +956,12 @@ async function materializeActiveInventory(
       managedHome,
       dirname(source),
     );
-    const bytes = await readPinnedOwnedFile(source, entry.mode, entry.sha256);
+    const { bytes, mode } = await readOwnedFile(source, entry);
     await revalidateDirectoryChain(sourceDirectories);
     const targetDirectories = await ensureTargetDirectories(
       shadowHome,
       dirname(target),
     );
-    const mode = entry.mode === "0755" ? 0o755 : 0o644;
     await writeExclusiveOwnedFile(target, bytes, mode);
     await revalidateDirectoryChain(targetDirectories);
   }
@@ -1039,7 +1039,7 @@ async function revalidateDirectoryChain(
 async function writeExclusiveOwnedFile(
   path: string,
   bytes: Uint8Array,
-  mode: 0o644 | 0o755,
+  mode: 0o600 | 0o644 | 0o755,
 ): Promise<void> {
   let file;
   try {
@@ -1293,11 +1293,17 @@ async function pathExists(path: string): Promise<boolean> {
   }
 }
 
-async function readPinnedOwnedFile(
+// An immutable entry is pinned to its recorded mode and digest. A
+// reset-before-run entry is read as installed, because Codex rewrites it
+// between runs and the next run resets it from the bundle; pinning it here
+// would report an expected rewrite as a configuration failure. Every other
+// guarantee is unchanged: a regular file, never a symlink, with a stable
+// identity across the read.
+async function readOwnedFile(
   path: string,
-  mode: "0644" | "0755",
-  digest: string,
-): Promise<Buffer> {
+  entry: OwnedFile,
+): Promise<{ bytes: Buffer; mode: 0o600 | 0o644 | 0o755 }> {
+  const pinned = entry.lifecycle === "immutable";
   let file;
   try {
     file = await open(
@@ -1305,7 +1311,8 @@ async function readPinnedOwnedFile(
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     const before = await file.stat();
-    if (!before.isFile() || normalizeMode(before.mode) !== mode) {
+    const mode = installedMode(before.mode, pinned);
+    if (!before.isFile() || (pinned && mode !== entry.mode)) {
       throw new Error("source type");
     }
     const bytes = await file.readFile();
@@ -1316,14 +1323,17 @@ async function readPinnedOwnedFile(
       !sameFileIdentity(after, pathMetadata) ||
       !pathMetadata.isFile() ||
       pathMetadata.isSymbolicLink() ||
-      normalizeMode(pathMetadata.mode) !== mode ||
+      installedMode(pathMetadata.mode, pinned) !== mode ||
       before.size !== after.size ||
       before.mtimeMs !== after.mtimeMs ||
-      sha256(bytes) !== digest
+      (pinned && sha256(bytes) !== entry.sha256)
     ) {
       throw new Error("source drift");
     }
-    return bytes;
+    return {
+      bytes,
+      mode: mode === "0600" ? 0o600 : mode === "0755" ? 0o755 : 0o644,
+    };
   } finally {
     await file?.close().catch(() => undefined);
   }
@@ -1407,6 +1417,16 @@ function normalizeMode(mode: number): "0644" | "0755" {
   if (normalized === 0o644) return "0644";
   if (normalized === 0o755) return "0755";
   throw new Error("invalid mode");
+}
+
+// Codex rewrites the file it owns owner-only, so a reset-before-run entry may
+// legitimately be found at 0600.
+function installedMode(
+  mode: number,
+  pinned: boolean,
+): "0600" | "0644" | "0755" {
+  if (!pinned && (mode & 0o777) === 0o600) return "0600";
+  return normalizeMode(mode);
 }
 
 function sha256(bytes: Uint8Array): string {

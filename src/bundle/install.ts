@@ -22,17 +22,36 @@ const preimagesName = "install-preimages";
 const managedName = "codex-home";
 const metadataName = "bundle-metadata.json";
 
+export type FileLifecycle = "immutable" | "reset-before-run";
+
 export interface OwnedFile {
+  readonly path: string;
+  readonly mode: FileMode;
+  readonly sha256: string;
+  readonly lifecycle: FileLifecycle;
+}
+
+export interface ActiveInstallMetadata {
+  readonly schemaVersion: 2;
+  readonly bundleDigest: string;
+  readonly files: readonly OwnedFile[];
+}
+
+interface LegacyOwnedFile {
   readonly path: string;
   readonly mode: FileMode;
   readonly sha256: string;
 }
 
-export interface ActiveInstallMetadata {
+interface LegacyActiveInstallMetadata {
   readonly schemaVersion: 1;
   readonly bundleDigest: string;
-  readonly files: readonly OwnedFile[];
+  readonly files: readonly LegacyOwnedFile[];
 }
+
+type StoredActiveInstallMetadata =
+  | ActiveInstallMetadata
+  | LegacyActiveInstallMetadata;
 
 export type FileFingerprint =
   | { readonly kind: "absent" }
@@ -210,8 +229,10 @@ export async function installBundle(
         "INVALID_STATE",
         "Active metadata does not match the candidate identity.",
       );
+    await resetManagedFiles(stateRoot, candidate);
     return;
   }
+  await assertResetOwnership(stateRoot, previous, candidate);
   let transaction = await prepareTransaction(
     stateRoot,
     previous,
@@ -234,6 +255,7 @@ export async function installBundle(
     await checkpointHook?.("installation-verified");
     await rm(resolve(stateRoot, journalName));
     journalPublished = false;
+    await resetManagedFiles(stateRoot, candidate);
     try {
       await checkpointHook?.("post-commit-cleanup");
       await cleanupCommitted(stateRoot, transaction);
@@ -354,9 +376,9 @@ async function verifyCandidate(
       artifactRoot: artifact.artifactRoot,
       metadata,
       active: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         bundleDigest: metadata.bundleDigest,
-        files: metadata.files,
+        files: withLifecycle(metadata.files),
       },
     };
   } catch (error) {
@@ -405,13 +427,22 @@ function validateBundleMetadata(value: unknown): BundleMetadata {
 function validateOwnedFile(
   value: unknown,
   candidate: boolean,
+  lifecycle = false,
 ): asserts value is OwnedFile {
   if (
     !isRecord(value) ||
-    !onlyKeys(value, ["path", "mode", "sha256"]) ||
+    !onlyKeys(
+      value,
+      lifecycle
+        ? ["path", "mode", "sha256", "lifecycle"]
+        : ["path", "mode", "sha256"],
+    ) ||
     typeof value.path !== "string" ||
     (value.mode !== "0644" && value.mode !== "0755") ||
-    !isDigest(value.sha256)
+    !isDigest(value.sha256) ||
+    (lifecycle &&
+      value.lifecycle !== "immutable" &&
+      value.lifecycle !== "reset-before-run")
   )
     throw new Error("file metadata");
   assertPortablePath(value.path);
@@ -539,10 +570,10 @@ async function readActive(
   }
   try {
     const value: unknown = JSON.parse(bytes.toString("utf8"));
-    const active = validateActive(value);
-    if (!bytes.equals(Buffer.from(`${JSON.stringify(active, null, 2)}\n`)))
+    const stored = validateActive(value);
+    if (!bytes.equals(Buffer.from(`${JSON.stringify(stored, null, 2)}\n`)))
       throw new Error("noncanonical active metadata");
-    return active;
+    return migrateActive(stored);
   } catch (error) {
     throw new InstallError(
       "INVALID_STATE",
@@ -552,23 +583,23 @@ async function readActive(
   }
 }
 
-function validateActive(value: unknown): ActiveInstallMetadata {
+function validateActive(value: unknown): StoredActiveInstallMetadata {
   if (
     !isRecord(value) ||
     !onlyKeys(value, ["schemaVersion", "bundleDigest", "files"]) ||
-    value.schemaVersion !== 1 ||
+    (value.schemaVersion !== 1 && value.schemaVersion !== 2) ||
     !isDigest(value.bundleDigest) ||
     !Array.isArray(value.files)
   )
     throw new Error("active schema");
   const paths: string[] = [];
   for (const file of value.files) {
-    validateOwnedFile(file, true);
+    validateOwnedFile(file, true, value.schemaVersion === 2);
     paths.push(file.path);
   }
   assertSortedUnique(paths);
   assertCaseFoldUnique(paths);
-  return value as unknown as ActiveInstallMetadata;
+  return value as unknown as StoredActiveInstallMetadata;
 }
 
 async function readJournal(stateRoot: string): Promise<InstallJournal | null> {
@@ -624,8 +655,10 @@ function validateJournal(value: unknown): InstallJournal {
   )
     throw new Error("journal schema");
   const previous =
-    value.previousActive === null ? null : validateActive(value.previousActive);
-  const candidate = validateActive(value.candidateActive);
+    value.previousActive === null
+      ? null
+      : migrateActive(validateActive(value.previousActive));
+  const candidate = migrateActive(validateActive(value.candidateActive));
   if (
     value.previousDigest !== (previous?.bundleDigest ?? null) ||
     value.candidateDigest !== candidate.bundleDigest
@@ -637,13 +670,7 @@ function validateJournal(value: unknown): InstallJournal {
   const candidateByPath = new Map(
     candidate.files.map((file) => [file.path, file]),
   );
-  const expectedPaths = [
-    ...new Set([...previousByPath.keys(), ...candidateByPath.keys()]),
-  ]
-    .sort(compareCodeUnits)
-    .filter(
-      (path) => !sameOwned(previousByPath.get(path), candidateByPath.get(path)),
-    );
+  const expectedPaths = journalPaths(previousByPath, candidateByPath);
   if (value.operations.length !== expectedPaths.length)
     throw new Error("journal operation closure");
   for (const [index, operation] of value.operations.entries()) {
@@ -727,6 +754,7 @@ async function verifyManagedState(
 ): Promise<void> {
   if (active === null) return;
   for (const file of active.files) {
+    if (isResetBeforeRun(file)) continue;
     const target = resolvePortable(resolve(stateRoot, managedName), file.path);
     let fingerprint: FileFingerprint;
     try {
@@ -746,6 +774,50 @@ async function verifyManagedState(
   }
 }
 
+// Converge every reset-before-run file on the candidate's recorded bytes and
+// mode. Resetting a file to known content needs no rollback: an interrupted
+// reset is redone by the next run, so this stays outside the journal. A file
+// the previous install did not own is still refused rather than overwritten.
+// Refused before any state changes, so a conflict never surfaces after the
+// journal has been removed and the install committed.
+async function assertResetOwnership(
+  stateRoot: string,
+  previous: ActiveInstallMetadata | null,
+  candidate: VerifiedCandidate,
+): Promise<void> {
+  const managedRoot = resolve(stateRoot, managedName);
+  const owned = new Set(previous?.files.map((file) => file.path) ?? []);
+  for (const file of candidate.active.files) {
+    if (!isResetBeforeRun(file) || owned.has(file.path)) continue;
+    if (await pathExists(resolvePortable(managedRoot, file.path)))
+      throw new InstallError(
+        "OWNERSHIP_CONFLICT",
+        "A candidate target is not owned by the active install.",
+      );
+  }
+}
+
+async function resetManagedFiles(
+  stateRoot: string,
+  candidate: VerifiedCandidate,
+): Promise<void> {
+  const managedRoot = resolve(stateRoot, managedName);
+  for (const file of candidate.active.files) {
+    if (!isResetBeforeRun(file)) continue;
+    const target = resolvePortable(managedRoot, file.path);
+    if (
+      sameFingerprint(await fingerprintPath(target), fingerprintFromOwned(file))
+    )
+      continue;
+    const bytes = await readRegular(
+      resolvePortable(candidate.artifactRoot, file.path),
+    );
+    if (sha256(bytes) !== file.sha256) throw new Error("candidate changed");
+    await mkdir(dirname(target), { recursive: true, mode: 0o700 });
+    await atomicFile(target, bytes, Number.parseInt(file.mode, 8));
+  }
+}
+
 async function prepareTransaction(
   stateRoot: string,
   previous: ActiveInstallMetadata | null,
@@ -759,13 +831,7 @@ async function prepareTransaction(
   const candidateByPath = new Map(
     candidate.active.files.map((file) => [file.path, file]),
   );
-  const operationPaths = [
-    ...new Set([...previousByPath.keys(), ...candidateByPath.keys()]),
-  ]
-    .sort(compareCodeUnits)
-    .filter(
-      (path) => !sameOwned(previousByPath.get(path), candidateByPath.get(path)),
-    );
+  const operationPaths = journalPaths(previousByPath, candidateByPath);
   const operations: InstallOperation[] = [];
   for (const [index, path] of operationPaths.entries()) {
     const before = fingerprintFromOwned(previousByPath.get(path));
@@ -1466,6 +1532,63 @@ async function fingerprintPath(path: string): Promise<FileFingerprint> {
     if (isMissing(error)) return absent;
     throw error;
   }
+}
+
+// Codex writes to its own home: on its first session in a repository it
+// appends a [projects."<path>"] trust block to config.toml and rewrites the
+// file owner-only. The bundle still owns that file's contents, so it is reset
+// from the candidate before every run instead of being verified against the
+// recorded fingerprint. Everything else the bundle installs is immutable, and
+// drift on it still fails closed.
+const resetBeforeRunPaths: ReadonlySet<string> = new Set(["config.toml"]);
+
+function lifecycleFor(path: string): FileLifecycle {
+  return resetBeforeRunPaths.has(path) ? "reset-before-run" : "immutable";
+}
+
+function withLifecycle(
+  files: readonly LegacyOwnedFile[],
+): readonly OwnedFile[] {
+  return files.map((file) => ({
+    path: file.path,
+    mode: file.mode,
+    sha256: file.sha256,
+    lifecycle: lifecycleFor(file.path),
+  }));
+}
+
+function migrateActive(
+  stored: StoredActiveInstallMetadata,
+): ActiveInstallMetadata {
+  return stored.schemaVersion === 2
+    ? stored
+    : {
+        schemaVersion: 2,
+        bundleDigest: stored.bundleDigest,
+        files: withLifecycle(stored.files),
+      };
+}
+
+function isResetBeforeRun(file: OwnedFile | undefined): boolean {
+  return file?.lifecycle === "reset-before-run";
+}
+
+// Reset-before-run paths never enter the journal. publishTransaction checks
+// every preimage source against the recorded fingerprint, which is exactly the
+// assumption a runtime rewrite breaks, so those paths are converged by
+// resetManagedFiles instead.
+function journalPaths(
+  previousByPath: ReadonlyMap<string, OwnedFile>,
+  candidateByPath: ReadonlyMap<string, OwnedFile>,
+): string[] {
+  return [...new Set([...previousByPath.keys(), ...candidateByPath.keys()])]
+    .sort(compareCodeUnits)
+    .filter(
+      (path) =>
+        !isResetBeforeRun(previousByPath.get(path)) &&
+        !isResetBeforeRun(candidateByPath.get(path)) &&
+        !sameOwned(previousByPath.get(path), candidateByPath.get(path)),
+    );
 }
 
 function fingerprintFromOwned(file: OwnedFile | undefined): FileFingerprint {
