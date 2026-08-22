@@ -615,10 +615,17 @@ async function readJournal(stateRoot: string): Promise<InstallJournal | null> {
   }
   try {
     const value: unknown = JSON.parse(bytes.toString("utf8"));
-    const journal = validateJournal(value);
-    if (!bytes.equals(Buffer.from(`${JSON.stringify(journal, null, 2)}\n`)))
+    const stored = validateJournal(value);
+    if (!bytes.equals(Buffer.from(`${JSON.stringify(stored, null, 2)}\n`)))
       throw new Error("noncanonical journal");
-    return journal;
+    return {
+      ...stored,
+      previousActive:
+        stored.previousActive === null
+          ? null
+          : migrateActive(stored.previousActive),
+      candidateActive: migrateActive(stored.candidateActive),
+    };
   } catch (error) {
     throw new InstallError("INVALID_STATE", "Install journal is invalid.", {
       cause: error,
@@ -655,20 +662,18 @@ function validateJournal(value: unknown): InstallJournal {
   )
     throw new Error("journal schema");
   const previous =
-    value.previousActive === null
-      ? null
-      : migrateActive(validateActive(value.previousActive));
-  const candidate = migrateActive(validateActive(value.candidateActive));
+    value.previousActive === null ? null : validateActive(value.previousActive);
+  const candidate = validateActive(value.candidateActive);
   if (
     value.previousDigest !== (previous?.bundleDigest ?? null) ||
     value.candidateDigest !== candidate.bundleDigest
   )
     throw new Error("journal digest");
   const previousByPath = new Map(
-    previous?.files.map((file) => [file.path, file]) ?? [],
+    previous?.files.map((file) => [file.path, file as OwnedFile]) ?? [],
   );
   const candidateByPath = new Map(
-    candidate.files.map((file) => [file.path, file]),
+    candidate.files.map((file) => [file.path, file as OwnedFile]),
   );
   const expectedPaths = journalPaths(previousByPath, candidateByPath);
   if (value.operations.length !== expectedPaths.length)

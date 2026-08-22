@@ -112,7 +112,9 @@ path:
    A reset-before-run file stays out of the journal and is converged by
    `resetManagedFiles` on every install, because Codex rewrites the file it
    owns between runs and the journal's preimage check assumes the opposite.
-   A schema 1 record is migrated in memory rather than rejected.
+   A schema 1 record is migrated in memory rather than rejected, and so is a
+   schema 1 install journal, after each is checked against its canonical bytes
+   in the shape it was written in.
 1. **Doctor gate** (`src/commands/doctor.ts`) classifies findings as
    `blocker`, `warning`, or `ready`; any blocker aborts the run before the App
    Server starts.

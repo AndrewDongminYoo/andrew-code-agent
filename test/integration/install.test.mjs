@@ -746,6 +746,52 @@ test("parent recovery is idempotent after both process interruption windows", as
   }
 });
 
+test("a schema 1 install journal is recovered rather than rejected", async () => {
+  await withFixture(async (context) => {
+    const { installer } = await installBaseline(context);
+    // config.toml is identical in both bundles, so the previous release and
+    // this one agree on the operation set and the journal below is a faithful
+    // schema 1 record rather than a shape that never existed.
+    const upgrade = await createArtifact(
+      context.artifactsRoot,
+      "legacy-journal",
+      firstEntries.map((entry) =>
+        entry.path === "AGENTS.md"
+          ? { ...entry, content: "legacy journal instructions\n" }
+          : entry,
+      ),
+    );
+    await interruptInstall(context.stateRoot, upgrade, "operation:1");
+    const journalPath = join(context.stateRoot, "install-journal.json");
+    const journal = await readJournalFixture(context.stateRoot);
+    const downgrade = (active) =>
+      active === null
+        ? null
+        : {
+            schemaVersion: 1,
+            bundleDigest: active.bundleDigest,
+            files: active.files.map(({ path, mode, sha256 }) => ({
+              path,
+              mode,
+              sha256,
+            })),
+          };
+    await writeCanonicalControl(journalPath, {
+      ...journal,
+      previousActive: downgrade(journal.previousActive),
+      candidateActive: downgrade(journal.candidateActive),
+    });
+
+    await installer.recoverInterruptedInstall(context.stateRoot);
+
+    await assert.rejects(lstat(journalPath), { code: "ENOENT" });
+    assert.equal(
+      await readFile(join(context.stateRoot, "codex-home/AGENTS.md"), "utf8"),
+      "first instructions\n",
+    );
+  });
+});
+
 test("recovery conflict performs zero mutation", async () => {
   await withFixture(async (context) => {
     const { installer } = await installBaseline(context);
