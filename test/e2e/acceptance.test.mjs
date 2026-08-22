@@ -7,7 +7,7 @@
 // Application Support directory.
 
 import assert from "node:assert/strict";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import {
   chmod,
   copyFile,
@@ -32,6 +32,8 @@ const cliPath = join(productRoot, "dist", "cli.js");
 const fixtureCodex = join(productRoot, "test", "fixtures", "fake-app-server.mjs");
 const sourceFixture = join(productRoot, "test", "fixtures", "source-codex", "clean");
 const acceptanceManifest = join(productRoot, "test", "fixtures", "manifests", "acceptance.toml");
+
+const { REQUIRED_CODEX_VERSION } = await import(new URL("../../dist/constants.js", import.meta.url).href);
 
 const scopedKeys = ["HOME", "ANDREW_AGENT_CODEX_SOURCE", "ANDREW_AGENT_STATE_ROOT"];
 
@@ -503,3 +505,81 @@ test("an interrupted install blocks the next run instead of proceeding", async (
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+// The live smoke exercises the real Codex binary against the portable
+// configuration this product installs. That is the one property the fixture
+// app server cannot check, because a fixture accepts whatever it is given.
+// A real turn additionally needs real credentials, which this smoke
+// deliberately does not supply, so it stops at configuration acceptance.
+const liveSmokeRequested = process.env.ANDREW_AGENT_REAL_SMOKE === "1";
+
+// The probe exits once its stdin closes; leaving the pipe open makes it serve.
+function probeStrictConfig(codexBin, codexHome) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(codexBin, ["app-server", "--strict-config", "--listen", "stdio://"], {
+      env: { CODEX_HOME: codexHome, PATH: process.env.PATH ?? "/usr/bin:/bin" },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.stdin.end();
+    let stderr = "";
+    child.stderr.setEncoding("utf8");
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      reject(new Error("the strict-config probe did not exit"));
+    }, 30_000);
+    child.once("error", reject);
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      resolve({ code, stderr });
+    });
+  });
+}
+
+test(
+  "live smoke: the real Codex accepts the installed portable configuration",
+  {
+    skip: liveSmokeRequested
+      ? false
+      : "ANDREW_AGENT_REAL_SMOKE is unset; the live smoke did not run",
+  },
+  async () => {
+    const smokeCodexBin = process.env.ANDREW_AGENT_SMOKE_CODEX_BIN;
+    assert.ok(
+      smokeCodexBin,
+      "ANDREW_AGENT_SMOKE_CODEX_BIN must name the codex binary to smoke against",
+    );
+    const version = await execFile(smokeCodexBin, ["--version"]);
+    assert.equal(
+      version.stdout.trim(),
+      `codex-cli ${REQUIRED_CODEX_VERSION}`,
+      "the live smoke refuses any Codex that is not the pinned version",
+    );
+
+    const fixture = await createEnvironment();
+    try {
+      // The managed home must be the fixture's, never the operator's.
+      const productionStateRoot = join(
+        process.env.HOME ?? "/nonexistent",
+        "Library", "Application Support", "andrew-code-agent",
+      );
+      assert.notEqual(fixture.stateRoot, productionStateRoot);
+
+      const installed = await runCli(environmentFor(fixture), [
+        "run", fixture.target, "install a candidate to smoke",
+      ]);
+      assert.equal(installed.code, 0, `${installed.stdout}\n${installed.stderr}`);
+
+      const probe = await probeStrictConfig(
+        await realpath(smokeCodexBin),
+        join(fixture.stateRoot, "codex-home"),
+      );
+      assert.equal(
+        probe.code, 0,
+        `the real Codex rejected the installed configuration:\n${probe.stderr}`,
+      );
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);

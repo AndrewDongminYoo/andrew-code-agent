@@ -1,6 +1,11 @@
 # Derived from the inline fixtureManifest literal in
 # test/integration/doctor.test.mjs. The two describe the same fixture profile
 # and have no link between them, so an edit to either belongs in both.
+#
+# One deliberate difference: the doctor literal sets analytics_enabled, which
+# the real codex-cli 0.148.0 rejects as an unknown configuration field. That
+# never surfaces against the fixture app server, so the acceptance profile
+# drops it to keep the opt-in live smoke meaningful.
 allowed_tokens = ["HOME", "CODEX_HOME", "WORKSPACE_ROOT", "LLM_WIKI_ROOT"]
 config_keys = ["model", "model_reasoning_effort", "personality", "service_tier", "agents.max_depth", "features.goals", "features.hooks", "features.multi_agent"]
 config_source = "config.toml"
@@ -13,7 +18,6 @@ read_only = true
 required_tokens = ["LLM_WIKI_ROOT"]
 
 [config_overrides]
-analytics_enabled = false
 approval_policy = "on-request"
 approvals_reviewer = "user"
 
