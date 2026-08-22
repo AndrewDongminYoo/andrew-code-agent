@@ -248,6 +248,8 @@ The P0 is the only finding that blocks use. It has no workaround an operator
 could find without reading `install.ts`, so it is worth landing on its own,
 reviewable against a reproduction rather than bundled with cosmetics.
 
-The two P1s are what make the product unpleasant rather than unusable, and
-both are small: name the failing check in the exit-3 message, and render
-agent message deltas rather than accumulated prefixes.
+The three P1s are what make the product unpleasant rather than unusable, and
+each is small: name the failing check in the exit-3 message, render agent
+message deltas rather than accumulated prefixes, and raise or remove
+`MAX_TEXT_LENGTH` so a summary is not cut off mid-sentence. The last two are
+the same call site, so they are one change rather than two.
