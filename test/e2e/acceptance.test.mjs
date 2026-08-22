@@ -23,11 +23,14 @@ import {
 import { tmpdir } from "node:os";
 import { join, relative, resolve, sep } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
-const repositoryRootUrl = new URL("../../", import.meta.url);
-const productRoot = repositoryRootUrl.pathname;
+// fileURLToPath, not pathname: a checkout under a path with spaces or
+// non-ASCII bytes keeps its percent encoding in pathname and resolves to
+// nothing on disk.
+const productRoot = fileURLToPath(new URL("../../", import.meta.url));
 const cliPath = join(productRoot, "dist", "cli.js");
 const fixtureCodex = join(productRoot, "test", "fixtures", "fake-app-server.mjs");
 const sourceFixture = join(productRoot, "test", "fixtures", "source-codex", "clean");

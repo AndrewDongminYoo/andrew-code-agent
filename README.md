@@ -36,7 +36,14 @@ mkdir -p ~/.local/bin
 target=~/.local/bin/andrew-agent
 printf '#!/bin/sh\nexec node "%s/dist/cli.js" "$@"\n' "$PWD" > "$target"
 chmod +x "$target"
-andrew-agent --help
+"$target" --help
+```
+
+`~/.local/bin` is not on a stock macOS `PATH`, so `andrew-agent` resolves only
+after you add it — in your shell profile if you want it to persist:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
 ## Bundle configuration
@@ -56,7 +63,21 @@ Sessions, logs, caches, and authentication material stay where they are.
 
 ## First run
 
-Authenticate the managed Codex home first. The agent never copies your
+Select a bundle source first. The source root must be a clean Git worktree,
+and the default `~/.codex` will not be one in practice — Codex writes to it on
+every session. Clone your profile into a dedicated tree and point the agent at
+that instead:
+
+```bash
+git clone ~/.codex ~/andrew-agent-source
+export ANDREW_AGENT_CODEX_SOURCE=~/andrew-agent-source
+```
+
+The clone must contain `agent-bundle.toml` and every file that manifest names,
+all committed. Re-clone or pull when you want the agent to pick up profile
+changes; nothing else keeps the two trees in step.
+
+Then authenticate the managed Codex home. The agent never copies your
 existing credentials into it, and `codex login` does not create the directory
 — it fails outright when `CODEX_HOME` does not exist. Both the state root and
 the managed home must be owner-only, or a run refuses with exit 3.
@@ -175,6 +196,20 @@ this usually resolves itself. Do not delete the journal or the preimages —
 they are the material that rollback consumes. Only recovery state the program
 cannot account for, such as a malformed or orphaned journal, makes `run` refuse
 with exit 3 rather than install over an unknown state.
+
+**Doctor reports `blocker STRICT_CONFIG` after a candidate is installed.**
+The real Codex rejected the configuration the bundle rendered, so `run` stops
+with exit 3 and `Candidate readiness failed.` before the App Server starts.
+This almost always means the manifest names a key this Codex version does not
+know. Ask Codex directly which one:
+
+```bash
+managed="$HOME/Library/Application Support/andrew-code-agent/codex-home"
+CODEX_HOME="$managed" codex app-server --strict-config --listen stdio:// < /dev/null
+```
+
+It names the offending field and line. Remove that key from the manifest's
+`config_overrides` or `config_keys` and run again.
 
 **Doctor reports `blocker SOURCE_DIRTY`.** Commit or stash the source root, or
 point `ANDREW_AGENT_CODEX_SOURCE` at a clean tree.
