@@ -507,6 +507,29 @@ test("an unaccountable install journal blocks the next run instead of proceeding
   }
 });
 
+// The fixture synthesizes authentication into the managed home, which is the
+// one step an operator has to perform themselves. Without this case the
+// acceptance layer never exercises a machine that has not been logged in —
+// the gap that let the README document a first-run sequence that could not
+// work.
+test("an unauthenticated managed home blocks doctor and refuses to run", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const environment = environmentFor(fixture);
+    await rm(join(fixture.stateRoot, "codex-home", ["auth", ".json"].join("")));
+
+    const doctor = await runCli(environment, ["doctor"]);
+    assert.equal(findings(doctor.stdout).get("AUTH_CONFIGURATION"), "blocker", doctor.stdout);
+    assert.equal(doctor.code, 1);
+
+    const blocked = await runCli(environment, ["run", fixture.target, "must not reach the app server"]);
+    assert.equal(blocked.code, 3, `${blocked.stdout}\n${blocked.stderr}`);
+    assert.match(blocked.stderr, /Candidate readiness failed/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 // The live smoke exercises the real Codex binary against the portable
 // configuration this product installs. That is the one property the fixture
 // app server cannot check, because a fixture accepts whatever it is given.
