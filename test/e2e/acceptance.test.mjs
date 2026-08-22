@@ -642,3 +642,84 @@ test(
     }
   },
 );
+
+// The gap this closes: every deterministic layer installs a bundle and never
+// lets a real Codex write back into the managed home between two runs, so an
+// install that served exactly one run passed every gate.
+test(
+  "live smoke: a second real run survives the config rewrite the first one caused",
+  {
+    skip:
+      liveSmokeRequested && process.env.ANDREW_AGENT_SMOKE_AUTH !== undefined
+        ? false
+        : "ANDREW_AGENT_REAL_SMOKE or ANDREW_AGENT_SMOKE_AUTH is unset; the two-run gate did not run",
+  },
+  async () => {
+    const smokeCodexBin = await realpath(
+      process.env.ANDREW_AGENT_SMOKE_CODEX_BIN ?? "/nonexistent",
+    );
+    const version = await execFile(smokeCodexBin, ["--version"]);
+    assert.equal(version.stdout.trim(), `codex-cli ${REQUIRED_CODEX_VERSION}`);
+
+    const fixture = await createEnvironment();
+    try {
+      const managedAuth = join(
+        fixture.stateRoot,
+        "codex-home",
+        ["auth", ".json"].join(""),
+      );
+      await mkdir(join(fixture.stateRoot, "codex-home"), {
+        recursive: true,
+        mode: 0o700,
+      });
+      await copyFile(process.env.ANDREW_AGENT_SMOKE_AUTH, managedAuth);
+      await chmod(managedAuth, 0o600);
+
+      const environment = environmentFor(fixture, {
+        ANDREW_AGENT_CODEX_BIN: smokeCodexBin,
+      });
+      const prompt = "Reply with the single word ACKNOWLEDGED and change nothing.";
+      const first = await runCli(environment, ["run", fixture.target, prompt], {
+        timeoutMs: 300_000,
+      });
+      assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`);
+
+      // The rewrite must actually have happened, or the second run proves
+      // nothing: a Codex that stopped writing project trust would make this
+      // test pass without exercising the reset at all.
+      const active = JSON.parse(
+        await readFile(join(fixture.stateRoot, "active-install.json"), "utf8"),
+      );
+      const installedConfig = join(
+        fixture.stateRoot,
+        "codex-home",
+        "config.toml",
+      );
+      const bundledConfig = join(
+        fixture.stateRoot,
+        "bundles",
+        active.bundleDigest,
+        "config.toml",
+      );
+      assert.notEqual(
+        await readFile(installedConfig, "utf8"),
+        await readFile(bundledConfig, "utf8"),
+        "the real Codex did not rewrite the managed config, so this gate is vacuous",
+      );
+
+      // Doctor is read-only, so this is the rewrite seen exactly as an
+      // operator sees it between runs. It reported ACTIVE_INSTALL as a blocker
+      // and exited 1 before the reset-before-run class existed.
+      const doctor = await runCli(environment, ["doctor"]);
+      assert.equal(doctor.code, 0, `${doctor.stdout}\n${doctor.stderr}`);
+
+      const second = await runCli(environment, ["run", fixture.target, prompt], {
+        timeoutMs: 300_000,
+      });
+      assert.equal(second.code, 0, `${second.stdout}\n${second.stderr}`);
+      assert.match(second.stdout, /Terminal status: completed/, second.stdout);
+    } finally {
+      await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
