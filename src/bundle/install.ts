@@ -163,7 +163,8 @@ export async function inspectInstallState(
     return { active: null, journal: null, issues };
   }
   try {
-    active = await readActive(stateRoot);
+    const storedActive = await readActive(stateRoot);
+    active = storedActive === null ? null : migrateActive(storedActive);
   } catch {
     issues.push("INVALID_ACTIVE_INSTALL");
   }
@@ -221,7 +222,8 @@ export async function installBundle(
       "INVALID_STATE",
       "Orphan transaction control state requires housekeeping.",
     );
-  const previous = await readActive(stateRoot);
+  const stored = await readActive(stateRoot);
+  const previous = stored === null ? null : migrateActive(stored);
   await verifyManagedState(stateRoot, previous);
   if (previous?.bundleDigest === candidate.active.bundleDigest) {
     if (JSON.stringify(previous) !== JSON.stringify(candidate.active))
@@ -235,7 +237,7 @@ export async function installBundle(
   await assertResetOwnership(stateRoot, previous, candidate);
   let transaction = await prepareTransaction(
     stateRoot,
-    previous,
+    stored,
     candidate,
     layout,
   );
@@ -559,7 +561,7 @@ function updateFrame(
 
 async function readActive(
   stateRoot: string,
-): Promise<ActiveInstallMetadata | null> {
+): Promise<StoredActiveInstallMetadata | null> {
   const path = resolve(stateRoot, activeName);
   let bytes: Buffer;
   try {
@@ -577,7 +579,7 @@ async function readActive(
     const stored = validateActive(value);
     if (!bytes.equals(Buffer.from(`${JSON.stringify(stored, null, 2)}\n`)))
       throw new Error("noncanonical active metadata");
-    return migrateActive(stored);
+    return stored;
   } catch (error) {
     throw new InstallError(
       "INVALID_STATE",
@@ -822,13 +824,13 @@ async function resetManagedFiles(
 
 async function prepareTransaction(
   stateRoot: string,
-  previous: ActiveInstallMetadata | null,
+  previous: StoredActiveInstallMetadata | null,
   candidate: VerifiedCandidate,
   layout: ControlLayout,
 ): Promise<InstallJournal> {
   const managedRoot = resolve(stateRoot, managedName);
   const previousByPath = new Map(
-    previous?.files.map((file) => [file.path, file]) ?? [],
+    previous?.files.map((file) => [file.path, file as OwnedFile]) ?? [],
   );
   const candidateByPath = new Map(
     candidate.active.files.map((file) => [file.path, file]),
@@ -1077,7 +1079,8 @@ async function restorePreviousState(
       throw new Error("staged rollback target exists");
     await rename(source, target);
   }
-  const active = await readActive(stateRoot);
+  const storedActive = await readActive(stateRoot);
+  const active = storedActive === null ? null : migrateActive(storedActive);
   const restored =
     journal.previousActive === null
       ? null

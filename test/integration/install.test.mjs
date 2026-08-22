@@ -746,6 +746,53 @@ test("parent recovery is idempotent after both process interruption windows", as
   }
 });
 
+test("an upgrade interrupted over a schema 1 active record is recoverable", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    const first = await createArtifact(
+      context.artifactsRoot,
+      "first",
+      firstEntries,
+    );
+    await seedProtected(context.stateRoot);
+    await installer.installBundle(context.stateRoot, first);
+    // A state root left by the previous release, upgraded by this installer.
+    const activePath = join(context.stateRoot, "active-install.json");
+    const active = JSON.parse(await readFile(activePath, "utf8"));
+    await writeCanonicalControl(activePath, {
+      schemaVersion: 1,
+      bundleDigest: active.bundleDigest,
+      files: active.files.map(({ path, mode, sha256 }) => ({
+        path,
+        mode,
+        sha256,
+      })),
+    });
+    const upgrade = await createArtifact(
+      context.artifactsRoot,
+      "upgrade-over-legacy",
+      upgradeEntries,
+    );
+    await interruptInstall(context.stateRoot, upgrade, "operation:1");
+    // The journal is mixed on purpose: previousActive fingerprints the schema 1
+    // control file on disk, candidateActive is what will replace it.
+    const journal = await readJournalFixture(context.stateRoot);
+    assert.equal(journal.previousActive.schemaVersion, 1);
+    assert.equal(journal.candidateActive.schemaVersion, 2);
+
+    await installer.recoverInterruptedInstall(context.stateRoot);
+
+    await assert.rejects(
+      lstat(join(context.stateRoot, "install-journal.json")),
+      { code: "ENOENT" },
+    );
+    assert.equal(
+      await readFile(join(context.stateRoot, "codex-home/AGENTS.md"), "utf8"),
+      "first instructions\n",
+    );
+  });
+});
+
 test("a lifecycle class that contradicts its path is rejected", async () => {
   await withFixture(async (context) => {
     const { installer } = await installBaseline(context);
