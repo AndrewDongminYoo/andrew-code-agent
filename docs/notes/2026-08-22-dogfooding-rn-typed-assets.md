@@ -109,21 +109,27 @@ bundle before each run. That restore fired nine times across the eleven runs
 that followed the first, which is the honest intervention count for this
 session: without it, every one of those runs exits 3.
 
-**There is no supported recovery.** Three paths were measured against a
-drifted install:
+**There is no supported recovery.** Four paths were measured against a
+drifted install, and only the last one works:
 
 - Running again does not reinstall over the drift. Exit 3.
-- Deleting `active-install.json` makes it worse. The install then refuses with
-  `OWNERSHIP_CONFLICT: A candidate target is not owned by the active install`,
-  because the managed home holds files no active record claims, and the run
-  still exits 3.
-- Deleting `codex-home` entirely and re-creating it works. The next run
-  installs cleanly and completes a turn — and then drifts again.
+- Deleting `active-install.json` alone makes it worse. `installBundle` then
+  refuses with `OWNERSHIP_CONFLICT: A candidate target is not owned by the
+active install`, because the managed home holds files no active record
+  claims. Exit 3.
+- Deleting `codex-home` alone fails too, and fails differently.
+  `installBundle` calls `verifyManagedState` against the surviving active
+  record before it reinstalls, so every file the record names is now missing
+  and the install throws `MANAGED_STATE_DRIFT`. Exit 3.
+- Deleting **both** the active record and `codex-home`, then re-creating the
+  directory, works. The next run installs cleanly and completes a turn — and
+  then drifts again.
 
-So the only way back is a wipe, and the wipe takes `auth.json` with it unless
-the operator knows to copy the file out and back by hand. None of this is in
-`README.md`, whose "Recovery" section covers the install journal rather than
-this.
+So the only way back is a wipe of both, and the order matters: wiping the
+managed home while the record survives destroys `auth.json` without restoring
+service. Recovering with authentication intact means copying `auth.json` out
+and back by hand. None of this is in `README.md`, whose "Recovery" section
+covers the install journal rather than this.
 
 Whatever the fix is, it has to decide who owns `config.toml` after install.
 Treating the file as immutable is incompatible with Codex writing project
