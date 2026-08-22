@@ -1,0 +1,59 @@
+allowed_tokens = ["HOME", "CODEX_HOME", "WORKSPACE_ROOT", "LLM_WIKI_ROOT"]
+config_keys = ["model", "model_reasoning_effort", "personality", "service_tier", "agents.max_depth", "features.goals", "features.hooks", "features.multi_agent"]
+config_source = "config.toml"
+schema_version = 1
+
+[[capabilities]]
+instruction_sections = ["Consult the Oracle"]
+name = "oracle"
+read_only = true
+required_tokens = ["LLM_WIKI_ROOT"]
+
+[config_overrides]
+analytics_enabled = false
+approval_policy = "on-request"
+approvals_reviewer = "user"
+
+[[files]]
+mode = "0644"
+source = "AGENTS.md"
+target = "AGENTS.md"
+
+[[files]]
+mode = "0644"
+source = "agents/advisor.toml"
+target = "agents/advisor.toml"
+
+[[files]]
+capability = "oracle"
+mode = "0644"
+source = "agents/oracle.toml"
+target = "agents/oracle.toml"
+
+[[files]]
+mode = "0755"
+source = "hooks/safety.sh"
+target = "hooks/safety.sh"
+
+[[files]]
+mode = "0644"
+source = "rules/default.rules"
+target = "rules/default.rules"
+
+[forbidden]
+literals = ["/Users/dongminyu", "/Volumes/dongminyu"]
+path_segments = ["auth\u002Ejson", "sessions", "logs", "cache", "rollout", "hooks.state", "desktop"]
+pattern_ids = ["private-key", "credential-assignment", "github-token", "openai-api-key"]
+
+[[hooks]]
+event = "PreToolUse"
+matcher = "Bash"
+rendered_command = 'bash "${CODEX_HOME}/hooks/safety.sh"'
+required_script = "hooks/safety.sh"
+source_command = 'bash "$HOME/.codex/hooks/safety.sh"'
+timeout = 5
+
+[[requirements]]
+arguments = ["-c", "exit 0"]
+executable = "/bin/sh"
+name = "shell"
