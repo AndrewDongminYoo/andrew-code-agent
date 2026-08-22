@@ -345,27 +345,17 @@ test("uses UTF-8 byte bounds for protocol IDs", () => {
   );
 });
 
-test("requires a full terminal inventory and summarizes commands beyond the item projection cap", () => {
+// This case used to assert that a summary view was rejected outright. The
+// real codex-cli 0.148.0 completes every turn that way, so the summary path
+// is now accepted without inventory authority; see the summary-completion
+// cases at the end of this file.
+test("summarizes commands beyond the item projection cap", () => {
   const api = reducer();
-  const turn = {
-    id: "turn-1",
-    items: [],
-    itemsView: "summary",
-    status: "completed",
-    error: null,
-    startedAt: null,
-    completedAt: null,
-    durationMs: null,
-  };
-  assert.throws(
-    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/completed", params: { threadId: "thread-1", turn } }),
-    { code: "INVALID_SERVER_EVENT" },
-  );
   const items = [
     ...Array.from({ length: 64 }, (_, index) => item("agentMessage", `message-${index}`, { text: "message", phase: null, memoryCitation: null })),
     ...Array.from({ length: 33 }, (_, index) => item("commandExecution", `command-${index}`, { command: `command-${index}`, cwd: "/repo", exitCode: 0, aggregatedOutput: null })),
   ];
-  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/completed", params: { threadId: "thread-1", turn: { ...turn, items, itemsView: "full" } } });
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), { method: "turn/completed", params: { threadId: "thread-1", turn: { id: "turn-1", items, itemsView: "full", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null } } });
   assert.equal(terminal.omittedItems, 33);
   assert.equal(terminal.observedCommands.length, 32);
   assert.equal(terminal.omittedCommands, 1);
@@ -1112,4 +1102,92 @@ test("active agentMessage delta rejects a stored value inherited text getter wit
   assert.equal(getterCalls, 0);
   assert.equal(failure?.name, "ReducerError");
   assert.equal(failure?.code, "INVALID_SERVER_EVENT");
+});
+
+// codex-cli 0.148.0 completes a turn with itemsView "summary": the status is
+// authoritative but the item list is not the turn's complete inventory.
+function summaryCompletion(overrides = {}) {
+  return {
+    method: "turn/completed",
+    params: {
+      threadId: "thread-1",
+      turn: { id: "turn-1", items: [], itemsView: "summary", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null, ...overrides },
+    },
+  };
+}
+
+test("accepts a summary completion without claiming inventory authority", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "ACKNOWLEDGED", phase: null, memoryCitation: null });
+  const streamed = stateWith([started(message), completed(message)]);
+
+  const terminal = api.reduceServerMessage(streamed, summaryCompletion());
+
+  assert.equal(terminal.terminalStatus, "completed");
+  assert.equal(terminal.terminalInventoryDigest, null, "a summary view must not assert an inventory digest");
+  assert.equal(terminal.omittedItemsComplete, false, "a summary view must not claim the omission set is complete");
+  assert.deepEqual([...terminal.items.keys()], ["message-1"], "items observed while streaming must survive a summary completion");
+});
+
+test("carries a summary completion's failure and interruption statuses", () => {
+  const api = reducer();
+  for (const status of ["failed", "interrupted"]) {
+    const state = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), summaryCompletion({ status }));
+    assert.equal(state.terminalStatus, status);
+  }
+});
+
+test("repeats a summary completion idempotently and rejects a changed one", () => {
+  const api = reducer();
+  const terminal = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), summaryCompletion());
+  assert.equal(api.reduceServerMessage(terminal, summaryCompletion()), terminal);
+  assert.throws(() => api.reduceServerMessage(terminal, summaryCompletion({ status: "failed" })), { code: "INVALID_SERVER_EVENT" });
+});
+
+test("still rejects a completion whose items were never loaded", () => {
+  const api = reducer();
+  assert.throws(
+    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), summaryCompletion({ itemsView: "notLoaded" })),
+    { code: "INVALID_SERVER_EVENT" },
+    "notLoaded carries no observed inventory and stays fail-closed",
+  );
+});
+
+test("refuses a summary completion whose retained inventory is corrupted", () => {
+  const api = reducer();
+  const sound = { id: "message-1", type: "agentMessage", phase: "completed", value: { text: "ACKNOWLEDGED" } };
+
+  const proxied = api.createTurnState("thread-1", "turn-1");
+  proxied.items.set("message-1", new Proxy(sound, {}));
+  assert.throws(
+    () => api.reduceServerMessage(proxied, summaryCompletion()),
+    { code: "INVALID_SERVER_EVENT" },
+    "a proxied retained item must not reach the renderer through the summary path",
+  );
+
+  let getterCalls = 0;
+  const accessorBacked = api.createTurnState("thread-1", "turn-1");
+  const hostile = { id: "message-1", type: "agentMessage", phase: "completed" };
+  Object.defineProperty(hostile, "value", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error("value getter must not run");
+    },
+  });
+  accessorBacked.items.set("message-1", hostile);
+  assert.throws(
+    () => api.reduceServerMessage(accessorBacked, summaryCompletion()),
+    { code: "INVALID_SERVER_EVENT" },
+    "an accessor-backed retained item must fail closed, not settle",
+  );
+  assert.equal(getterCalls, 0, "the hostile accessor must never be invoked");
+
+  const omitted = api.createTurnState("thread-1", "turn-1");
+  omitted.omittedItemStates.set("message-1", new Proxy(sound, {}));
+  assert.throws(
+    () => api.reduceServerMessage(omitted, summaryCompletion()),
+    { code: "INVALID_SERVER_EVENT" },
+    "the omitted-item authority set is retained too and must be validated",
+  );
 });

@@ -692,7 +692,7 @@ export function reduceServerMessage(
     const turn = params.turn;
     if (
       turn.id !== state.turnId ||
-      turn.itemsView !== "full" ||
+      (turn.itemsView !== "full" && turn.itemsView !== "summary") ||
       !Array.isArray(turn.items)
     )
       throw new ReducerError("INVALID_SERVER_EVENT");
@@ -706,6 +706,24 @@ export function reduceServerMessage(
       !Object.hasOwn(statuses, turn.status)
     )
       throw new ReducerError("INVALID_SERVER_EVENT");
+    // A summary view carries an authoritative status over an item list that
+    // is not the turn's complete inventory, so it settles the status and
+    // leaves every inventory claim as observed while streaming.
+    if (turn.itemsView === "summary") {
+      // The retained inventory is carried straight to the renderer, so it has
+      // to clear the same stored-state validation every other path applies.
+      const settled: TurnState = {
+        ...state,
+        items: new Map(validatedStoredEntries(state.items)),
+        omittedItemStates: new Map(
+          validatedStoredEntries(state.omittedItemStates),
+        ),
+        terminalStatus: statuses[turn.status]!,
+      };
+      if (state.terminalStatus === "running") return settled;
+      if (state.terminalStatus === settled.terminalStatus) return state;
+      throw new ReducerError("INVALID_SERVER_EVENT");
+    }
     const items = new Map<string, ItemState>();
     const seenIds = new Set<string>();
     const observedCommands: {

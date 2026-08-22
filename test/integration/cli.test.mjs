@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Readable, Writable } from "node:stream";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
@@ -1060,6 +1061,6 @@ test("package bin targets the executable compiled CLI", async () => {
   assert.deepEqual(packageJson.bin, { "andrew-agent": "dist/cli.js" });
   const source = await readFile(new URL("../../src/cli.ts", import.meta.url), "utf8");
   assert.equal(source.startsWith("#!/usr/bin/env node\n"), true);
-  const { stdout } = await execFile(process.execPath, [new URL("../../dist/cli.js", import.meta.url).pathname, "--help"]);
+  const { stdout } = await execFile(process.execPath, [fileURLToPath(new URL("../../dist/cli.js", import.meta.url)), "--help"]);
   assert.match(stdout, /andrew-agent run <repository> <prompt>/);
 });
