@@ -1,10 +1,23 @@
 version: 0.1
 cli:
   version: 1.25.0
+runtimes:
+  enabled:
+    - node@24.19.0
 lint:
   enabled:
-    - prettier
-    - markdownlint
-    - shellcheck
-    - trufflehog
-    - osv-scanner
+    - prettier@3.6.2
+    - markdownlint@0.45.0
+    - gitleaks@8.8.7
+    - osv-scanner@SYSTEM
+  ignore:
+    - linters: [prettier]
+      paths:
+        - "src/generated/codex-app-server/**"
+        - "schemas/codex-app-server/**"
+    - linters: [prettier]
+      paths:
+        - "test/**/*.mjs"
+    - linters: [markdownlint]
+      paths:
+        - "AGENTS.md"

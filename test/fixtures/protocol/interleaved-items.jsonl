@@ -1,0 +1,6 @@
+{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","startedAtMs":1,"item":{"type":"agentMessage","id":"message-a","text":"","phase":null,"memoryCitation":null}}}
+{"method":"item/started","params":{"threadId":"thread-1","turnId":"turn-1","startedAtMs":2,"item":{"type":"plan","id":"plan-b","text":""}}}
+{"method":"item/agentMessage/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"message-a","delta":"A"}}
+{"method":"item/plan/delta","params":{"threadId":"thread-1","turnId":"turn-1","itemId":"plan-b","delta":"B"}}
+{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","completedAtMs":3,"item":{"type":"plan","id":"plan-b","text":"Plan B"}}}
+{"method":"item/completed","params":{"threadId":"thread-1","turnId":"turn-1","completedAtMs":4,"item":{"type":"agentMessage","id":"message-a","text":"Message A","phase":null,"memoryCitation":null}}}
