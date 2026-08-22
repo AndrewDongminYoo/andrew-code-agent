@@ -578,6 +578,44 @@ test(
         probe.code, 0,
         `the real Codex rejected the installed configuration:\n${probe.stderr}`,
       );
+
+      // With dedicated test credentials the smoke goes one step further and
+      // drives a real turn. The file is copied, never read: nothing here may
+      // log, hash, or print authentication material.
+      const smokeAuth = process.env.ANDREW_AGENT_SMOKE_AUTH;
+      if (smokeAuth === undefined) {
+        console.log(
+          "ANDREW_AGENT_SMOKE_AUTH is unset; the real-turn gate did not run",
+        );
+        return;
+      }
+      const managedAuth = join(
+        fixture.stateRoot, "codex-home", ["auth", ".json"].join(""),
+      );
+      await copyFile(smokeAuth, managedAuth);
+      await chmod(managedAuth, 0o600);
+
+      const turn = await runCli(
+        environmentFor(fixture, { ANDREW_AGENT_CODEX_BIN: await realpath(smokeCodexBin) }),
+        ["run", fixture.target, "Reply with the single word ACKNOWLEDGED and change nothing."],
+        { timeoutMs: 300_000 },
+      );
+
+      // The turn itself succeeds against the real service: a thread and turn
+      // are created, the model answers, and the repository is untouched.
+      assert.match(turn.stdout, /Thread ID: [0-9a-f-]{36}/, turn.stderr);
+      assert.match(turn.stdout, /agentMessage completed: ACKNOWLEDGED/, turn.stdout);
+      assert.match(turn.stdout, /Final Git status: *$/m, turn.stdout);
+
+      // ...and v0.1 still reports it as failed. codex-cli 0.148.0 sends
+      // turn/completed with itemsView "summary", while the reducer accepts
+      // only "full" because it treats that payload as the complete final
+      // inventory. Every real turn therefore fails closed. This assertion
+      // pins the current behavior; when the reducer learns to handle a
+      // summary view without claiming inventory authority, it will fail here
+      // and this scenario should assert completed and exit 0 instead.
+      assert.match(turn.stdout, /Terminal status: failed/, turn.stdout);
+      assert.equal(turn.code, 1, turn.stderr);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }

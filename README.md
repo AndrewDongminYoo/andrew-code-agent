@@ -185,6 +185,13 @@ behind a fallback.
 - **Git output is bounded at 16 MiB** per captured stream. A repository whose
   status or diff exceeds that fails rather than truncating silently.
 - **Protocol lines are bounded at 16 MiB** of UTF-8 wire bytes.
+- **A real turn against Codex is reported as failed even when it succeeds.**
+  `codex-cli 0.148.0` sends `turn/completed` with `itemsView: "summary"`,
+  while v0.1 accepts only `"full"` because it treats that payload as the
+  complete final inventory of the turn. The thread runs, the model answers,
+  and the repository is left exactly as the turn left it, but the terminal
+  status is `failed` and the command exits 1. Read the printed items and the
+  final Git status rather than the terminal status until this is resolved.
 - **A stale lock is not reclaimed automatically.**
 - **Piping output to a reader that closes early misreports the outcome.**
   `andrew-agent doctor | head -1` or `| grep -m1 blocker` closes the pipe
