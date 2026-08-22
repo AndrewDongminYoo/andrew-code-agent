@@ -9,10 +9,12 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import {
+  chmod,
   copyFile,
   cp,
   mkdir,
   mkdtemp,
+  readFile,
   realpath,
   rm,
   writeFile,
@@ -70,14 +72,35 @@ async function createEnvironment() {
     join(sourceRoot, "agents", "oracle.toml"),
     'name = "oracle"\nwiki_root = "${LLM_WIKI_ROOT}"\n',
   );
+  // The manifest declares this hook as 0755; the committed fixture copy is
+  // 0644, so the acceptance source tree must set the mode it promises.
+  await writeFile(
+    join(sourceRoot, "hooks", "safety.sh"),
+    '#!/bin/sh\nprintf "%s\\n" "${HOME}/.codex"\n',
+  );
+  await chmod(join(sourceRoot, "hooks", "safety.sh"), 0o755);
   await copyFile(acceptanceManifest, join(sourceRoot, "agent-bundle.toml"));
   await initializeRepository(sourceRoot);
+
+  // Doctor requires owner-only authentication material inside the managed
+  // home. Synthesize a non-secret fixture; real credentials are never read.
+  await mkdir(stateRoot, { mode: 0o700 });
+  await mkdir(join(stateRoot, "codex-home"), { mode: 0o700 });
+  await writeFile(
+    join(stateRoot, "codex-home", ["auth", ".json"].join("")),
+    `${JSON.stringify({ OPENAI_API_KEY: "fixture-only-not-a-credential" })}\n`,
+    { mode: 0o600 },
+  );
 
   await mkdir(target, { mode: 0o700 });
   await writeFile(join(target, "tracked.txt"), "before\n");
   await initializeRepository(target);
 
-  return { root, home, sourceRoot, stateRoot, target };
+  const binRoot = join(root, "bin");
+  await mkdir(binRoot, { mode: 0o700 });
+  const fixture = { root, home, sourceRoot, stateRoot, target, codexBin: join(binRoot, "codex") };
+  await writeCodexWrapper(fixture);
+  return fixture;
 }
 
 async function initializeRepository(root) {
@@ -93,11 +116,28 @@ function environmentFor(fixture, overrides = {}) {
     HOME: fixture.home,
     ANDREW_AGENT_CODEX_SOURCE: fixture.sourceRoot,
     ANDREW_AGENT_STATE_ROOT: fixture.stateRoot,
-    ANDREW_AGENT_CODEX_BIN: fixtureCodex,
+    ANDREW_AGENT_CODEX_BIN: fixture.codexBin,
     PATH: process.env.PATH ?? "/usr/bin:/bin",
     TMPDIR: process.env.TMPDIR ?? "/tmp",
     ...overrides,
   });
+}
+
+// startAppServer spawns the codex binary with only CODEX_HOME and PATH, so
+// scenario settings cannot reach the fixture through the CLI's environment.
+// A per-scenario wrapper carries them instead.
+async function writeCodexWrapper(fixture, settings = {}) {
+  const assignments = Object.entries({
+    ANDREW_AGENT_FAKE_SCRIPT: join(productRoot, "test", "fixtures", "protocol", "turn-success.jsonl"),
+    ...settings,
+  })
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}\nexport ${key}`)
+    .join("\n");
+  await writeFile(
+    fixture.codexBin,
+    `#!/bin/sh\n${assignments}\nexec ${JSON.stringify(fixtureCodex)} "$@"\n`,
+    { mode: 0o755 },
+  );
 }
 
 // execFile rejects on a nonzero exit, but every scenario asserts an exact
@@ -182,6 +222,60 @@ test("an unknown command exits with the usage code", async () => {
     const result = await runCli(environmentFor(fixture), ["nonsense"]);
     assert.equal(result.code, 2);
     assert.match(result.stderr, /Invalid command usage/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+async function gitStatus(root) {
+  const { stdout } = await execFile("git", [
+    "-C", root, "status", "--porcelain=v2", "--untracked-files=all",
+  ]);
+  return stdout;
+}
+
+test("run installs a candidate, performs a contained edit, and reports the record", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const editTarget = join(fixture.target, "tracked.txt");
+    await writeCodexWrapper(fixture, { ANDREW_AGENT_FAKE_EDIT_PATH: editTarget });
+
+    const result = await runCli(environmentFor(fixture), [
+      "run", fixture.target, "make one contained edit",
+    ]);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /Thread ID: thread-1/);
+    assert.match(result.stdout, /Terminal status: completed/);
+    assert.match(result.stdout, /Starting HEAD: [0-9a-f]{40}/);
+
+    assert.equal(
+      await readFile(editTarget, "utf8"),
+      "before\nfixture edit\n",
+      "the scripted turn must leave exactly its own edit",
+    );
+    assert.equal(
+      await gitStatus(fixture.sourceRoot), "",
+      "the bundle source tree must be left untouched",
+    );
+    assert.match(
+      result.stdout, /Final Git status: 1 \.M/,
+      "the final record must report the modified target file",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("doctor reports every finding ready once a candidate is installed", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const environment = environmentFor(fixture);
+    await runCli(environment, ["run", fixture.target, "install a candidate"]);
+    const result = await runCli(environment, ["doctor"]);
+    const parsed = findings(result.stdout);
+    const blockers = [...parsed].filter(([, severity]) => severity === "blocker");
+    assert.deepEqual(blockers, [], result.stdout);
+    assert.equal(result.code, 0, result.stderr);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
