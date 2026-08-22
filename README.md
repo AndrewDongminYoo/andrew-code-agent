@@ -63,10 +63,10 @@ Sessions, logs, caches, and authentication material stay where they are.
 
 ## First run
 
-Select a bundle source first. The source root must be a clean Git worktree,
-and the default `~/.codex` will not be one in practice — Codex writes to it on
-every session. Clone your profile into a dedicated tree and point the agent at
-that instead:
+Select a bundle source first. The source root must be a Git worktree root
+whose tree is clean. `~/.codex` is already a Git worktree root, but it will
+rarely be clean — Codex writes to it on every session — so clone it into a
+dedicated tree and point the agent at the clone:
 
 ```bash
 git clone ~/.codex ~/andrew-agent-source
