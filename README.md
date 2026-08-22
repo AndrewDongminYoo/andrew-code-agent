@@ -186,6 +186,12 @@ behind a fallback.
   status or diff exceeds that fails rather than truncating silently.
 - **Protocol lines are bounded at 16 MiB** of UTF-8 wire bytes.
 - **A stale lock is not reclaimed automatically.**
+- **Piping output to a reader that closes early misreports the outcome.**
+  `andrew-agent doctor | head -1` or `| grep -m1 blocker` closes the pipe
+  before the command has finished writing, so the write fails and the command
+  exits 3 with `Doctor preflight failed.` even though Doctor ran correctly and
+  the line you asked for was printed. Read the full output, or redirect to a
+  file first, before trusting a nonzero exit from a piped invocation.
 - **The Codex version is pinned exactly.** There is no compatibility range.
 - **`oracle` and `shared-memory` capabilities are unreachable.** The gating
   exists in the renderer, but the CLI always requests no capabilities.
