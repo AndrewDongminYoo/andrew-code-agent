@@ -119,6 +119,48 @@ async function withGitListingShim(indexEntries, run) {
   }
 }
 
+async function withOverflowGitListingShim(run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
+  const shimPath = join(shimDirectory, "git");
+  const statusMarkerPath = join(shimDirectory, "status-called");
+  const realGit = (await execFile("which", ["git"], { encoding: "utf8" })).stdout.trim();
+  const originalPath = process.env.PATH;
+  await writeFile(
+    shimPath,
+    `#!${process.execPath}
+const { spawnSync } = require("node:child_process");
+const { writeFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+if (args[0] === "-C" && args[2] === "ls-files") {
+  const record = Buffer.from("H 100644 0123456789012345678901234567890123456789 0\\ttracked.txt\\0");
+  const repetitions = Math.ceil((16 * 1024 * 1024 + 1) / record.length);
+  const output = Buffer.allocUnsafe(record.length * repetitions);
+  for (let index = 0; index < repetitions; index += 1) {
+    record.copy(output, index * record.length);
+  }
+  process.stdout.on("error", (error) => {
+    if (error.code === "EPIPE") process.exit(0);
+    throw error;
+  });
+  process.stdout.write(output, () => process.exit(0));
+} else {
+  if (args[0] === "-C" && args[2] === "status") writeFileSync(${JSON.stringify(statusMarkerPath)}, "called");
+  const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
+  process.exit(result.status ?? 1);
+}
+`,
+  );
+  await chmod(shimPath, 0o755);
+  process.env.PATH = `${shimDirectory}:${originalPath ?? ""}`;
+  try {
+    await run(statusMarkerPath);
+  } finally {
+    if (originalPath === undefined) delete process.env.PATH;
+    else process.env.PATH = originalPath;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
 async function withSecondHeadMutationShim(repository, flag, run) {
   const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
   const shimPath = join(shimDirectory, "git");
@@ -304,6 +346,22 @@ for (const [label, indexEntries] of [
     });
   });
 }
+
+test("rejects an overflowing index inventory before status or partial snapshot authority", async () => {
+  await withRepository(async (repository) => {
+    await withOverflowGitListingShim(async (statusMarkerPath) => {
+      let snapshot;
+      await assert.rejects(
+        async () => {
+          snapshot = await requireGit().readGitSnapshot(repository);
+        },
+        { code: "GIT_STATUS_FAILED" },
+      );
+      assert.equal(snapshot, undefined);
+      await assert.rejects(readFile(statusMarkerPath), { code: "ENOENT" });
+    });
+  });
+});
 
 test("rejects initialized submodules even when status ignores their dirt", async () => {
   await withGitlinkSource(async ({ repository, source }) => {
