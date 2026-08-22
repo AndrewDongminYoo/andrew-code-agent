@@ -10,6 +10,7 @@
 // until the client answers that id. Lines without one are notifications and
 // are written immediately.
 
+import { appendFileSync } from "node:fs";
 import { appendFile, readFile } from "node:fs/promises";
 
 const { REQUIRED_CODEX_VERSION } = await import(
@@ -60,6 +61,10 @@ const exitAfterTurn = process.env.ANDREW_AGENT_FAKE_EXIT_AFTER_TURN === "1";
 // Records what the client actually answered, so a scenario can observe the
 // decision instead of inferring it from the turn's outcome.
 const decisionLog = process.env.ANDREW_AGENT_FAKE_DECISION_LOG;
+// Records this session's pid so a scenario can assert on exactly the children
+// its own run spawned rather than on whatever pgrep happens to match.
+const pidLog = process.env.ANDREW_AGENT_FAKE_PID_LOG;
+if (pidLog !== undefined) appendFileSync(pidLog, `${process.pid}\n`);
 
 const pending = new Map();
 

@@ -15,6 +15,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  readdir,
   realpath,
   rm,
   writeFile,
@@ -383,6 +384,114 @@ test("a gated action is approved when the operator answers on a terminal", async
       answered[0].result.decision, "accept",
       "selecting the accept choice must send an accept decision",
     );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a later process reads and resumes the thread the first process wrote", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const environment = environmentFor(fixture);
+    const first = await runCli(environment, ["run", fixture.target, "start a thread"]);
+    assert.equal(first.code, 0, `${first.stdout}\n${first.stderr}`);
+
+    const byId = await runCli(environment, ["status", "thread-1"]);
+    assert.equal(byId.code, 0, byId.stderr);
+    assert.match(byId.stdout, /Persisted thread record:/);
+    assert.match(byId.stdout, /Thread ID: thread-1/);
+    assert.match(byId.stdout, /Live App Server status: idle/);
+
+    // With no argument, status resolves the latest thread for the repository
+    // the process is standing in.
+    const byCwd = await runCli(environment, ["status"], { cwd: fixture.target });
+    assert.equal(byCwd.code, 0, byCwd.stderr);
+    assert.match(byCwd.stdout, /Thread ID: thread-1/);
+    assert.match(byCwd.stdout, new RegExp(`Repository: ${fixture.target}`));
+
+    // resume without a prompt reports the stored record and starts no turn.
+    const record = await runCli(environment, ["resume", "thread-1"]);
+    assert.equal(record.code, 0, record.stderr);
+    assert.match(record.stdout, /Terminal status: completed/);
+
+    const resumed = await runCli(environment, ["resume", "thread-1", "continue the work"]);
+    assert.equal(resumed.code, 0, `${resumed.stdout}\n${resumed.stderr}`);
+    assert.match(resumed.stdout, /Terminal status: completed/);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("a run releases its lock and leaves no residue in the state root", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const pidLog = join(fixture.root, "children.txt");
+    await writeCodexWrapper(fixture, { ANDREW_AGENT_FAKE_PID_LOG: pidLog });
+    const result = await runCli(environmentFor(fixture), [
+      "run", fixture.target, "leave nothing behind",
+    ]);
+    assert.equal(result.code, 0, result.stderr);
+
+    const entries = await readdir(fixture.stateRoot);
+    assert.equal(entries.includes("run.lock"), false, entries.join(", "));
+    assert.equal(
+      entries.includes("install-journal.json"), false,
+      "a completed install must not leave its journal behind",
+    );
+    assert.equal(
+      entries.includes("install-preimages"), false,
+      "a completed install must not leave its preimages behind",
+    );
+    assert.ok(entries.includes("active-install.json"), entries.join(", "));
+
+    const spawned = (await readFile(pidLog, "utf8"))
+      .split("\n")
+      .filter((line) => line.trim().length > 0)
+      .map(Number);
+    assert.ok(spawned.length > 0, "the run must have spawned an app server session");
+    for (const pid of spawned) {
+      assert.throws(
+        () => process.kill(pid, 0),
+        /ESRCH/,
+        `app server child ${pid} survived the run`,
+      );
+    }
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("an interrupted install blocks the next run instead of proceeding", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const environment = environmentFor(fixture);
+    const installed = await runCli(environment, ["run", fixture.target, "install first"]);
+    assert.equal(installed.code, 0, installed.stderr);
+    const managedBefore = await readdir(join(fixture.stateRoot, "codex-home"));
+
+    // A journal left behind means a previous install did not finish. v0.1
+    // recovers a well-formed one and refuses anything it cannot account for;
+    // test/integration/install.test.mjs owns the successful rollback path.
+    await writeFile(
+      join(fixture.stateRoot, "install-journal.json"),
+      `${JSON.stringify({ version: 1, operations: [] })}\n`,
+    );
+
+    // The leftover journal invalidates the active installation rather than
+    // surfacing under INSTALL_JOURNAL, which is what an operator will read.
+    const doctor = await runCli(environment, ["doctor"]);
+    assert.equal(findings(doctor.stdout).get("ACTIVE_INSTALL"), "blocker", doctor.stdout);
+    assert.equal(doctor.code, 1);
+
+    const blocked = await runCli(environment, ["run", fixture.target, "must not proceed"]);
+    assert.equal(blocked.code, 3, `${blocked.stdout}\n${blocked.stderr}`);
+    assert.match(blocked.stderr, /Runtime preparation failed/);
+
+    assert.deepEqual(
+      await readdir(join(fixture.stateRoot, "codex-home")), managedBefore,
+      "a refused run must leave the managed home exactly as it found it",
+    );
+    assert.equal(await gitStatus(fixture.sourceRoot), "");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
