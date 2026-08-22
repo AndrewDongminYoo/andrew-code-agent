@@ -1566,6 +1566,17 @@ function withLifecycle(
   }));
 }
 
+// Which view of an active record a site needs follows one rule, and getting it
+// wrong is silent: fingerprints simply stop matching.
+//
+//   stored   — anything fingerprinted, or written back to a control file. The
+//              bytes on disk are the thing being compared, and they are in the
+//              schema whatever wrote them used.
+//   migrated — anything that reads a lifecycle, or is compared against a value
+//              some other site has already migrated.
+//
+// readActive and readJournal both return the stored view for that reason, and
+// callers migrate at the point of use.
 function migrateActive(
   stored: StoredActiveInstallMetadata,
 ): ActiveInstallMetadata {
