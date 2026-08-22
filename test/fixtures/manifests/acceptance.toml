@@ -1,3 +1,6 @@
+# Derived from the inline fixtureManifest literal in
+# test/integration/doctor.test.mjs. The two describe the same fixture profile
+# and have no link between them, so an edit to either belongs in both.
 allowed_tokens = ["HOME", "CODEX_HOME", "WORKSPACE_ROOT", "LLM_WIKI_ROOT"]
 config_keys = ["model", "model_reasoning_effort", "personality", "service_tier", "agents.max_depth", "features.goals", "features.hooks", "features.multi_agent"]
 config_source = "config.toml"

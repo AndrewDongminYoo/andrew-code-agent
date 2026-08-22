@@ -351,6 +351,11 @@ async function runCliOnPty(fixture, argv, selection) {
       "",
     ].join("\n"),
   );
+  // A missing expect must say so, not surface as a generic nonzero exit that
+  // reads like a product failure.
+  await execFile("expect", ["-v"]).catch(() => {
+    assert.fail("expect is required for the terminal approval scenario and was not found");
+  });
   try {
     const { stdout } = await execFile("expect", ["-f", script], {
       env: environmentFor(fixture),
@@ -358,7 +363,9 @@ async function runCliOnPty(fixture, argv, selection) {
     });
     return { code: 0, stdout };
   } catch (error) {
-    return { code: typeof error.code === "number" ? error.code : 1, stdout: error.stdout ?? "" };
+    if (typeof error.code !== "number")
+      assert.fail(`expect could not run the approval scenario: ${error.code ?? error.message}`);
+    return { code: error.code, stdout: error.stdout ?? "" };
   }
 }
 
