@@ -19,8 +19,10 @@ then refuses to run a second time.
   No approval request was issued in any turn, so this record says nothing
   about the approve path.
 - The coordinator hard-codes `sandboxPolicy.networkAccess: false` and
-  `writableRoots: [repositoryRoot]`, so no turn could install a package or
-  write outside the repository.
+  `writableRoots: [repositoryRoot]`, so no turn could install a package. The
+  boundary is not repository-only, though: the same policy sets
+  `excludeTmpdirEnvVar: false` and `excludeSlashTmp: false`, so the process
+  temporary directory and `/tmp` stay writable alongside the repository.
 - Authentication used a copy of the operator's dedicated agent credentials
   rather than an interactive `codex login`, so the documented first-run login
   path is **not** covered here.
@@ -164,9 +166,26 @@ msg_… agentMessage started: `src/output.js`의 플래그
 msg_… agentMessage started: `src/output.js`의 플래그 파
 ```
 
-Output grows with the square of message length. The deduplication in
-`reportTurnState` compares whole rendered lines, so each longer prefix is a
-new line and none of them are suppressed.
+The deduplication in `reportTurnState` compares whole rendered lines, so each
+longer prefix is a new line and none of them are suppressed.
+
+The growth is quadratic only up to a cap, not without bound. `withTextDelta`
+runs the accumulated text through `bounded`, and `MAX_TEXT_LENGTH` is 512, so
+once a message reaches 512 characters every later delta renders the same
+line and the deduplication does suppress it. That is what holds the 15-second
+turn to 142 reprints rather than one per token for the whole answer.
+
+### P1 — messages longer than 512 characters are never shown in full
+
+The same cap truncates the answer itself. `bounded` replaces the tail with a
+`[truncated]` marker, and the operator sees no more than that: t05 and t07 both
+ended their final `agentMessage completed` line mid-path with the marker, so
+the closing summary of what changed was cut off in the only place it was
+printed.
+
+`MAX_TEXT_LENGTH` is a reducer-side display bound, not a protocol limit —
+JSONL lines are bounded separately at 16 MiB. Whatever the right cap is, 512
+characters is shorter than the summaries the agent actually writes.
 
 ### P2 — the final message is escaped past readability
 
@@ -217,8 +236,11 @@ the query nor the result, so the operator cannot see what was fetched.
   in every shell that runs the agent. Forgetting `ANDREW_AGENT_CODEX_BIN` is a
   guaranteed Doctor blocker on this machine, where `PATH` resolves Codex
   `0.149.0` against a `0.148.0` pin.
-- Command lines report the exit code but never the output, so a failing
-  command shows that it failed and not why.
+- Command items render their output as well as their exit code:
+  `renderer.ts:38` emits a `Command output:` line whenever the item carries
+  one, and these runs printed 56 of them across 11 of 13 logs. An earlier
+  draft of this note claimed the opposite, from reading only the
+  `commandExecution` lines in a log that held 12 `Command output:` lines.
 
 ## What this suggests for the next change set
 
