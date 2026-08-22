@@ -781,6 +781,15 @@ test("a schema 1 install journal is recovered rather than rejected", async () =>
       previousActive: downgrade(journal.previousActive),
       candidateActive: downgrade(journal.candidateActive),
     });
+    // A state root written by the previous release holds schema 1 in both
+    // control files, not just the journal.
+    const activePath = join(context.stateRoot, "active-install.json");
+    await writeCanonicalControl(
+      activePath,
+      downgrade(
+        JSON.parse(await readFile(activePath, "utf8")),
+      ),
+    );
 
     await installer.recoverInterruptedInstall(context.stateRoot);
 

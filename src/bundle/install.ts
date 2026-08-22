@@ -80,8 +80,8 @@ export interface InstallJournal {
   readonly transactionId: string;
   readonly previousDigest: string | null;
   readonly candidateDigest: string;
-  readonly previousActive: ActiveInstallMetadata | null;
-  readonly candidateActive: ActiveInstallMetadata;
+  readonly previousActive: StoredActiveInstallMetadata | null;
+  readonly candidateActive: StoredActiveInstallMetadata;
   readonly operations: readonly InstallOperation[];
   readonly createdDirectories: readonly string[];
   readonly directoryWitnesses: readonly DirectoryWitness[];
@@ -251,7 +251,10 @@ export async function installBundle(
       0o600,
     );
     await checkpointHook?.("active-metadata-published");
-    await verifyManagedState(stateRoot, transaction.candidateActive);
+    await verifyManagedState(
+      stateRoot,
+      migrateActive(transaction.candidateActive),
+    );
     await checkpointHook?.("installation-verified");
     await rm(resolve(stateRoot, journalName));
     journalPublished = false;
@@ -618,14 +621,7 @@ async function readJournal(stateRoot: string): Promise<InstallJournal | null> {
     const stored = validateJournal(value);
     if (!bytes.equals(Buffer.from(`${JSON.stringify(stored, null, 2)}\n`)))
       throw new Error("noncanonical journal");
-    return {
-      ...stored,
-      previousActive:
-        stored.previousActive === null
-          ? null
-          : migrateActive(stored.previousActive),
-      candidateActive: migrateActive(stored.candidateActive),
-    };
+    return stored;
   } catch (error) {
     throw new InstallError("INVALID_STATE", "Install journal is invalid.", {
       cause: error,
@@ -1081,9 +1077,13 @@ async function restorePreviousState(
     await rename(source, target);
   }
   const active = await readActive(stateRoot);
-  if (JSON.stringify(active) !== JSON.stringify(journal.previousActive))
+  const restored =
+    journal.previousActive === null
+      ? null
+      : migrateActive(journal.previousActive);
+  if (JSON.stringify(active) !== JSON.stringify(restored))
     throw new Error("active restore mismatch");
-  await verifyManagedState(stateRoot, journal.previousActive);
+  await verifyManagedState(stateRoot, restored);
 }
 
 async function clearTransaction(
@@ -1603,7 +1603,7 @@ function fingerprintFromOwned(file: OwnedFile | undefined): FileFingerprint {
 }
 
 function metadataFingerprint(
-  metadata: ActiveInstallMetadata | null,
+  metadata: StoredActiveInstallMetadata | null,
 ): FileFingerprint {
   return metadata === null
     ? absent
