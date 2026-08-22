@@ -746,6 +746,33 @@ test("parent recovery is idempotent after both process interruption windows", as
   }
 });
 
+test("a lifecycle class that contradicts its path is rejected", async () => {
+  await withFixture(async (context) => {
+    const { installer } = await installBaseline(context);
+    const activePath = join(context.stateRoot, "active-install.json");
+    const active = JSON.parse(await readFile(activePath, "utf8"));
+    // Forging the class on an immutable path is what buys an attacker
+    // something: verifyManagedState would stop checking that file's digest.
+    await writeCanonicalControl(activePath, {
+      ...active,
+      files: active.files.map((file) =>
+        file.path === "AGENTS.md"
+          ? { ...file, lifecycle: "reset-before-run" }
+          : file,
+      ),
+    });
+    await writeFile(
+      join(context.stateRoot, "codex-home/AGENTS.md"),
+      "third-party drift\n",
+    );
+    const before = await snapshotTree(context.stateRoot);
+    const inspection = await installer.inspectInstallState(context.stateRoot);
+    assert.deepEqual(inspection.issues, ["INVALID_ACTIVE_INSTALL"]);
+    assert.equal(inspection.active, null);
+    assert.deepEqual(await snapshotTree(context.stateRoot), before);
+  });
+});
+
 test("a schema 1 install journal is recovered rather than rejected", async () => {
   await withFixture(async (context) => {
     const { installer } = await installBaseline(context);

@@ -443,9 +443,10 @@ function validateOwnedFile(
     typeof value.path !== "string" ||
     (value.mode !== "0644" && value.mode !== "0755") ||
     !isDigest(value.sha256) ||
-    (lifecycle &&
-      value.lifecycle !== "immutable" &&
-      value.lifecycle !== "reset-before-run")
+    // The class is a function of the path, not independent data. A record
+    // claiming otherwise would let a forged entry turn off the digest check
+    // on a file that must stay immutable.
+    (lifecycle && value.lifecycle !== lifecycleFor(value.path))
   )
     throw new Error("file metadata");
   assertPortablePath(value.path);
