@@ -18,6 +18,17 @@ const execFileAsync = promisify(execFile);
 const clientModule = await import("../../dist/app-server/client.js").catch(
   () => null,
 );
+const { REQUIRED_CODEX_VERSION } = await import("../../dist/constants.js");
+
+// The regeneration case must read one declared pinned binary rather than
+// whichever codex happens to be first on PATH. Unset skips with a notice; a
+// pinned binary whose version does not match the product pin fails.
+const expectedCodexVersion = `codex-cli ${REQUIRED_CODEX_VERSION}`;
+const pinnedCodexBin = process.env.ANDREW_AGENT_PINNED_CODEX_BIN;
+const pinnedCodexSkipReason =
+  pinnedCodexBin === undefined
+    ? "ANDREW_AGENT_PINNED_CODEX_BIN is unset; generated-tree verification did not run"
+    : false;
 
 function requireClient() {
   assert.notEqual(
@@ -145,22 +156,22 @@ function startInput(binary, codexHome, overrides = {}) {
   };
 }
 
-test("regenerates stable artifacts byte-for-byte", async () => {
+test("regenerates stable artifacts byte-for-byte", { skip: pinnedCodexSkipReason }, async () => {
   const temporary = await mkdtemp(join(tmpdir(), "andrew-agent-schema-"));
   try {
     assert.equal(
-      (await execFileAsync("codex", ["--version"])).stdout.trim(),
-      "codex-cli 0.148.0",
+      (await execFileAsync(pinnedCodexBin, ["--version"])).stdout.trim(),
+      expectedCodexVersion,
     );
     const generated = join(temporary, "generated");
     const schemas = join(temporary, "schemas");
-    await execFileAsync("codex", [
+    await execFileAsync(pinnedCodexBin, [
       "app-server",
       "generate-ts",
       "--out",
       generated,
     ]);
-    await execFileAsync("codex", [
+    await execFileAsync(pinnedCodexBin, [
       "app-server",
       "generate-json-schema",
       "--out",
