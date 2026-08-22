@@ -470,7 +470,7 @@ test("a run releases its lock and leaves no residue in the state root", async ()
   }
 });
 
-test("an interrupted install blocks the next run instead of proceeding", async () => {
+test("an unaccountable install journal blocks the next run instead of proceeding", async () => {
   const fixture = await createEnvironment();
   try {
     const environment = environmentFor(fixture);
@@ -478,9 +478,10 @@ test("an interrupted install blocks the next run instead of proceeding", async (
     assert.equal(installed.code, 0, installed.stderr);
     const managedBefore = await readdir(join(fixture.stateRoot, "codex-home"));
 
-    // A journal left behind means a previous install did not finish. v0.1
-    // recovers a well-formed one and refuses anything it cannot account for;
-    // test/integration/install.test.mjs owns the successful rollback path.
+    // A journal left behind means a previous install did not finish. A
+    // well-formed one is rolled back by the next run, which then proceeds;
+    // test/integration/install.test.mjs owns that path. This one is
+    // deliberately unaccountable, which is the case that must fail closed.
     await writeFile(
       join(fixture.stateRoot, "install-journal.json"),
       `${JSON.stringify({ version: 1, operations: [] })}\n`,

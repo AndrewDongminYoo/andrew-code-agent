@@ -32,6 +32,7 @@ Then put a wrapper on your PATH. A wrapper keeps working across clean builds,
 which a symlink to `dist/cli.js` does not:
 
 ```bash
+mkdir -p ~/.local/bin
 target=~/.local/bin/andrew-agent
 printf '#!/bin/sh\nexec node "%s/dist/cli.js" "$@"\n' "$PWD" > "$target"
 chmod +x "$target"
@@ -55,14 +56,31 @@ Sessions, logs, caches, and authentication material stay where they are.
 
 ## First run
 
+Authenticate the managed Codex home first. The agent never copies your
+existing credentials into it, and `codex login` does not create the directory
+— it fails outright when `CODEX_HOME` does not exist. Both the state root and
+the managed home must be owner-only, or a run refuses with exit 3.
+
+```bash
+managed="$HOME/Library/Application Support/andrew-code-agent/codex-home"
+mkdir -p "$managed"
+chmod 700 "$(dirname "$managed")" "$managed"
+CODEX_HOME="$managed" codex login
+```
+
+Skipping this is the most likely first failure: Doctor reports
+`blocker AUTH_CONFIGURATION`, and `run` exits 3 with
+`Candidate readiness failed.` before it reaches the App Server.
+
 ```bash
 andrew-agent doctor
 ```
 
-On a machine with nothing installed yet, Doctor reports
-`blocker ACTIVE_INSTALL` and exits 1. That is expected: it means the source,
-manifest, and Codex version are already fine and no candidate has been
-installed. The first `run` installs one.
+With authentication in place but nothing installed yet, Doctor still reports
+`ACTIVE_INSTALL`, `BUNDLE_DIGEST`, and `STRICT_CONFIG` as blockers and exits
+
+1. That is expected — all three describe an installation that does not exist
+   yet, and the first `run` creates it.
 
 ```bash
 andrew-agent run /path/to/repository "describe the change you want"
@@ -151,8 +169,12 @@ when you are sure none is running.
 
 **Doctor reports `blocker ACTIVE_INSTALL` after a previous run was killed.**
 An install did not finish, so `install-journal.json` is still present and the
-installation is not considered valid. The next `run` refuses with exit 3 and
-changes nothing rather than installing over an unknown state.
+installation is not yet considered valid. Run the command again: a well-formed
+journal is rolled back automatically before the new candidate is installed, so
+this usually resolves itself. Do not delete the journal or the preimages —
+they are the material that rollback consumes. Only recovery state the program
+cannot account for, such as a malformed or orphaned journal, makes `run` refuse
+with exit 3 rather than install over an unknown state.
 
 **Doctor reports `blocker SOURCE_DIRTY`.** Commit or stash the source root, or
 point `ANDREW_AGENT_CODEX_SOURCE` at a clean tree.
