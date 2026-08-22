@@ -1152,3 +1152,42 @@ test("still rejects a completion whose items were never loaded", () => {
     "notLoaded carries no observed inventory and stays fail-closed",
   );
 });
+
+test("refuses a summary completion whose retained inventory is corrupted", () => {
+  const api = reducer();
+  const sound = { id: "message-1", type: "agentMessage", phase: "completed", value: { text: "ACKNOWLEDGED" } };
+
+  const proxied = api.createTurnState("thread-1", "turn-1");
+  proxied.items.set("message-1", new Proxy(sound, {}));
+  assert.throws(
+    () => api.reduceServerMessage(proxied, summaryCompletion()),
+    { code: "INVALID_SERVER_EVENT" },
+    "a proxied retained item must not reach the renderer through the summary path",
+  );
+
+  let getterCalls = 0;
+  const accessorBacked = api.createTurnState("thread-1", "turn-1");
+  const hostile = { id: "message-1", type: "agentMessage", phase: "completed" };
+  Object.defineProperty(hostile, "value", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error("value getter must not run");
+    },
+  });
+  accessorBacked.items.set("message-1", hostile);
+  assert.throws(
+    () => api.reduceServerMessage(accessorBacked, summaryCompletion()),
+    { code: "INVALID_SERVER_EVENT" },
+    "an accessor-backed retained item must fail closed, not settle",
+  );
+  assert.equal(getterCalls, 0, "the hostile accessor must never be invoked");
+
+  const omitted = api.createTurnState("thread-1", "turn-1");
+  omitted.omittedItemStates.set("message-1", new Proxy(sound, {}));
+  assert.throws(
+    () => api.reduceServerMessage(omitted, summaryCompletion()),
+    { code: "INVALID_SERVER_EVENT" },
+    "the omitted-item authority set is retained too and must be validated",
+  );
+});

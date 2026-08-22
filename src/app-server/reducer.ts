@@ -710,8 +710,14 @@ export function reduceServerMessage(
     // is not the turn's complete inventory, so it settles the status and
     // leaves every inventory claim as observed while streaming.
     if (turn.itemsView === "summary") {
+      // The retained inventory is carried straight to the renderer, so it has
+      // to clear the same stored-state validation every other path applies.
       const settled: TurnState = {
         ...state,
+        items: new Map(validatedStoredEntries(state.items)),
+        omittedItemStates: new Map(
+          validatedStoredEntries(state.omittedItemStates),
+        ),
         terminalStatus: statuses[turn.status]!,
       };
       if (state.terminalStatus === "running") return settled;
