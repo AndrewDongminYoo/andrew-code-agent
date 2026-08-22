@@ -272,8 +272,15 @@ test("first install writes only the candidate ownership inventory", async () => 
     const active = JSON.parse(
       await readFile(join(context.stateRoot, "active-install.json"), "utf8"),
     );
+    assert.equal(active.schemaVersion, 2);
     assert.equal(active.bundleDigest, artifact.metadata.bundleDigest);
-    assert.deepEqual(active.files, artifact.metadata.files);
+    assert.deepEqual(
+      active.files,
+      artifact.metadata.files.map((file) => ({
+        ...file,
+        lifecycle: file.path === "config.toml" ? "reset-before-run" : "immutable",
+      })),
+    );
     await assert.rejects(
       lstat(join(context.stateRoot, "install-journal.json")),
       { code: "ENOENT" },
@@ -323,6 +330,74 @@ test("same digest is an exact mtime-preserving no-op", async () => {
   });
 });
 
+test("a runtime rewrite of the managed config is reset by the next install", async () => {
+  await withFixture(async (context) => {
+    const { installer, first } = await installBaseline(context);
+    const config = join(context.stateRoot, "codex-home", "config.toml");
+    const rendered = await readFile(config, "utf8");
+    // Codex appends project trust to its own config and rewrites it owner-only
+    // on its first session in a repository.
+    await writeFile(
+      config,
+      `${rendered}\n[projects."/tmp/repository"]\ntrust_level = "trusted"\n`,
+    );
+    await chmod(config, 0o600);
+    await installer.installBundle(context.stateRoot, first);
+    assert.equal(await readFile(config, "utf8"), rendered);
+    assert.equal((await lstat(config)).mode & 0o777, 0o644);
+  });
+});
+
+test("an unowned reset-before-run target is refused without mutation", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    const first = await createArtifact(
+      context.artifactsRoot,
+      "first",
+      firstEntries,
+    );
+    await seedProtected(context.stateRoot);
+    await writeFile(
+      join(context.stateRoot, "codex-home/config.toml"),
+      "third-party config\n",
+      { mode: 0o644 },
+    );
+    const before = await snapshotTree(context.stateRoot);
+    await assertInstallError(
+      installer.installBundle(context.stateRoot, first),
+      "OWNERSHIP_CONFLICT",
+    );
+    assert.deepEqual(await snapshotTree(context.stateRoot), before);
+  });
+});
+
+test("a schema 1 active record is migrated in memory rather than rejected", async () => {
+  await withFixture(async (context) => {
+    const { installer, first } = await installBaseline(context);
+    await writeCanonicalControl(
+      join(context.stateRoot, "active-install.json"),
+      {
+        schemaVersion: 1,
+        bundleDigest: first.metadata.bundleDigest,
+        files: first.metadata.files,
+      },
+    );
+    const inspection = await installer.inspectInstallState(context.stateRoot);
+    assert.deepEqual(inspection.issues, []);
+    assert.equal(inspection.active.schemaVersion, 2);
+    assert.equal(
+      inspection.active.files.find((file) => file.path === "config.toml")
+        .lifecycle,
+      "reset-before-run",
+    );
+    const config = join(context.stateRoot, "codex-home", "config.toml");
+    const rendered = await readFile(config, "utf8");
+    await writeFile(config, `${rendered}[projects."/tmp/repository"]\n`);
+    await installer.installBundle(context.stateRoot, first);
+    assert.equal(await readFile(config, "utf8"), rendered);
+  });
+});
+
 test("ownership conflicts and managed drift are rejected without mutation", async () => {
   for (const scenario of ["matching-unowned", "managed-drift"]) {
     await withFixture(async (context) => {
@@ -340,7 +415,7 @@ test("ownership conflicts and managed drift are rejected without mutation", asyn
         );
       else
         await writeFile(
-          join(context.stateRoot, "codex-home/config.toml"),
+          join(context.stateRoot, "codex-home/AGENTS.md"),
           "third-party drift\n",
         );
       const before = await snapshotTree(context.stateRoot);
@@ -457,7 +532,6 @@ test("all journal-published ordinary failures roll back immediately", async () =
       "operation:1",
       "operation:2",
       "operation:3",
-      "operation:4",
       "active-metadata-published",
       "installation-verified",
     ]);
@@ -672,6 +746,135 @@ test("parent recovery is idempotent after both process interruption windows", as
   }
 });
 
+test("an upgrade interrupted over a schema 1 active record is recoverable", async () => {
+  await withFixture(async (context) => {
+    const installer = requireInstaller();
+    const first = await createArtifact(
+      context.artifactsRoot,
+      "first",
+      firstEntries,
+    );
+    await seedProtected(context.stateRoot);
+    await installer.installBundle(context.stateRoot, first);
+    // A state root left by the previous release, upgraded by this installer.
+    const activePath = join(context.stateRoot, "active-install.json");
+    const active = JSON.parse(await readFile(activePath, "utf8"));
+    await writeCanonicalControl(activePath, {
+      schemaVersion: 1,
+      bundleDigest: active.bundleDigest,
+      files: active.files.map(({ path, mode, sha256 }) => ({
+        path,
+        mode,
+        sha256,
+      })),
+    });
+    const upgrade = await createArtifact(
+      context.artifactsRoot,
+      "upgrade-over-legacy",
+      upgradeEntries,
+    );
+    await interruptInstall(context.stateRoot, upgrade, "operation:1");
+    // The journal is mixed on purpose: previousActive fingerprints the schema 1
+    // control file on disk, candidateActive is what will replace it.
+    const journal = await readJournalFixture(context.stateRoot);
+    assert.equal(journal.previousActive.schemaVersion, 1);
+    assert.equal(journal.candidateActive.schemaVersion, 2);
+
+    await installer.recoverInterruptedInstall(context.stateRoot);
+
+    await assert.rejects(
+      lstat(join(context.stateRoot, "install-journal.json")),
+      { code: "ENOENT" },
+    );
+    assert.equal(
+      await readFile(join(context.stateRoot, "codex-home/AGENTS.md"), "utf8"),
+      "first instructions\n",
+    );
+  });
+});
+
+test("a lifecycle class that contradicts its path is rejected", async () => {
+  await withFixture(async (context) => {
+    const { installer } = await installBaseline(context);
+    const activePath = join(context.stateRoot, "active-install.json");
+    const active = JSON.parse(await readFile(activePath, "utf8"));
+    // Forging the class on an immutable path is what buys an attacker
+    // something: verifyManagedState would stop checking that file's digest.
+    await writeCanonicalControl(activePath, {
+      ...active,
+      files: active.files.map((file) =>
+        file.path === "AGENTS.md"
+          ? { ...file, lifecycle: "reset-before-run" }
+          : file,
+      ),
+    });
+    await writeFile(
+      join(context.stateRoot, "codex-home/AGENTS.md"),
+      "third-party drift\n",
+    );
+    const before = await snapshotTree(context.stateRoot);
+    const inspection = await installer.inspectInstallState(context.stateRoot);
+    assert.deepEqual(inspection.issues, ["INVALID_ACTIVE_INSTALL"]);
+    assert.equal(inspection.active, null);
+    assert.deepEqual(await snapshotTree(context.stateRoot), before);
+  });
+});
+
+test("a schema 1 install journal is recovered rather than rejected", async () => {
+  await withFixture(async (context) => {
+    const { installer } = await installBaseline(context);
+    // config.toml is identical in both bundles, so the previous release and
+    // this one agree on the operation set and the journal below is a faithful
+    // schema 1 record rather than a shape that never existed.
+    const upgrade = await createArtifact(
+      context.artifactsRoot,
+      "legacy-journal",
+      firstEntries.map((entry) =>
+        entry.path === "AGENTS.md"
+          ? { ...entry, content: "legacy journal instructions\n" }
+          : entry,
+      ),
+    );
+    await interruptInstall(context.stateRoot, upgrade, "operation:1");
+    const journalPath = join(context.stateRoot, "install-journal.json");
+    const journal = await readJournalFixture(context.stateRoot);
+    const downgrade = (active) =>
+      active === null
+        ? null
+        : {
+            schemaVersion: 1,
+            bundleDigest: active.bundleDigest,
+            files: active.files.map(({ path, mode, sha256 }) => ({
+              path,
+              mode,
+              sha256,
+            })),
+          };
+    await writeCanonicalControl(journalPath, {
+      ...journal,
+      previousActive: downgrade(journal.previousActive),
+      candidateActive: downgrade(journal.candidateActive),
+    });
+    // A state root written by the previous release holds schema 1 in both
+    // control files, not just the journal.
+    const activePath = join(context.stateRoot, "active-install.json");
+    await writeCanonicalControl(
+      activePath,
+      downgrade(
+        JSON.parse(await readFile(activePath, "utf8")),
+      ),
+    );
+
+    await installer.recoverInterruptedInstall(context.stateRoot);
+
+    await assert.rejects(lstat(journalPath), { code: "ENOENT" });
+    assert.equal(
+      await readFile(join(context.stateRoot, "codex-home/AGENTS.md"), "utf8"),
+      "first instructions\n",
+    );
+  });
+});
+
 test("recovery conflict performs zero mutation", async () => {
   await withFixture(async (context) => {
     const { installer } = await installBaseline(context);
@@ -701,9 +904,13 @@ test("inspectInstallState is a strictly read-only stable snapshot", async () => 
     const inspection = await installer.inspectInstallState(context.stateRoot);
     assert.deepEqual(inspection, {
       active: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         bundleDigest: first.metadata.bundleDigest,
-        files: first.metadata.files,
+        files: first.metadata.files.map((file) => ({
+          ...file,
+          lifecycle:
+            file.path === "config.toml" ? "reset-before-run" : "immutable",
+        })),
       },
       journal: null,
       issues: [],
@@ -879,7 +1086,7 @@ test("inspection reports drift and invalid recovery material without mutation", 
       const { installer } = await installBaseline(context);
       if (scenario === "managed-drift") {
         await writeFile(
-          join(context.stateRoot, "codex-home/config.toml"),
+          join(context.stateRoot, "codex-home/AGENTS.md"),
           "inspection drift\n",
         );
       } else {

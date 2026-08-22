@@ -44,7 +44,7 @@ a layer that contributes no coverage.
 Check that the directory holds the files you expect before reading a green
 aggregate as evidence.
 
-Two gates are opt-in, so a default green `pnpm check` does not cover them:
+Three gates are opt-in, so a default green `pnpm check` does not cover them:
 
 - `test/contract/client.test.mjs` verifies the generated trees byte-for-byte
   only when `ANDREW_AGENT_PINNED_CODEX_BIN` points at a `codex` binary whose
@@ -54,6 +54,11 @@ Two gates are opt-in, so a default green `pnpm check` does not cover them:
 - `test/integration/live-manifest.test.mjs` skips itself unless
   `ANDREW_AGENT_CODEX_SOURCE` is set; it is the only test that reads a real
   bundle source tree.
+- The two live smokes in `test/e2e/acceptance.test.mjs` skip unless
+  `ANDREW_AGENT_REAL_SMOKE` is set, and the two-run gate additionally needs
+  `ANDREW_AGENT_SMOKE_AUTH`.
+  They are the only tests that spawn a real Codex, and the only place a real
+  Codex writes back into a managed home between two runs.
 
 Run the pinned form before trusting the generated contract:
 
@@ -101,6 +106,15 @@ path:
 1. **Install** (`src/bundle/install.ts`) applies the artifact into `codex-home`
    through a journal with preimages, so an interrupted install is recoverable
    by `recoverInterruptedInstall` on the next run.
+   Each installed file carries a lifecycle class in `active-install.json` at
+   schema 2, and the installer assigns it: `config.toml` is
+   `reset-before-run`, everything else is `immutable`.
+   A reset-before-run file stays out of the journal and is converged by
+   `resetManagedFiles` on every install, because Codex rewrites the file it
+   owns between runs and the journal's preimage check assumes the opposite.
+   A schema 1 record is migrated in memory rather than rejected, and so is a
+   schema 1 install journal, after each is checked against its canonical bytes
+   in the shape it was written in.
 1. **Doctor gate** (`src/commands/doctor.ts`) classifies findings as
    `blocker`, `warning`, or `ready`; any blocker aborts the run before the App
    Server starts.
@@ -148,6 +162,12 @@ Removing one silently widens the product contract:
   resource policy, not a generated schema maximum.
 - Every rendered and printed string is escaped and byte-bounded before it
   reaches a terminal.
+- An immutable installed file that drifts blocks the run; only a
+  reset-before-run file is reconciled, and a reset target the active install
+  does not own is refused rather than overwritten.
+  Doctor's strict-config shadow gives up the digest pin for that one file in
+  exchange, so it validates the bytes on disk rather than the bytes installed;
+  its mode is still constrained, to `0600` on top of the ordinary two.
 - Approvals fail closed on any unknown or malformed request, and the
   coordinator cleans up before releasing the lock.
 - A stale publication lock is not auto-recovered.
