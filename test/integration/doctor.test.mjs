@@ -544,6 +544,14 @@ test("classifies missing and drifted active installations", async (t) => {
       assert.equal(finding(result, "STRICT_CONFIG").severity, "ready");
     });
   });
+  await t.test("a reset-before-run file at an unexpected mode still blocks", async () => {
+    await withFixture({}, async (fixture) => {
+      await chmod(join(fixture.paths.codexHome, "config.toml"), 0o666);
+      const result = await runUnchanged(fixture);
+      assert.equal(result.exitCode, 1);
+      assert.equal(finding(result, "STRICT_CONFIG").severity, "blocker");
+    });
+  });
   await t.test("valid candidate difference requires installation", async () => {
     await withFixture({}, async (fixture) => {
       await commitFile(

@@ -163,6 +163,9 @@ Removing one silently widens the product contract:
 - An immutable installed file that drifts blocks the run; only a
   reset-before-run file is reconciled, and a reset target the active install
   does not own is refused rather than overwritten.
+  Doctor's strict-config shadow gives up the digest pin for that one file in
+  exchange, so it validates the bytes on disk rather than the bytes installed;
+  its mode is still constrained, to `0600` on top of the ordinary two.
 - Approvals fail closed on any unknown or malformed request, and the
   coordinator cleans up before releasing the lock.
 - A stale publication lock is not auto-recovered.
