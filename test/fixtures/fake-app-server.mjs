@@ -57,6 +57,9 @@ const script = (await readFile(scriptPath, "utf8"))
 const editPath = process.env.ANDREW_AGENT_FAKE_EDIT_PATH;
 const editText = process.env.ANDREW_AGENT_FAKE_EDIT_TEXT ?? "fixture edit\n";
 const exitAfterTurn = process.env.ANDREW_AGENT_FAKE_EXIT_AFTER_TURN === "1";
+// Records what the client actually answered, so a scenario can observe the
+// decision instead of inferring it from the turn's outcome.
+const decisionLog = process.env.ANDREW_AGENT_FAKE_DECISION_LOG;
 
 const pending = new Map();
 
@@ -140,6 +143,8 @@ process.stdin.on("data", (chunk) => {
       const resolve = pending.get(message.id);
       if (resolve !== undefined) {
         pending.delete(message.id);
+        if (decisionLog !== undefined)
+          void appendFile(decisionLog, `${JSON.stringify(message)}\n`);
         resolve(message);
       }
       continue;

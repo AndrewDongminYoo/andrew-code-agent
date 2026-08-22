@@ -280,3 +280,110 @@ test("doctor reports every finding ready once a candidate is installed", async (
     await rm(fixture.root, { recursive: true, force: true });
   }
 });
+
+// One scripted approval request followed by the completion notification.
+async function writeApprovalScript(fixture) {
+  const requests = await readFile(
+    join(productRoot, "test", "fixtures", "protocol", "approval-requests.jsonl"), "utf8",
+  );
+  const turn = await readFile(
+    join(productRoot, "test", "fixtures", "protocol", "turn-success.jsonl"), "utf8",
+  );
+  const scriptPath = join(fixture.root, "approval.jsonl");
+  const first = requests.split("\n").find((line) => line.trim().length > 0);
+  const completion = turn.trimEnd().split("\n").at(-1);
+  await writeFile(scriptPath, `${first}\n${completion}\n`);
+  return scriptPath;
+}
+
+async function decisions(logPath) {
+  const contents = await readFile(logPath, "utf8").catch(() => "");
+  return contents
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line));
+}
+
+test("a gated action is declined fail-closed when stdin is not a terminal", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const scriptPath = await writeApprovalScript(fixture);
+    const decisionLog = join(fixture.root, "decisions.jsonl");
+    await writeCodexWrapper(fixture, {
+      ANDREW_AGENT_FAKE_SCRIPT: scriptPath,
+      ANDREW_AGENT_FAKE_DECISION_LOG: decisionLog,
+    });
+
+    const result = await runCli(environmentFor(fixture), [
+      "run", fixture.target, "request a gated action",
+    ]);
+    assert.equal(result.code, 0, `${result.stdout}\n${result.stderr}`);
+
+    const answered = await decisions(decisionLog);
+    assert.equal(answered.length, 1, "the gated action must be answered exactly once");
+    assert.equal(
+      answered[0].result.decision, "decline",
+      "a non-terminal stdin must never approve a gated action",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+// answerApproval refuses to prompt unless stdin is a terminal, so the approve
+// path can only be exercised over a pty. expect ships with macOS, which this
+// product already requires.
+async function runCliOnPty(fixture, argv, selection) {
+  const script = join(fixture.root, "approve.exp");
+  await writeFile(
+    script,
+    [
+      "set timeout 60",
+      `spawn ${process.execPath} ${cliPath} ${argv.map((value) => `{${value}}`).join(" ")}`,
+      "expect {",
+      `  "Selection:" { send "${selection}\\r" }`,
+      '  timeout { puts "PROMPT_TIMEOUT"; exit 90 }',
+      "}",
+      "expect eof",
+      "catch wait result",
+      "exit [lindex $result 3]",
+      "",
+    ].join("\n"),
+  );
+  try {
+    const { stdout } = await execFile("expect", ["-f", script], {
+      env: environmentFor(fixture),
+      timeout: 90_000,
+    });
+    return { code: 0, stdout };
+  } catch (error) {
+    return { code: typeof error.code === "number" ? error.code : 1, stdout: error.stdout ?? "" };
+  }
+}
+
+test("a gated action is approved when the operator answers on a terminal", async () => {
+  const fixture = await createEnvironment();
+  try {
+    const scriptPath = await writeApprovalScript(fixture);
+    const decisionLog = join(fixture.root, "decisions.jsonl");
+    await writeCodexWrapper(fixture, {
+      ANDREW_AGENT_FAKE_SCRIPT: scriptPath,
+      ANDREW_AGENT_FAKE_DECISION_LOG: decisionLog,
+    });
+
+    const result = await runCliOnPty(
+      fixture, ["run", fixture.target, "request a gated action"], "1",
+    );
+    assert.notEqual(result.code, 90, "the approval prompt must reach the terminal");
+    assert.equal(result.code, 0, result.stdout);
+
+    const answered = await decisions(decisionLog);
+    assert.equal(answered.length, 1);
+    assert.equal(
+      answered[0].result.decision, "accept",
+      "selecting the accept choice must send an accept decision",
+    );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
