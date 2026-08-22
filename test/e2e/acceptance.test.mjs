@@ -601,21 +601,15 @@ test(
         { timeoutMs: 300_000 },
       );
 
-      // The turn itself succeeds against the real service: a thread and turn
-      // are created, the model answers, and the repository is untouched.
+      // A real turn completes end to end: a thread and turn are created, the
+      // model answers, the repository is untouched, and the product reports
+      // it as completed. That last part only holds because the reducer
+      // accepts the summary item view the real server sends.
       assert.match(turn.stdout, /Thread ID: [0-9a-f-]{36}/, turn.stderr);
       assert.match(turn.stdout, /agentMessage completed: ACKNOWLEDGED/, turn.stdout);
       assert.match(turn.stdout, /Final Git status: *$/m, turn.stdout);
-
-      // ...and v0.1 still reports it as failed. codex-cli 0.148.0 sends
-      // turn/completed with itemsView "summary", while the reducer accepts
-      // only "full" because it treats that payload as the complete final
-      // inventory. Every real turn therefore fails closed. This assertion
-      // pins the current behavior; when the reducer learns to handle a
-      // summary view without claiming inventory authority, it will fail here
-      // and this scenario should assert completed and exit 0 instead.
-      assert.match(turn.stdout, /Terminal status: failed/, turn.stdout);
-      assert.equal(turn.code, 1, turn.stderr);
+      assert.match(turn.stdout, /Terminal status: completed/, turn.stdout);
+      assert.equal(turn.code, 0, turn.stderr);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
     }
