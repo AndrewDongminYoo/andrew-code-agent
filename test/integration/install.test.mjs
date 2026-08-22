@@ -323,6 +323,24 @@ test("same digest is an exact mtime-preserving no-op", async () => {
   });
 });
 
+test("a runtime rewrite of the managed config is reset by the next install", async () => {
+  await withFixture(async (context) => {
+    const { installer, first } = await installBaseline(context);
+    const config = join(context.stateRoot, "codex-home", "config.toml");
+    const rendered = await readFile(config, "utf8");
+    // Codex appends project trust to its own config and rewrites it owner-only
+    // on its first session in a repository.
+    await writeFile(
+      config,
+      `${rendered}\n[projects."/tmp/repository"]\ntrust_level = "trusted"\n`,
+    );
+    await chmod(config, 0o600);
+    await installer.installBundle(context.stateRoot, first);
+    assert.equal(await readFile(config, "utf8"), rendered);
+    assert.equal((await lstat(config)).mode & 0o777, 0o644);
+  });
+});
+
 test("ownership conflicts and managed drift are rejected without mutation", async () => {
   for (const scenario of ["matching-unowned", "managed-drift"]) {
     await withFixture(async (context) => {
