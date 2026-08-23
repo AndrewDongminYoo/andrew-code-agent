@@ -222,7 +222,9 @@ pinned version. Install the pinned version, or point
 
 **A run exits 3 with `Repository preflight failed`.** The target is not a Git
 worktree, is not clean, or contains a submodule. The line names which:
-`GIT_WORKTREE_DIRTY`, `GIT_REPOSITORY_NOT_FOUND`, and so on.
+`NOT_GIT_REPOSITORY`, `GIT_WORKTREE_DIRTY`, `GIT_HEAD_UNAVAILABLE`,
+`GIT_STATUS_FAILED`, or `GIT_SNAPSHOT_RACE`. A submodule is reported by its
+own sentence rather than a code.
 `Runtime preparation failed` and `Candidate readiness failed` name their cause
 the same way — the first with the failing installer or path check, the second
 with every Doctor blocker that stopped the run. Those blocker codes are the
