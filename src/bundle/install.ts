@@ -57,7 +57,7 @@ export type FileFingerprint =
   | { readonly kind: "absent" }
   | {
       readonly kind: "file";
-      readonly mode: FileMode | "0600";
+      readonly mode: FileMode;
       readonly sha256: string;
     };
 
@@ -443,7 +443,7 @@ function validateOwnedFile(
         : ["path", "mode", "sha256"],
     ) ||
     typeof value.path !== "string" ||
-    (value.mode !== "0644" && value.mode !== "0755") ||
+    !isFileMode(value.mode) ||
     !isDigest(value.sha256) ||
     // The class is a function of the path, not independent data. A record
     // claiming otherwise would let a forged entry turn off the digest check
@@ -746,7 +746,7 @@ function validateFingerprint(value: unknown): asserts value is FileFingerprint {
       ? !onlyKeys(value, ["kind"])
       : value.kind !== "file" ||
         !onlyKeys(value, ["kind", "mode", "sha256"]) ||
-        (value.mode !== "0644" && value.mode !== "0755") ||
+        !isFileMode(value.mode) ||
         !isDigest(value.sha256))
   )
     throw new Error("fingerprint");
@@ -1534,7 +1534,7 @@ async function fingerprintPath(path: string): Promise<FileFingerprint> {
       throw new Error("not a regular file");
     return {
       kind: "file",
-      mode: normalizeFingerprintMode(stat.mode),
+      mode: normalizeMode(stat.mode),
       sha256: sha256(await readFile(path)),
     };
   } catch (error) {
@@ -1653,14 +1653,14 @@ function sameOwned(
 
 function normalizeMode(mode: number): FileMode {
   const normalized = mode & 0o777;
+  if (normalized === 0o600) return "0600";
   if (normalized === 0o644) return "0644";
   if (normalized === 0o755) return "0755";
   throw new Error("unsupported file mode");
 }
 
-function normalizeFingerprintMode(mode: number): FileMode | "0600" {
-  if ((mode & 0o777) === 0o600) return "0600";
-  return normalizeMode(mode);
+function isFileMode(value: unknown): value is FileMode {
+  return value === "0600" || value === "0644" || value === "0755";
 }
 
 async function atomicJson(

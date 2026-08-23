@@ -225,6 +225,12 @@ function renderedText(bundle, targetPath) {
   return new TextDecoder().decode(file.bytes);
 }
 
+function renderedMode(bundle, targetPath) {
+  const file = bundle.files.find((entry) => entry.targetPath === targetPath);
+  assert.notEqual(file, undefined, `${targetPath} must be rendered`);
+  return file.mode;
+}
+
 function assertRenderError(error, code) {
   return error instanceof renderModule.RenderError && error.code === code;
 }
@@ -577,5 +583,15 @@ test("rejects config scalar-table collisions while allowing exact-key overrides"
       renderBundle(repository, scalarThenTable, {}),
       (error) => assertRenderError(error, "CONFIG_INVALID"),
     );
+  });
+});
+
+// Codex rewrites its own config owner-only on every session, so the bundle
+// installs it that way rather than widening it back to 0644 on each run.
+test("the rendered config is owner-only and the rendered hooks file is not", async () => {
+  await withSourceRepository(async (repository) => {
+    const bundle = await renderBundle(repository, manifest(), {});
+    assert.equal(renderedMode(bundle, "config.toml"), 0o600);
+    assert.equal(renderedMode(bundle, "hooks.json"), 0o644);
   });
 });

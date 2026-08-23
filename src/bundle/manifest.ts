@@ -1,6 +1,6 @@
 import { parse } from "smol-toml";
 
-export type FileMode = "0644" | "0755";
+export type FileMode = "0600" | "0644" | "0755";
 
 export type CapabilityName = "oracle" | "shared-memory";
 
@@ -577,6 +577,9 @@ function readPatternIds(table: Record<string, unknown>): readonly string[] {
   return [...unique].sort(compareCodeUnits);
 }
 
+// A manifest cannot declare 0600. Only the rendered config takes it, because
+// Codex rewrites that file owner-only itself; bundled sources stay on the two
+// modes the manifest has always allowed.
 function readMode(value: string): FileMode {
   if (value === "0644" || value === "0755") {
     return value;
