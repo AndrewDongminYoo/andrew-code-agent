@@ -30,12 +30,14 @@ export interface TurnState {
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
 }
 
-// UTF-16 code units, unlike the renderer's escaped-byte bound. Held at 512 the
-// stored message was already truncated before rendering could matter.
-const MAX_TEXT_LENGTH = 4096;
-// Command output keeps the smaller bound: the renderer shows one bounded line
-// of it while the command runs, so storing more would never be read.
-const MAX_OUTPUT_LENGTH = 512;
+// UTF-16 code units, unlike the renderer's escaped-byte bound. Every retained
+// field takes the smaller one: a turn can carry many of them — up to 64 paths
+// and kinds per file change alone — and the renderer shows one bounded line of
+// each however much is stored.
+const MAX_FIELD_LENGTH = 512;
+// Only a message is kept at the larger size, because it is the one value the
+// operator reads in full and 512 cut real summaries mid-sentence.
+const MAX_MESSAGE_LENGTH = 4096;
 const MAX_ITEMS = 64;
 const MAX_OMITTED_ITEM_AUTHORITY = 64;
 const MAX_WARNINGS = 16;
@@ -134,7 +136,7 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function bounded(value: string, limit = MAX_TEXT_LENGTH): string {
+function bounded(value: string, limit = MAX_FIELD_LENGTH): string {
   return value.length <= limit
     ? value
     : `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
@@ -341,7 +343,7 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
   let value: unknown = { label: bounded(type) };
 
   if (type === "agentMessage" || type === "plan") {
-    value = { text: bounded(text(raw.text) ?? "") };
+    value = { text: bounded(text(raw.text) ?? "", MAX_MESSAGE_LENGTH) };
   } else if (type === "reasoning") {
     value = { label: "Reasoning updated" };
   } else if (type === "commandExecution") {
@@ -355,7 +357,7 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
       exitCode: typeof raw.exitCode === "number" ? raw.exitCode : null,
       output:
         typeof raw.aggregatedOutput === "string"
-          ? bounded(raw.aggregatedOutput, MAX_OUTPUT_LENGTH)
+          ? bounded(raw.aggregatedOutput)
           : null,
     };
   } else if (type === "fileChange") {
@@ -506,7 +508,10 @@ function withTextDelta(item: ItemState, delta: unknown): ItemState {
       ? item.value.text
       : "";
   if (typeof delta !== "string") throw new ReducerError("INVALID_SERVER_EVENT");
-  return { ...item, value: { text: bounded(`${current}${delta}`) } };
+  return {
+    ...item,
+    value: { text: bounded(`${current}${delta}`, MAX_MESSAGE_LENGTH) },
+  };
 }
 
 export function createTurnState(threadId: string, turnId: string): TurnState {
@@ -607,10 +612,7 @@ export function reduceServerMessage(
       const previous = typeof value.output === "string" ? value.output : "";
       return {
         ...item,
-        value: {
-          ...value,
-          output: bounded(`${previous}${params.delta}`, MAX_OUTPUT_LENGTH),
-        },
+        value: { ...value, output: bounded(`${previous}${params.delta}`) },
       };
     });
   }

@@ -1191,3 +1191,30 @@ test("refuses a summary completion whose retained inventory is corrupted", () =>
     "the omitted-item authority set is retained too and must be validated",
   );
 });
+
+// Raising the message bound must not raise every other retained field with it:
+// a turn can carry many long metadata values, and the renderer shows only a
+// bounded line of each regardless.
+test("only message text takes the larger retained bound", () => {
+  const long = "x".repeat(5000);
+  const state = stateWith([
+    completed(item("agentMessage", "msg-1", { text: long })),
+    completed(item("fileChange", "files-1", { changes: [{ path: long, kind: long }], status: "completed" })),
+    completed(item("commandExecution", "cmd-1", { command: long, cwd: long, exitCode: 0, aggregatedOutput: long })),
+    { method: "warning", params: { threadId: "thread-1", message: long } },
+  ]);
+  const message = state.items.get("msg-1").value.text;
+  assert.ok(message.length > 512, `message kept only ${message.length}`);
+  assert.ok(message.length <= 4096, `message kept ${message.length}`);
+  const files = state.items.get("files-1").value.files[0];
+  const command = state.items.get("cmd-1").value;
+  for (const [name, value] of [
+    ["file path", files.path],
+    ["file kind", files.kind],
+    ["command", command.command],
+    ["cwd", command.cwd],
+    ["output", command.output],
+    ["warning", state.warnings[0]],
+  ])
+    assert.ok(value.length <= 512, `${name} kept ${value.length}`);
+});
