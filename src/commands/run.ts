@@ -413,6 +413,12 @@ export function diagnosticFor(error: unknown, phase: string): string {
   }
   if (error instanceof ReadinessError)
     return withCause("Candidate readiness failed", blockerList(error.blockers));
+  // Resolving the runtime paths is preparation whatever phase the caller
+  // labelled it: resume does it while still in its local phase, and reporting
+  // a missing codex binary as a thread lookup failure sends the operator to
+  // the wrong place.
+  if (error instanceof RuntimePathError)
+    return withCause("Runtime preparation failed", error.code);
   if (phase === "app-server") return "App Server operation failed.";
   if (phase === "local") return "Local thread lookup failed.";
   if (phase === "preflight")

@@ -408,6 +408,22 @@ test("a readiness blocker names itself on stderr instead of one bare line", asyn
   assert.doesNotMatch(stderr, /OPTIONAL_ORACLE/);
 });
 
+test("resume blames the path check, not thread lookup, when paths fail", async (t) => {
+  const { resumeModule } = modules();
+  const pathsModule = await import("../../dist/runtime/paths.js");
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const harness = operationHarness(repositoryRoot, {});
+  harness.dependencies.resolveRuntimePaths = async () => {
+    throw new pathsModule.RuntimePathError("CODEX_BINARY_NOT_FOUND", "no codex");
+  };
+  const output = capture();
+  assert.equal(await resumeModule.resumeCommand("thread-1", "prompt", output, harness.dependencies), 3);
+  const { stderr } = output.output();
+  assert.match(stderr, /CODEX_BINARY_NOT_FOUND/);
+  assert.doesNotMatch(stderr, /thread lookup/i);
+});
+
 test("a preflight refusal names the check that refused", async (t) => {
   const { runModule } = modules();
   const repositoryRoot = await createRepository();
