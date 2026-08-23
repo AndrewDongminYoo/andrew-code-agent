@@ -30,7 +30,12 @@ export interface TurnState {
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
 }
 
-const MAX_TEXT_LENGTH = 512;
+// UTF-16 code units, unlike the renderer's escaped-byte bound. Held at 512 the
+// stored message was already truncated before rendering could matter.
+const MAX_TEXT_LENGTH = 4096;
+// Command output keeps the smaller bound: the renderer shows one bounded line
+// of it while the command runs, so storing more would never be read.
+const MAX_OUTPUT_LENGTH = 512;
 const MAX_ITEMS = 64;
 const MAX_OMITTED_ITEM_AUTHORITY = 64;
 const MAX_WARNINGS = 16;
@@ -129,10 +134,10 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function bounded(value: string): string {
-  return value.length <= MAX_TEXT_LENGTH
+function bounded(value: string, limit = MAX_TEXT_LENGTH): string {
+  return value.length <= limit
     ? value
-    : `${value.slice(0, MAX_TEXT_LENGTH - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+    : `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 function structurallyEqual(left: unknown, right: unknown, depth = 0): boolean {
@@ -350,7 +355,7 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
       exitCode: typeof raw.exitCode === "number" ? raw.exitCode : null,
       output:
         typeof raw.aggregatedOutput === "string"
-          ? bounded(raw.aggregatedOutput)
+          ? bounded(raw.aggregatedOutput, MAX_OUTPUT_LENGTH)
           : null,
     };
   } else if (type === "fileChange") {
@@ -602,7 +607,10 @@ export function reduceServerMessage(
       const previous = typeof value.output === "string" ? value.output : "";
       return {
         ...item,
-        value: { ...value, output: bounded(`${previous}${params.delta}`) },
+        value: {
+          ...value,
+          output: bounded(`${previous}${params.delta}`, MAX_OUTPUT_LENGTH),
+        },
       };
     });
   }

@@ -209,3 +209,55 @@ test("bounds control-heavy renderer input without allocating a full escaped copy
   assert.equal(child.signal, null, child.stderr);
   assert.equal(child.status, 0, child.stderr);
 });
+
+// A streaming message rendered its whole accumulated prefix on every delta, so
+// a fifteen-second turn produced 142 near-identical lines. `reasoning` already
+// renders a constant while it runs; text items now do the same.
+test("a message in flight renders a constant, and its text only when complete", () => {
+  const base = { threadId: "thread-1", turnId: "turn-1", items: new Map(), observedCommands: [], diff: null, warnings: [], terminalStatus: "running" };
+  const streaming = (text) => renderer().renderTurnState({
+    ...base,
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "started", value: { text } }]]),
+  }).join("\n");
+  assert.equal(streaming("The ans"), streaming("The answer is fo"));
+  assert.doesNotMatch(streaming("The answer is forty two"), /forty two/);
+
+  const done = renderer().renderTurnState({
+    ...base,
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text: "The answer is forty two" } }]]),
+  }).join("\n");
+  assert.match(done, /The answer is forty two/);
+});
+
+// The same cap that bounded the reprints also truncated the answer where it was
+// printed, mid-sentence, in the one place the operator reads it.
+test("a completed message longer than the old cap renders without truncation", () => {
+  const text = "요약: ".concat("변경 사항을 확인했습니다. ".repeat(40));
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  }).join("\n");
+  assert.doesNotMatch(lines, /\[truncated\]/);
+});
+
+// Command output still streams, so its line must stay small: the raised bound
+// is for the message that renders once, not for a value reprinted per delta.
+test("streaming command output stays bounded well below the message bound", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["cmd-1", { id: "cmd-1", type: "commandExecution", phase: "started", value: { command: "npm test", cwd: "/repo", exitCode: null, output: "x".repeat(4096) } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "running",
+  });
+  const output = lines.find((line) => line.startsWith("Command output:"));
+  assert.notEqual(output, undefined);
+  assert.ok(Buffer.byteLength(output, "utf8") <= 600, `command output line was ${Buffer.byteLength(output, "utf8")} bytes`);
+});

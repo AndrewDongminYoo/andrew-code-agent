@@ -1,7 +1,13 @@
 import type { ItemState, TurnState } from "./reducer.js";
-import { boundedTerminalText } from "./terminal.js";
+import { boundedTerminalText, escapeTerminalPart } from "./terminal.js";
 
+// Escaped bytes, not characters: boundedTerminalText counts what reaches the
+// terminal, and a Korean character costs three while a newline costs the four
+// of a literal \x0A. Every rendered line stays within this bound.
 const MAX_RENDERED_VALUE = 512;
+// A completed message is emitted across as many bounded lines as it needs,
+// capped so a runaway value cannot flood the terminal.
+const MAX_MESSAGE_LINES = 16;
 const TRUNCATION_MARKER = " [truncated]";
 
 function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
@@ -19,10 +25,48 @@ function valueText(value: unknown, key: string): string | null {
   return typeof candidate === "string" ? bounded(candidate) : null;
 }
 
+// The whole message reaches the operator, but never as one unbounded write:
+// it is split on character boundaries into lines that each satisfy the same
+// byte bound as every other rendered line. Escaping happens per part and the
+// walk stops at the line cap, so a hostile value is never materialised — the
+// property `boundedTerminalText` exists to hold.
+function messageLines(prefix: string, text: string): readonly string[] {
+  const lines: string[] = [];
+  let current = prefix;
+  let bytes = Buffer.byteLength(prefix, "utf8");
+  for (const part of text) {
+    const escaped = escapeTerminalPart(part);
+    const size = Buffer.byteLength(escaped, "utf8");
+    if (bytes + size > MAX_RENDERED_VALUE) {
+      if (lines.length + 1 === MAX_MESSAGE_LINES)
+        return [...lines, bounded(`${current}${TRUNCATION_MARKER}`)];
+      lines.push(current);
+      current = "";
+      bytes = 0;
+    }
+    current += escaped;
+    bytes += size;
+  }
+  if (current !== "") lines.push(current);
+  return lines.length === 0 ? [prefix] : lines;
+}
+
 function renderItem(item: ItemState): readonly string[] {
   const lifecycle = `${bounded(item.id, 128)} ${bounded(item.type, 128)} ${item.phase}`;
-  if (item.type === "agentMessage" || item.type === "plan")
-    return [bounded(`${lifecycle}: ${valueText(item.value, "text") ?? ""}`)];
+  // While a text item is still streaming its own value is a growing prefix of
+  // the final one, and rendering it produced a near-identical line per delta.
+  // `reasoning` below already renders a constant in flight; these do the same,
+  // and the text arrives once, whole, when the item completes.
+  if (item.type === "agentMessage" || item.type === "plan") {
+    if (item.phase !== "completed")
+      return [
+        bounded(
+          `${lifecycle}: ${item.type === "plan" ? "Plan" : "Message"} updated`,
+        ),
+      ];
+    const text = record(item.value)?.text;
+    return messageLines(`${lifecycle}: `, typeof text === "string" ? text : "");
+  }
   if (item.type === "reasoning")
     return [bounded(`${lifecycle}: Reasoning updated`)];
   if (item.type === "commandExecution") {
