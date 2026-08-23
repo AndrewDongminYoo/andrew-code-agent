@@ -13,7 +13,10 @@ const outputRoot = "/andrew-code-agent-portable-output";
 export interface ResolvedSourceFile {
   readonly sourcePath: string;
   readonly targetPath: string;
-  readonly mode: 0o644 | 0o755;
+  // Git stores only 100644 and 100755, so a file read from the source tree is
+  // never 0o600. The renderer reuses this shape for the config it synthesizes,
+  // which is.
+  readonly mode: 0o600 | 0o644 | 0o755;
   readonly bytes: Uint8Array;
   readonly capability?: "oracle" | "shared-memory";
 }

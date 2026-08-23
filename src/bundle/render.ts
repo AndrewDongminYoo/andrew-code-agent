@@ -642,7 +642,7 @@ function createGeneratedConfig(
   return {
     sourcePath: "generated:config.toml",
     targetPath: generatedConfigTarget,
-    mode: 0o644,
+    mode: 0o600,
     bytes: new TextEncoder().encode(serializeToml(projected)),
   };
 }

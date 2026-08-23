@@ -408,6 +408,9 @@ function normalizeFiles(
 }
 
 function normalizeMode(mode: number): FileMode {
+  if (mode === 0o600) {
+    return "0600";
+  }
   if (mode === 0o644) {
     return "0644";
   }

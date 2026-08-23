@@ -1311,7 +1311,7 @@ async function readOwnedFile(
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
     );
     const before = await file.stat();
-    const mode = installedMode(before.mode, pinned);
+    const mode = normalizeMode(before.mode);
     if (!before.isFile() || (pinned && mode !== entry.mode)) {
       throw new Error("source type");
     }
@@ -1323,7 +1323,7 @@ async function readOwnedFile(
       !sameFileIdentity(after, pathMetadata) ||
       !pathMetadata.isFile() ||
       pathMetadata.isSymbolicLink() ||
-      installedMode(pathMetadata.mode, pinned) !== mode ||
+      normalizeMode(pathMetadata.mode) !== mode ||
       before.size !== after.size ||
       before.mtimeMs !== after.mtimeMs ||
       (pinned && sha256(bytes) !== entry.sha256)
@@ -1412,21 +1412,12 @@ function currentUid(): number {
   return uid;
 }
 
-function normalizeMode(mode: number): "0644" | "0755" {
+function normalizeMode(mode: number): "0600" | "0644" | "0755" {
   const normalized = mode & 0o777;
+  if (normalized === 0o600) return "0600";
   if (normalized === 0o644) return "0644";
   if (normalized === 0o755) return "0755";
   throw new Error("invalid mode");
-}
-
-// Codex rewrites the file it owns owner-only, so a reset-before-run entry may
-// legitimately be found at 0600.
-function installedMode(
-  mode: number,
-  pinned: boolean,
-): "0600" | "0644" | "0755" {
-  if (!pinned && (mode & 0o777) === 0o600) return "0600";
-  return normalizeMode(mode);
 }
 
 function sha256(bytes: Uint8Array): string {
