@@ -261,3 +261,21 @@ test("streaming command output stays bounded well below the message bound", () =
   assert.notEqual(output, undefined);
   assert.ok(Buffer.byteLength(output, "utf8") <= 600, `command output line was ${Buffer.byteLength(output, "utf8")} bytes`);
 });
+
+// reportTurnState skips a line it has already written, keyed on the whole
+// string, so two chunks of one message that happen to be identical would be
+// silently dropped and the answer corrupted.
+test("every line of a chunked message is distinguishable from the others", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text: "x".repeat(3000) } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const messageLines = lines.filter((line) => line.includes("x".repeat(20)));
+  assert.ok(messageLines.length >= 3, `expected several chunks, got ${messageLines.length}`);
+  assert.equal(new Set(messageLines).size, messageLines.length, "chunks must not collide");
+});

@@ -30,25 +30,36 @@ function valueText(value: unknown, key: string): string | null {
 // byte bound as every other rendered line. Escaping happens per part and the
 // walk stops at the line cap, so a hostile value is never materialised — the
 // property `boundedTerminalText` exists to hold.
-function messageLines(prefix: string, text: string): readonly string[] {
-  const lines: string[] = [];
-  let current = prefix;
-  let bytes = Buffer.byteLength(prefix, "utf8");
+function messageLines(lifecycle: string, text: string): readonly string[] {
+  const chunks: string[] = [];
+  let current = "";
+  let bytes = 0;
+  const budget = MAX_RENDERED_VALUE - Buffer.byteLength(lifecycle, "utf8") - 16;
   for (const part of text) {
     const escaped = escapeTerminalPart(part);
     const size = Buffer.byteLength(escaped, "utf8");
-    if (bytes + size > MAX_RENDERED_VALUE) {
-      if (lines.length + 1 === MAX_MESSAGE_LINES)
-        return [...lines, bounded(`${current}${TRUNCATION_MARKER}`)];
-      lines.push(current);
+    if (bytes + size > budget) {
+      if (chunks.length + 1 === MAX_MESSAGE_LINES) {
+        chunks.push(`${current}${TRUNCATION_MARKER}`);
+        current = "";
+        break;
+      }
+      chunks.push(current);
       current = "";
       bytes = 0;
     }
     current += escaped;
     bytes += size;
   }
-  if (current !== "") lines.push(current);
-  return lines.length === 0 ? [prefix] : lines;
+  if (current !== "") chunks.push(current);
+  if (chunks.length <= 1) return [bounded(`${lifecycle}: ${chunks[0] ?? ""}`)];
+  // Every line repeats the lifecycle and carries its own ordinal, because
+  // reportTurnState skips a line it has already written keyed on the whole
+  // string: two chunks that happened to be identical would be dropped and the
+  // answer silently corrupted.
+  return chunks.map((chunk, index) =>
+    bounded(`${lifecycle} [${index + 1}/${chunks.length}]: ${chunk}`),
+  );
 }
 
 function renderItem(item: ItemState): readonly string[] {
@@ -65,7 +76,7 @@ function renderItem(item: ItemState): readonly string[] {
         ),
       ];
     const text = record(item.value)?.text;
-    return messageLines(`${lifecycle}: `, typeof text === "string" ? text : "");
+    return messageLines(lifecycle, typeof text === "string" ? text : "");
   }
   if (item.type === "reasoning")
     return [bounded(`${lifecycle}: Reasoning updated`)];
