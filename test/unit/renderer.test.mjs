@@ -279,3 +279,25 @@ test("every line of a chunked message is distinguishable from the others", () =>
   assert.ok(messageLines.length >= 3, `expected several chunks, got ${messageLines.length}`);
   assert.equal(new Set(messageLines).size, messageLines.length, "chunks must not collide");
 });
+
+// The reducer retains 4096 UTF-16 code units, so anything it accepts must be
+// renderable: a line cap smaller than that budget throws away a message the
+// product deliberately kept.
+test("a message at the reducer's retained size renders without truncation", () => {
+  for (const [name, text] of [
+    ["hangul", "가".repeat(4096)],
+    ["separators", "\u2028".repeat(4096)],
+  ]) {
+    const lines = renderer().renderTurnState({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text } }]]),
+      observedCommands: [],
+      diff: null,
+      warnings: [],
+      terminalStatus: "completed",
+    });
+    assert.ok(!lines.some((line) => line.endsWith(" [truncated]")), `${name} was truncated`);
+    for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+  }
+});

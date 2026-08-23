@@ -5,9 +5,16 @@ import { boundedTerminalText, escapeTerminalPart } from "./terminal.js";
 // terminal, and a Korean character costs three while a newline costs the four
 // of a literal \x0A. Every rendered line stays within this bound.
 const MAX_RENDERED_VALUE = 512;
-// A completed message is emitted across as many bounded lines as it needs,
-// capped so a runaway value cannot flood the terminal.
-const MAX_MESSAGE_LINES = 16;
+// A completed message is emitted across as many bounded lines as it needs. The
+// cap exists for a value handed straight to the renderer, not for one the
+// reducer produced, so it has to clear anything the reducer retains: 4096
+// UTF-16 code units, at most 8 escaped bytes each (`\u{2028}` is the worst
+// measured), against the smallest chunk budget a maximal lifecycle prefix
+// leaves. A smaller cap would discard a message the product deliberately kept.
+const MAX_RETAINED_TEXT_BYTES = 4096 * 8;
+const MIN_CHUNK_BUDGET = 64;
+const MAX_MESSAGE_LINES =
+  Math.ceil(MAX_RETAINED_TEXT_BYTES / MIN_CHUNK_BUDGET) + 1;
 const TRUNCATION_MARKER = " [truncated]";
 
 function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
@@ -34,7 +41,10 @@ function messageLines(lifecycle: string, text: string): readonly string[] {
   const chunks: string[] = [];
   let current = "";
   let bytes = 0;
-  const budget = MAX_RENDERED_VALUE - Buffer.byteLength(lifecycle, "utf8") - 16;
+  const budget = Math.max(
+    MIN_CHUNK_BUDGET,
+    MAX_RENDERED_VALUE - Buffer.byteLength(lifecycle, "utf8") - 16,
+  );
   for (const part of text) {
     const escaped = escapeTerminalPart(part);
     const size = Buffer.byteLength(escaped, "utf8");
