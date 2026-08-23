@@ -16,8 +16,12 @@ import {
 } from "../app-server/coordinator.js";
 import { renderTurnState } from "../app-server/renderer.js";
 import { boundedTerminalText } from "../app-server/terminal.js";
-import { buildBundle } from "../bundle/artifact.js";
-import { installBundle, recoverInterruptedInstall } from "../bundle/install.js";
+import { ArtifactError, buildBundle } from "../bundle/artifact.js";
+import {
+  InstallError,
+  installBundle,
+  recoverInterruptedInstall,
+} from "../bundle/install.js";
 import { runDoctor } from "./doctor.js";
 import { PRODUCT_VERSION, REQUIRED_CODEX_VERSION } from "../constants.js";
 import {
@@ -28,6 +32,7 @@ import {
 } from "../runtime/git.js";
 import { acquireProcessLock, releaseProcessLock } from "../runtime/lock.js";
 import {
+  RuntimePathError,
   initializeRuntimeState,
   resolveRuntimePaths,
   type RuntimePaths,
@@ -112,7 +117,13 @@ export const defaultCommandDependencies: CommandDependencies = {
 export class CommandOutputError extends Error {
   readonly code = "COMMAND_OUTPUT_FAILED";
 }
-class ReadinessError extends Error {}
+const MAX_REPORTED_BLOCKERS = 8;
+
+class ReadinessError extends Error {
+  constructor(readonly blockers: readonly string[]) {
+    super("readiness");
+  }
+}
 
 export async function runCommand(
   repository: string,
@@ -215,7 +226,12 @@ export async function prepareCandidate(
     scratchParent: dependencies.scratchParent ?? (await realpath(tmpdir())),
     commandTimeoutMs: DOCTOR_TIMEOUT_MS,
   });
-  if (readiness.exitCode !== 0) throw new ReadinessError();
+  if (readiness.exitCode !== 0)
+    throw new ReadinessError(
+      readiness.findings
+        .filter((finding) => finding.severity === "blocker")
+        .map((finding) => finding.code),
+    );
   return artifact;
 }
 
@@ -387,7 +403,7 @@ function bounded(value: string, limit = MAX_FIELD_BYTES): string {
   return boundedTerminalText(value, limit, TRUNCATION_MARKER);
 }
 
-function diagnosticFor(error: unknown, phase: string): string {
+export function diagnosticFor(error: unknown, phase: string): string {
   if (error instanceof CommandOutputError) return "Output stream failed.";
   if (
     error instanceof GitRuntimeError &&
@@ -395,8 +411,38 @@ function diagnosticFor(error: unknown, phase: string): string {
   ) {
     return "Submodules are unsupported in v0.1.";
   }
-  if (error instanceof ReadinessError) return "Candidate readiness failed.";
+  if (error instanceof ReadinessError)
+    return withCause("Candidate readiness failed", blockerList(error.blockers));
   if (phase === "app-server") return "App Server operation failed.";
-  if (phase === "preflight") return "Repository preflight failed.";
-  return "Runtime preparation failed.";
+  if (phase === "local") return "Local thread lookup failed.";
+  if (phase === "preflight")
+    return withCause("Repository preflight failed", errorCode(error));
+  return withCause("Runtime preparation failed", errorCode(error));
+}
+
+function blockerList(blockers: readonly string[]): string | undefined {
+  if (blockers.length === 0) return undefined;
+  const reported = blockers.slice(0, MAX_REPORTED_BLOCKERS);
+  const omitted = blockers.length - reported.length;
+  return omitted === 0
+    ? reported.join(", ")
+    : `${reported.join(", ")} and ${omitted} more`;
+}
+
+// Only the stable error code, never the message or its cause.
+function errorCode(error: unknown): string | undefined {
+  if (
+    error instanceof InstallError ||
+    error instanceof ArtifactError ||
+    error instanceof GitRuntimeError ||
+    error instanceof RuntimePathError
+  )
+    return error.code;
+  return undefined;
+}
+
+function withCause(headline: string, cause: string | undefined): string {
+  return cause === undefined
+    ? `${headline}.`
+    : bounded(`${headline}: ${cause}.`);
 }

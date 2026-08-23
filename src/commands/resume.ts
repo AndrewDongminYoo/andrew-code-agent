@@ -9,6 +9,7 @@ import {
   CommandOutputError,
   coordinatorDependencies,
   defaultCommandDependencies,
+  diagnosticFor,
   prepareCandidate,
   renderFinalRecord,
   renderLocalRecord,
@@ -92,15 +93,7 @@ export async function resumeCommand(
     await renderFinalRecord(record, io.stdout);
     outcome = terminalExit(record);
   } catch (error) {
-    diagnostic =
-      error instanceof GitRuntimeError &&
-      error.code === "UNSUPPORTED_GIT_SUBMODULE"
-        ? "Submodules are unsupported in v0.1."
-        : phase === "app-server"
-          ? "App Server operation failed."
-          : phase === "local"
-            ? "Local thread lookup failed."
-            : "Runtime preparation failed.";
+    diagnostic = diagnosticFor(error, phase);
     outcome =
       error instanceof CommandOutputError
         ? 1
