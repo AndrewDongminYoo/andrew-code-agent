@@ -79,7 +79,7 @@ function operationHarness(repositoryRoot, overrides = {}) {
     async recoverInterruptedInstall() { order.push("recover"); },
     async buildBundle() { order.push("build"); return { artifactRoot: "/fixture/artifact", metadata: { bundleDigest: "c".repeat(64) } }; },
     async installBundle() { order.push("install"); },
-    async runDoctor() { order.push("readiness"); return { exitCode: overrides.doctorExit ?? 0, findings: [] }; },
+    async runDoctor() { order.push("readiness"); return { exitCode: overrides.doctorExit ?? 0, findings: overrides.doctorFindings ?? [] }; },
     async startAppServer() { order.push("app-server"); return client; },
     async startNewThread(_request, commandDependencies) { order.push("start-turn"); await commandDependencies.reportThreadId("thread-1"); await commandDependencies.reportTurnState({ fixture: true }); await client.close(); return record; },
     async resumeThread(_threadId, _prompt, commandDependencies) { order.push("resume-turn"); await commandDependencies.reportTurnState({ fixture: true }); await client.close(); return record; },
@@ -387,6 +387,63 @@ test("readiness blocker prevents App Server and releases the lock", async (t) =>
   const harness = operationHarness(repositoryRoot, { doctorExit: 1 });
   assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), harness.dependencies), 3);
   assert.deepEqual(harness.order, ["paths", "snapshot", "clean", "initialize", "lock", "recover", "build", "install", "readiness", "unlock"]);
+});
+
+test("a readiness blocker names itself on stderr instead of one bare line", async (t) => {
+  const { runModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const findings = [
+    { severity: "blocker", code: "ACTIVE_INSTALL", message: "The active installation is missing or invalid.", remediation: "Install a valid candidate before retrying." },
+    { severity: "warning", code: "OPTIONAL_ORACLE", message: "Oracle was not requested for this candidate." },
+    { severity: "blocker", code: "STRICT_CONFIG", message: "Strict Codex configuration validation could not run." },
+  ];
+  const harness = operationHarness(repositoryRoot, { doctorExit: 1, doctorFindings: findings });
+  const output = capture();
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies), 3);
+  const { stderr } = output.output();
+  assert.match(stderr, /ACTIVE_INSTALL/);
+  assert.match(stderr, /STRICT_CONFIG/);
+  // Only what stops the run, and never the passing checks around it.
+  assert.doesNotMatch(stderr, /OPTIONAL_ORACLE/);
+});
+
+test("resume blames the path check, not thread lookup, when paths fail", async (t) => {
+  const { resumeModule } = modules();
+  const pathsModule = await import("../../dist/runtime/paths.js");
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const harness = operationHarness(repositoryRoot, {});
+  harness.dependencies.resolveRuntimePaths = async () => {
+    throw new pathsModule.RuntimePathError("CODEX_BINARY_NOT_FOUND", "no codex");
+  };
+  const output = capture();
+  assert.equal(await resumeModule.resumeCommand("thread-1", "prompt", output, harness.dependencies), 3);
+  const { stderr } = output.output();
+  assert.match(stderr, /CODEX_BINARY_NOT_FOUND/);
+  assert.doesNotMatch(stderr, /thread lookup/i);
+});
+
+test("a preflight refusal names the check that refused", async (t) => {
+  const { runModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  await writeFile(join(repositoryRoot, "tracked.txt"), "after\n");
+  const harness = operationHarness(repositoryRoot, {});
+  const output = capture();
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies), 3);
+  assert.match(output.output().stderr, /GIT_WORKTREE_DIRTY/);
+});
+
+test("resume reports a readiness blocker the same way run does", async (t) => {
+  const { resumeModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const findings = [{ severity: "blocker", code: "BUNDLE_DIGEST", message: "Bundle digest compatibility cannot be established." }];
+  const harness = operationHarness(repositoryRoot, { doctorExit: 1, doctorFindings: findings });
+  const output = capture();
+  assert.equal(await resumeModule.resumeCommand("thread-1", "prompt", output, harness.dependencies), 3);
+  assert.match(output.output().stderr, /BUNDLE_DIGEST/);
 });
 
 test("a lock release failure is a runtime failure, never false success", async (t) => {

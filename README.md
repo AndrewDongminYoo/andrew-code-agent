@@ -91,7 +91,8 @@ CODEX_HOME="$managed" codex login
 
 Skipping this is the most likely first failure: Doctor reports
 `blocker AUTH_CONFIGURATION`, and `run` exits 3 with
-`Candidate readiness failed.` before it reaches the App Server.
+`Candidate readiness failed: AUTH_CONFIGURATION.` before it reaches the App
+Server.
 
 ```bash
 andrew-agent doctor
@@ -199,7 +200,8 @@ with exit 3 rather than install over an unknown state.
 
 **Doctor reports `blocker STRICT_CONFIG` after a candidate is installed.**
 The real Codex rejected the configuration the bundle rendered, so `run` stops
-with exit 3 and `Candidate readiness failed.` before the App Server starts.
+with exit 3 and `Candidate readiness failed: STRICT_CONFIG.` before the App
+Server starts.
 This almost always means the manifest names a key this Codex version does not
 know. Ask Codex directly which one:
 
@@ -219,7 +221,14 @@ pinned version. Install the pinned version, or point
 `ANDREW_AGENT_CODEX_BIN` at it.
 
 **A run exits 3 with `Repository preflight failed`.** The target is not a Git
-worktree, is not clean, or contains a submodule.
+worktree, is not clean, or contains a submodule. The line names which:
+`NOT_GIT_REPOSITORY`, `GIT_WORKTREE_DIRTY`, `GIT_HEAD_UNAVAILABLE`,
+`GIT_STATUS_FAILED`, or `GIT_SNAPSHOT_RACE`. A submodule is reported by its
+own sentence rather than a code.
+`Runtime preparation failed` and `Candidate readiness failed` name their cause
+the same way — the first with the failing installer or path check, the second
+with every Doctor blocker that stopped the run. Those blocker codes are the
+ones `andrew-agent doctor` prints, so both commands answer in one vocabulary.
 
 ## v0.1 limitations
 
