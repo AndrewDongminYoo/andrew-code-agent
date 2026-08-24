@@ -2172,3 +2172,42 @@ test("an interrupted turn reports a terminal state so partial output survives", 
   assert.notEqual(last.terminalStatus, "running", "the last reported state must be terminal");
   assert.equal(last.items.get("msg-1").value.text, "partial answer");
 });
+
+// Reporting is not authoritative anywhere else in this file: processNotification
+// catches its own failures and settles. The synthetic terminal report must not
+// be the one call that can abort finalization and leave the stored record
+// claiming the turn is still running.
+test("a failing terminal report still persists the interrupted record", async () => {
+  const fixture = harness({
+    record: null,
+    interruptGraceMs: 5,
+    reportStateError: new Error("stdout closed"),
+  });
+  fixture.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", startedAtMs: 1, item: { type: "agentMessage", id: "msg-1", text: "" } },
+    });
+    client.emitNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "partial answer" },
+    });
+    setImmediate(() => {
+      fixture.interrupt();
+      fixture.interrupt();
+    });
+  };
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+  // Every report fails in this harness, so failClosed marks the turn failed —
+  // that part is the existing contract. What matters is that finalization ran
+  // at all: the call resolved and the stored record is terminal rather than
+  // still claiming the turn is running.
+  assert.ok(
+    ["failed", "interrupted"].includes(result.terminalStatus),
+    result.terminalStatus,
+  );
+  assert.equal(fixture.writes.at(-1).terminalStatus, result.terminalStatus);
+});

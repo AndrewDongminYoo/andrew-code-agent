@@ -619,8 +619,16 @@ async function runTurn(
       state !== null &&
       terminalStatus !== "not-started" &&
       state.terminalStatus !== terminalStatus
-    )
-      await dependencies.reportTurnState({ ...state, terminalStatus });
+    ) {
+      try {
+        await dependencies.reportTurnState({ ...state, terminalStatus });
+      } catch {
+        // Reporting is not authoritative here either. Losing the last render
+        // costs the operator a line; letting it escape would skip the Git
+        // snapshot and the terminal record, and the stored thread would go on
+        // claiming the turn is running.
+      }
+    }
     const failure = infrastructureFailure;
     if (failure === null) await closeOnce();
     const finalSnapshot = requireSnapshotRepository(
