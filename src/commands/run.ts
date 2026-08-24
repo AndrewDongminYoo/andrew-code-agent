@@ -267,8 +267,8 @@ export function coordinatorDependencies(
     async reportTurnState(state) {
       for (const line of dependencies.renderTurnState(state)) {
         if (rendered.has(line)) continue;
-        rendered.add(line);
         await writeLine(io.stdout, line);
+        rendered.add(line);
       }
     },
   };
