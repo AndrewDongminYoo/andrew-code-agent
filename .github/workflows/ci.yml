@@ -53,10 +53,4 @@ jobs:
         with:
           fetch-depth: 0
 
-      # .trunk/trunk.yaml pins osv-scanner to @SYSTEM, so Trunk runs whatever is
-      # on PATH and reports a hard failure when nothing is. A hosted runner
-      # carries no copy. Keeping @SYSTEM leaves the scanner version tied to the
-      # runner's Homebrew rather than to this repository.
-      - run: brew install osv-scanner
-
       - uses: trunk-io/trunk-action@v2.0.0
