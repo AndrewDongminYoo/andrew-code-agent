@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # macOS is not a preference: resolveRuntimePaths throws UNSUPPORTED_PLATFORM
+  # off darwin, and every layer above the unit tests spawns the real CLI.
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # test:integration, test:contract and test:e2e each exit 0 over a missing
+      # or empty directory, so the aggregate gate can go green having run
+      # nothing. Fail here instead of reporting that as a pass.
+      - name: Assert every test layer contributes files
+        run: |
+          status=0
+          for layer in unit integration contract e2e; do
+            count=$(find "test/$layer" -type f -name '*.test.mjs' 2>/dev/null | wc -l | tr -d ' ')
+            echo "test/$layer: $count file(s)"
+            [ "$count" -gt 0 ] || { echo "::error::test/$layer contributes no test files"; status=1; }
+          done
+          exit $status
+
+      # typecheck, then build and all four test layers.
+      - run: pnpm check
+
+  # Not covered here, and not coverable on a hosted runner: the pinned-binary
+  # contract test (ANDREW_AGENT_PINNED_CODEX_BIN), live-manifest.test.mjs
+  # (ANDREW_AGENT_CODEX_SOURCE) and the two real smokes (ANDREW_AGENT_REAL_SMOKE
+  # plus ANDREW_AGENT_SMOKE_AUTH) all need a real pinned Codex and credentials.
+  lint:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # .trunk/trunk.yaml pins osv-scanner to @SYSTEM, so Trunk runs whatever is
+      # on PATH and reports a hard failure when nothing is. A hosted runner
+      # carries no copy. Keeping @SYSTEM leaves the scanner version tied to the
+      # runner's Homebrew rather than to this repository.
+      - run: brew install osv-scanner
+
+      - uses: trunk-io/trunk-action@v2.0.0
