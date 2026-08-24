@@ -34,24 +34,28 @@ bundle source is whatever it was on 2026-08-22 and is not a variable here.
 
 No invocation among the fifteen needed a `config.toml` restore, against nine
 of the eleven that followed the first run's first.
-`doctor` reported every check `ready` before the first turn and again after the
-last, so no turn in this run left the managed state invalid.
 
-The drift itself was reproduced deliberately rather than assumed gone: a
-`[projects."<target>"] trust_level = "trusted"` block appended to the managed
-`config.toml` by hand, reproduced from the diff the first run recorded rather
-than from a live Codex write.
-The next `run` completed at exit 0 and converged the file back to the
-installed bytes — `diff` against a pre-drift copy is empty and the mode is
-still `0600`. That is the direct test of `#4`, and the first run's blocking
-finding does not survive it.
+The state that blocked the first run is present throughout: after every turn
+the managed `config.toml` ends with Codex's own
+`[projects."<target>"] trust_level = "trusted"` block at mode `0600`, and the
+next run starts from exactly there and succeeds, because `#4` classifies that
+file `reset-before-run` and converges it before each install.
+`doctor` was run against exactly that state at the end — the trust block read
+off the file first, then every check `ready` — so doctor and `run` agree on it.
 
-`doctor` disagrees with `run` on that state, though. Against the hand-drifted
-file it reports `blocker STRICT_CONFIG`, because its strict-config shadow
-validates the bytes on disk rather than the installed ones; a `run` issued from
-exactly there succeeds. The verdict is not wrong about the file, but an
-operator reading `blocker` would conclude the run is going to fail, and it does
-not.
+A deliberate attempt to reproduce the drift by hand missed the shape and is
+worth recording for what it did find instead.
+Appending a second copy of the trust block produced a duplicate TOML key rather
+than the first run's drift, and `codex app-server --strict-config` rejects that
+file with `config.toml:63:11: duplicate key` and a parse error naming the line.
+Doctor reduces the whole of that to `blocker STRICT_CONFIG: Strict Codex
+configuration validation failed.` — the check spawns the real Codex against a
+shadow copy and reads only its exit code, and `classifyStrictConfig` discards
+the child's output on purpose (`src/commands/doctor.ts:920`).
+So an operator with a genuinely malformed managed config gets no line, no
+column, and no reason, while the binary underneath printed all three.
+`run` from that same file still succeeded at exit 0, since the reset replaced
+it before the turn started.
 
 ### P1 — the streaming renderer no longer reprints prefixes
 
@@ -69,17 +73,49 @@ delta, at 37 KB.
 The line and byte counts above are one sample each and the turn shapes differ,
 so the checkable claim is categorical rather than a delta: no rendered line for
 an item id is a strict prefix of a later line for the same id.
-A script asserting exactly that passes on all three logs and fails on a
-two-line fixture in the old shape, so the check can distinguish them.
+The check below passes on all three logs and fails on a two-line fixture in the
+old shape, so it can distinguish them:
+
+```js
+// Fails if any rendered line for an item id is a strict prefix of a later
+// line for the same id: the shape the per-delta reprint produced.
+const byId = new Map();
+let violations = 0;
+for (const line of readFileSync(path, "utf8").split("\n")) {
+  const id = line.split(" ")[0];
+  if (!/^(msg_|rs_|exec-)/.test(id)) continue;
+  const seen = byId.get(id) ?? [];
+  for (const earlier of seen)
+    if (line !== earlier && line.startsWith(earlier)) {
+      console.log(`prefix reprint on ${id}`);
+      violations += 1;
+    }
+  seen.push(line);
+  byId.set(id, seen);
+}
+process.exit(violations === 0 ? 0 : 1);
+```
+
+What one turn looks like now, from `t01`:
+
+```log
+msg_08c3…4362 agentMessage started: Message updated
+msg_08c3…4362 agentMessage completed [1/4]: `--output`은 `text`와 `json` 두 형식만
+msg_08c3…4362 agentMessage completed [2/4]: 아니면 `Unsupported output format:
+```
+
+The first line is the whole of what the turn printed while that message
+streamed.
 
 ### P1 — messages longer than the old cap arrive whole
 
 `MAX_TEXT_LENGTH` is gone; the reducer bounds message text at 4,096 and the
 renderer splits it into ordinal-tagged lines that each satisfy the same byte
 bound as every other line.
-The reducer's `bounded` slices on `value.length`, so its limit is UTF-16 code
-units, and the figures below are re-derived in that unit from the unescaped
-chunks rather than from the rendered bytes.
+The reducer's `bounded` slices on `value.length`, and so did the one that
+carried `MAX_TEXT_LENGTH` before `#7` (`git show 62421e3^:…/reducer.ts:133`),
+so both caps are UTF-16 code units and the figures below are re-derived in that
+unit from the unescaped chunks rather than from the rendered bytes.
 Both explain-shaped turns wrote a final message past the old 512 cap and
 neither was cut:
 
@@ -87,6 +123,19 @@ neither was cut:
 | ---- | -------------------------- | ------ | ---------------------------- |
 | t01  | 848                        | 4      | none                         |
 | t02  | 1,074                      | 5      | none                         |
+
+Both figures come from reassembling each id's `agentMessage completed` chunks,
+undoing the `\xNN` escaping, and taking `.length` — the same unit `bounded`
+slices on:
+
+```js
+const raw = chunks
+  .join("")
+  .replace(/\\x([0-9A-Fa-f]{2})/g, (_, h) =>
+    String.fromCharCode(parseInt(h, 16)),
+  );
+console.log(raw.length);
+```
 
 t02 was chosen to be the long-answer shape on purpose — a survey of every
 `process.exit` site in `src/cli.js` with a table and a reason per row — because
