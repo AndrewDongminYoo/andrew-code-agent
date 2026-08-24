@@ -343,7 +343,9 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
   let value: unknown = { label: bounded(type) };
 
   if (type === "agentMessage" || type === "plan") {
-    value = { text: bounded(text(raw.text) ?? "", MAX_MESSAGE_LENGTH) };
+    const messageText = text(raw.text);
+    if (messageText === null) throw new ReducerError("INVALID_SERVER_EVENT");
+    value = { text: bounded(messageText, MAX_MESSAGE_LENGTH) };
   } else if (type === "reasoning") {
     value = { label: "Reasoning updated" };
   } else if (type === "commandExecution") {
@@ -383,11 +385,31 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
     };
   } else if (type === "subAgentActivity") {
     value = {
-      label: `Subagent ${bounded(text(raw.kind) ?? "activity")}: ${bounded(text(raw.agentPath) ?? text(raw.agentThreadId) ?? "unknown")}`,
+      label: bounded(
+        `Subagent ${bounded(text(raw.kind) ?? "activity")}: ${bounded(text(raw.agentPath) ?? text(raw.agentThreadId) ?? "unknown")}`,
+      ),
     };
   }
 
   return { id, type, phase, value };
+}
+
+function requireMessageTextRetained(
+  previous: ItemState,
+  next: ItemState | undefined,
+): void {
+  if (previous.type !== "agentMessage" && previous.type !== "plan") return;
+  const previousValue = isRecord(previous.value) ? previous.value : null;
+  const previousText = previousValue?.text;
+  if (typeof previousText !== "string" || previousText === "") return;
+  const nextValue = next && isRecord(next.value) ? next.value : null;
+  const nextText = nextValue?.text;
+  if (
+    next?.type !== previous.type ||
+    typeof nextText !== "string" ||
+    nextText === ""
+  )
+    throw new ReducerError("INVALID_SERVER_EVENT");
 }
 
 function replaceItem(state: TurnState, item: ItemState): TurnState {
@@ -582,6 +604,7 @@ export function reduceServerMessage(
       if (structurallyEqual(previous, next)) return state;
       throw new ReducerError("INVALID_SERVER_EVENT");
     }
+    if (previous !== undefined) requireMessageTextRetained(previous, next);
     return replaceItem(state, next);
   }
   if (message.method === "item/agentMessage/delta") {
@@ -778,6 +801,12 @@ export function reduceServerMessage(
       }
       items.set(safe.id, safe);
     }
+    const terminalItems = new Map([...items, ...omittedItemStates]);
+    for (const [, previous] of [
+      ...validatedStoredEntries(state.items),
+      ...validatedStoredEntries(state.omittedItemStates),
+    ])
+      requireMessageTextRetained(previous, terminalItems.get(previous.id));
     const next: TurnState = {
       ...state,
       items,

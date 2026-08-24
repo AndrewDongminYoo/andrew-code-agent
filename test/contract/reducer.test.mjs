@@ -92,6 +92,72 @@ test("preserves authoritative completion and rejects conflicting terminal data",
   );
 });
 
+test("rejects message items that omit their required text", () => {
+  const api = reducer();
+  const active = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(item("agentMessage", "message-1", { text: "partial" })),
+  );
+  assert.throws(
+    () =>
+      api.reduceServerMessage(
+        active,
+        completed(item("agentMessage", "message-1")),
+      ),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+  assert.throws(
+    () =>
+      api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: {
+            id: "turn-1",
+            items: [item("plan", "plan-1")],
+            itemsView: "full",
+            status: "completed",
+          },
+        },
+      }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("a full terminal inventory cannot erase streamed message text", () => {
+  const api = reducer();
+  const initial = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(item("agentMessage", "message-1", { text: "" })),
+  );
+  const streamed = api.reduceServerMessage(initial, {
+    method: "item/agentMessage/delta",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "message-1",
+      delta: "streamed answer",
+    },
+  });
+  const completedTurn = {
+    id: "turn-1",
+    itemsView: "full",
+    status: "completed",
+  };
+  for (const items of [
+    [item("agentMessage", "message-1", { text: "" })],
+    [],
+  ])
+    assert.throws(
+      () =>
+        api.reduceServerMessage(streamed, {
+          method: "turn/completed",
+          params: { threadId: "thread-1", turn: { ...completedTurn, items } },
+        }),
+      { code: "INVALID_SERVER_EVENT" },
+    );
+});
+
 test("rebuilds terminal inventory, maps failure states, and removes raw reasoning", () => {
   const api = reducer();
   let state = api.createTurnState("thread-1", "turn-1");
@@ -1201,6 +1267,7 @@ test("only message text takes the larger retained bound", () => {
     completed(item("agentMessage", "msg-1", { text: long })),
     completed(item("fileChange", "files-1", { changes: [{ path: long, kind: long }], status: "completed" })),
     completed(item("commandExecution", "cmd-1", { command: long, cwd: long, exitCode: 0, aggregatedOutput: long })),
+    completed(item("subAgentActivity", "subagent-1", { kind: long, agentPath: long })),
     { method: "warning", params: { threadId: "thread-1", message: long } },
   ]);
   const message = state.items.get("msg-1").value.text;
@@ -1214,6 +1281,7 @@ test("only message text takes the larger retained bound", () => {
     ["command", command.command],
     ["cwd", command.cwd],
     ["output", command.output],
+    ["subagent label", state.items.get("subagent-1").value.label],
     ["warning", state.warnings[0]],
   ])
     assert.ok(value.length <= 512, `${name} kept ${value.length}`);
