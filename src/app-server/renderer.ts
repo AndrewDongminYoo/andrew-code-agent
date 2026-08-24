@@ -1,5 +1,11 @@
+import { createHash } from "node:crypto";
+
 import type { ItemState, TurnState } from "./reducer.js";
-import { boundedTerminalText, escapeTerminalPart } from "./terminal.js";
+import {
+  boundedTerminalText,
+  escapeTerminalPart,
+  fitsEscapedTerminalBytes,
+} from "./terminal.js";
 
 // Escaped bytes, not characters: boundedTerminalText counts what reaches the
 // terminal, and a Korean character costs three while a newline costs the four
@@ -16,9 +22,39 @@ const MIN_CHUNK_BUDGET = 64;
 const MAX_MESSAGE_LINES =
   Math.ceil(MAX_RETAINED_TEXT_BYTES / MIN_CHUNK_BUDGET) + 1;
 const TRUNCATION_MARKER = " [truncated]";
+const MAX_RENDERED_PROTOCOL_PART = 128;
+const PROTOCOL_ID_DIGEST_LENGTH = 16;
+const PROTOCOL_ID_HASH_CHUNK_CODE_UNITS = 4096;
 
 function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
   return boundedTerminalText(value, limit, TRUNCATION_MARKER);
+}
+
+function protocolIdDigest(value: string): string {
+  const hash = createHash("sha256");
+  for (
+    let offset = 0;
+    offset < value.length;
+    offset += PROTOCOL_ID_HASH_CHUNK_CODE_UNITS
+  )
+    hash.update(
+      value.slice(offset, offset + PROTOCOL_ID_HASH_CHUNK_CODE_UNITS),
+      "utf16le",
+    );
+  return hash.digest("hex").slice(0, PROTOCOL_ID_DIGEST_LENGTH);
+}
+
+function renderedItemId(value: string): string {
+  if (fitsEscapedTerminalBytes(value, MAX_RENDERED_PROTOCOL_PART))
+    return bounded(value, MAX_RENDERED_PROTOCOL_PART);
+  const digest = protocolIdDigest(value);
+  const suffix = `#${digest}`;
+  const prefix = boundedTerminalText(
+    value,
+    MAX_RENDERED_PROTOCOL_PART - Buffer.byteLength(suffix, "utf8"),
+    "",
+  );
+  return `${prefix}${suffix}`;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -73,7 +109,7 @@ function messageLines(lifecycle: string, text: string): readonly string[] {
 }
 
 function renderItem(item: ItemState, settled: boolean): readonly string[] {
-  const lifecycle = `${bounded(item.id, 128)} ${bounded(item.type, 128)} ${item.phase}`;
+  const lifecycle = `${renderedItemId(item.id)} ${bounded(item.type, MAX_RENDERED_PROTOCOL_PART)} ${item.phase}`;
   // While a text item is still streaming its own value is a growing prefix of
   // the final one, and rendering it produced a near-identical line per delta.
   // `reasoning` below already renders a constant in flight; these do the same,

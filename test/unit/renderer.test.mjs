@@ -210,6 +210,36 @@ test("bounds control-heavy renderer input without allocating a full escaped copy
   assert.equal(child.status, 0, child.stderr);
 });
 
+test("hashes a hostile item ID without allocating one full encoded copy", () => {
+  const script = `
+    import { renderTurnState } from ${JSON.stringify(new URL("../../dist/app-server/renderer.js", import.meta.url).href)};
+    const originalFrom = Buffer.from;
+    Buffer.from = function(value, ...rest) {
+      if (typeof value === "string" && value.length > 4_096) throw new Error("unbounded string copy");
+      return Reflect.apply(originalFrom, this, [value, ...rest]);
+    };
+    const hugeId = "x".repeat(1_000_000);
+    const lines = renderTurnState({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      items: new Map([[hugeId, { id: hugeId, type: "agentMessage", phase: "completed", value: { text: "answer" } }]]),
+      observedCommands: [],
+      diff: null,
+      warnings: [],
+      terminalStatus: "completed",
+    });
+    if (!lines.some((line) => line.includes("agentMessage completed") && line.endsWith(": answer"))) process.exit(2);
+  `;
+  const child = spawnSync(
+    process.execPath,
+    ["--max-old-space-size=32", "--input-type=module", "--eval", script],
+    { encoding: "utf8", killSignal: "SIGKILL", maxBuffer: 1024 * 1024, timeout: 10_000 },
+  );
+
+  assert.equal(child.signal, null, child.stderr);
+  assert.equal(child.status, 0, child.stderr);
+});
+
 // A streaming message rendered its whole accumulated prefix on every delta, so
 // a fifteen-second turn produced 142 near-identical lines. `reasoning` already
 // renders a constant while it runs; text items now do the same.
@@ -278,6 +308,48 @@ test("every line of a chunked message is distinguishable from the others", () =>
   const messageLines = lines.filter((line) => line.includes("x".repeat(20)));
   assert.ok(messageLines.length >= 3, `expected several chunks, got ${messageLines.length}`);
   assert.equal(new Set(messageLines).size, messageLines.length, "chunks must not collide");
+});
+
+test("chunked messages stay distinct when their displayed protocol IDs collide", () => {
+  const sharedPrefix = "x".repeat(180);
+  const text = "same answer ".repeat(100);
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([
+      [
+        `${sharedPrefix}a`,
+        {
+          id: `${sharedPrefix}a`,
+          type: "agentMessage",
+          phase: "completed",
+          value: { text },
+        },
+      ],
+      [
+        `${sharedPrefix}b`,
+        {
+          id: `${sharedPrefix}b`,
+          type: "agentMessage",
+          phase: "completed",
+          value: { text },
+        },
+      ],
+    ]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const messageLines = lines.filter((line) =>
+    line.includes("agentMessage completed"),
+  );
+  assert.ok(messageLines.length >= 4, `expected chunked messages, got ${messageLines.length}`);
+  assert.equal(
+    new Set(messageLines).size,
+    messageLines.length,
+    "different raw item IDs must never converge on the same delivery lines",
+  );
 });
 
 // The reducer retains 4096 UTF-16 code units, so anything it accepts must be
