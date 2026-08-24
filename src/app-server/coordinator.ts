@@ -104,6 +104,7 @@ interface InterruptLatch {
 
 const MAX_BUFFERED_EVENTS = 256;
 const MAX_TERMINAL_PROMPT_BYTES = 8192;
+const MAX_TERMINAL_REPORT_ATTEMPTS = 2;
 
 function isKnownAppServerError(error: unknown): error is AppServerError {
   return !isProxy(error) && error instanceof AppServerError;
@@ -400,6 +401,9 @@ async function runTurn(
   let settled = false;
   let fatalFailure = false;
   let infrastructureFailure: Error | null = null;
+  let terminalReportAttempts = 0;
+  let terminalReportSucceeded = false;
+  let terminalReportFailure: unknown = null;
   let removeNotification = () => {};
   let removeRequest = () => {};
   let removeFailure = () => {};
@@ -454,11 +458,19 @@ async function runTurn(
   };
   const processNotification = async (message: unknown): Promise<void> => {
     if (settled || state === null) return;
+    let reportingTerminal = false;
     try {
       state = reduceServerMessage(state, message);
       if (state.terminalStatus !== "running") settle(state.terminalStatus);
+      reportingTerminal = state.terminalStatus !== "running";
+      if (reportingTerminal) terminalReportAttempts += 1;
       await dependencies.reportTurnState(state);
-    } catch {
+      if (reportingTerminal) {
+        terminalReportSucceeded = true;
+        terminalReportFailure = null;
+      }
+    } catch (error) {
+      if (reportingTerminal) terminalReportFailure = error;
       if (!settled) failClosed();
     }
   };
@@ -611,6 +623,29 @@ async function runTurn(
     await notificationSerial;
     const terminalStatus = await settlement;
     await Promise.all([notificationSerial, requestSerial]);
+    const terminalState =
+      state !== null && terminalStatus !== "not-started"
+        ? { ...state, terminalStatus }
+        : null;
+    // A normal completion can settle before its report fails, while an
+    // interrupt can settle without a terminal notification at all. Retry only
+    // until one terminal render succeeds or the bounded attempt budget is
+    // exhausted. A later write cannot resurrect a line that reportTurnState
+    // already acknowledged, so successful lines remain deduplicated.
+    while (
+      terminalState !== null &&
+      !terminalReportSucceeded &&
+      terminalReportAttempts < MAX_TERMINAL_REPORT_ATTEMPTS
+    ) {
+      terminalReportAttempts += 1;
+      try {
+        await dependencies.reportTurnState(terminalState);
+        terminalReportSucceeded = true;
+        terminalReportFailure = null;
+      } catch (error) {
+        terminalReportFailure = error;
+      }
+    }
     const failure = infrastructureFailure;
     if (failure === null) await closeOnce();
     const finalSnapshot = requireSnapshotRepository(
@@ -631,6 +666,10 @@ async function runTurn(
       await closeOnce();
       throw failure;
     }
+    // Presentation is not authoritative, so its failure must not skip the
+    // terminal snapshot or record. Once those are durable, return the original
+    // typed failure so the command cannot report false success.
+    if (terminalReportFailure !== null) throw terminalReportFailure;
     return finalRecord;
   } catch (error) {
     throw preserveTypedError(error);

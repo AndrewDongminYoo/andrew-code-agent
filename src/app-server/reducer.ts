@@ -30,7 +30,14 @@ export interface TurnState {
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
 }
 
-const MAX_TEXT_LENGTH = 512;
+// UTF-16 code units, unlike the renderer's escaped-byte bound. Every retained
+// field takes the smaller one: a turn can carry many of them — up to 64 paths
+// and kinds per file change alone — and the renderer shows one bounded line of
+// each however much is stored.
+const MAX_FIELD_LENGTH = 512;
+// Only a message is kept at the larger size, because it is the one value the
+// operator reads in full and 512 cut real summaries mid-sentence.
+const MAX_MESSAGE_LENGTH = 4096;
 const MAX_ITEMS = 64;
 const MAX_OMITTED_ITEM_AUTHORITY = 64;
 const MAX_WARNINGS = 16;
@@ -129,10 +136,10 @@ function text(value: unknown): string | null {
   return typeof value === "string" ? value : null;
 }
 
-function bounded(value: string): string {
-  return value.length <= MAX_TEXT_LENGTH
+function bounded(value: string, limit = MAX_FIELD_LENGTH): string {
+  return value.length <= limit
     ? value
-    : `${value.slice(0, MAX_TEXT_LENGTH - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
+    : `${value.slice(0, limit - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`;
 }
 
 function structurallyEqual(left: unknown, right: unknown, depth = 0): boolean {
@@ -336,7 +343,9 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
   let value: unknown = { label: bounded(type) };
 
   if (type === "agentMessage" || type === "plan") {
-    value = { text: bounded(text(raw.text) ?? "") };
+    const messageText = text(raw.text);
+    if (messageText === null) throw new ReducerError("INVALID_SERVER_EVENT");
+    value = { text: bounded(messageText, MAX_MESSAGE_LENGTH) };
   } else if (type === "reasoning") {
     value = { label: "Reasoning updated" };
   } else if (type === "commandExecution") {
@@ -376,11 +385,31 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
     };
   } else if (type === "subAgentActivity") {
     value = {
-      label: `Subagent ${bounded(text(raw.kind) ?? "activity")}: ${bounded(text(raw.agentPath) ?? text(raw.agentThreadId) ?? "unknown")}`,
+      label: bounded(
+        `Subagent ${bounded(text(raw.kind) ?? "activity")}: ${bounded(text(raw.agentPath) ?? text(raw.agentThreadId) ?? "unknown")}`,
+      ),
     };
   }
 
   return { id, type, phase, value };
+}
+
+function requireMessageTextRetained(
+  previous: ItemState,
+  next: ItemState | undefined,
+): void {
+  if (previous.type !== "agentMessage" && previous.type !== "plan") return;
+  const previousValue = isRecord(previous.value) ? previous.value : null;
+  const previousText = previousValue?.text;
+  if (typeof previousText !== "string" || previousText === "") return;
+  const nextValue = next && isRecord(next.value) ? next.value : null;
+  const nextText = nextValue?.text;
+  if (
+    next?.type !== previous.type ||
+    typeof nextText !== "string" ||
+    nextText === ""
+  )
+    throw new ReducerError("INVALID_SERVER_EVENT");
 }
 
 function replaceItem(state: TurnState, item: ItemState): TurnState {
@@ -501,7 +530,10 @@ function withTextDelta(item: ItemState, delta: unknown): ItemState {
       ? item.value.text
       : "";
   if (typeof delta !== "string") throw new ReducerError("INVALID_SERVER_EVENT");
-  return { ...item, value: { text: bounded(`${current}${delta}`) } };
+  return {
+    ...item,
+    value: { text: bounded(`${current}${delta}`, MAX_MESSAGE_LENGTH) },
+  };
 }
 
 export function createTurnState(threadId: string, turnId: string): TurnState {
@@ -572,6 +604,7 @@ export function reduceServerMessage(
       if (structurallyEqual(previous, next)) return state;
       throw new ReducerError("INVALID_SERVER_EVENT");
     }
+    if (previous !== undefined) requireMessageTextRetained(previous, next);
     return replaceItem(state, next);
   }
   if (message.method === "item/agentMessage/delta") {
@@ -768,6 +801,12 @@ export function reduceServerMessage(
       }
       items.set(safe.id, safe);
     }
+    const terminalItems = new Map([...items, ...omittedItemStates]);
+    for (const [, previous] of [
+      ...validatedStoredEntries(state.items),
+      ...validatedStoredEntries(state.omittedItemStates),
+    ])
+      requireMessageTextRetained(previous, terminalItems.get(previous.id));
     const next: TurnState = {
       ...state,
       items,

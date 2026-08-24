@@ -92,6 +92,72 @@ test("preserves authoritative completion and rejects conflicting terminal data",
   );
 });
 
+test("rejects message items that omit their required text", () => {
+  const api = reducer();
+  const active = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(item("agentMessage", "message-1", { text: "partial" })),
+  );
+  assert.throws(
+    () =>
+      api.reduceServerMessage(
+        active,
+        completed(item("agentMessage", "message-1")),
+      ),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+  assert.throws(
+    () =>
+      api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), {
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          turn: {
+            id: "turn-1",
+            items: [item("plan", "plan-1")],
+            itemsView: "full",
+            status: "completed",
+          },
+        },
+      }),
+    { code: "INVALID_SERVER_EVENT" },
+  );
+});
+
+test("a full terminal inventory cannot erase streamed message text", () => {
+  const api = reducer();
+  const initial = api.reduceServerMessage(
+    api.createTurnState("thread-1", "turn-1"),
+    started(item("agentMessage", "message-1", { text: "" })),
+  );
+  const streamed = api.reduceServerMessage(initial, {
+    method: "item/agentMessage/delta",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: "message-1",
+      delta: "streamed answer",
+    },
+  });
+  const completedTurn = {
+    id: "turn-1",
+    itemsView: "full",
+    status: "completed",
+  };
+  for (const items of [
+    [item("agentMessage", "message-1", { text: "" })],
+    [],
+  ])
+    assert.throws(
+      () =>
+        api.reduceServerMessage(streamed, {
+          method: "turn/completed",
+          params: { threadId: "thread-1", turn: { ...completedTurn, items } },
+        }),
+      { code: "INVALID_SERVER_EVENT" },
+    );
+});
+
 test("rebuilds terminal inventory, maps failure states, and removes raw reasoning", () => {
   const api = reducer();
   let state = api.createTurnState("thread-1", "turn-1");
@@ -1190,4 +1256,33 @@ test("refuses a summary completion whose retained inventory is corrupted", () =>
     { code: "INVALID_SERVER_EVENT" },
     "the omitted-item authority set is retained too and must be validated",
   );
+});
+
+// Raising the message bound must not raise every other retained field with it:
+// a turn can carry many long metadata values, and the renderer shows only a
+// bounded line of each regardless.
+test("only message text takes the larger retained bound", () => {
+  const long = "x".repeat(5000);
+  const state = stateWith([
+    completed(item("agentMessage", "msg-1", { text: long })),
+    completed(item("fileChange", "files-1", { changes: [{ path: long, kind: long }], status: "completed" })),
+    completed(item("commandExecution", "cmd-1", { command: long, cwd: long, exitCode: 0, aggregatedOutput: long })),
+    completed(item("subAgentActivity", "subagent-1", { kind: long, agentPath: long })),
+    { method: "warning", params: { threadId: "thread-1", message: long } },
+  ]);
+  const message = state.items.get("msg-1").value.text;
+  assert.ok(message.length > 512, `message kept only ${message.length}`);
+  assert.ok(message.length <= 4096, `message kept ${message.length}`);
+  const files = state.items.get("files-1").value.files[0];
+  const command = state.items.get("cmd-1").value;
+  for (const [name, value] of [
+    ["file path", files.path],
+    ["file kind", files.kind],
+    ["command", command.command],
+    ["cwd", command.cwd],
+    ["output", command.output],
+    ["subagent label", state.items.get("subagent-1").value.label],
+    ["warning", state.warnings[0]],
+  ])
+    assert.ok(value.length <= 512, `${name} kept ${value.length}`);
 });

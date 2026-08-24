@@ -13,6 +13,7 @@ const cliModule = await import("../../dist/cli.js").catch(() => null);
 const runModule = await import("../../dist/commands/run.js").catch(() => null);
 const resumeModule = await import("../../dist/commands/resume.js").catch(() => null);
 const statusModule = await import("../../dist/commands/status.js").catch(() => null);
+const rendererModule = await import("../../dist/app-server/renderer.js").catch(() => null);
 const gitModule = await import("../../dist/runtime/git.js");
 const threadStoreModule = await import("../../dist/runtime/thread-store.js");
 
@@ -229,6 +230,90 @@ test("a late real Writable callback error is absorbed only within bounded cleanu
   releaseLateWrite(new Error("secret-late-output-error"));
   await new Promise((resolve) => setTimeout(resolve, 750));
   assert.equal(stalled.listenerCount("error"), initialErrorListeners);
+});
+
+test("a failed message chunk is delivered by the next real report", async (t) => {
+  const { runModule } = modules();
+  assert.notEqual(rendererModule, null, "the built renderer module must be available");
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const messageText = "answer ".repeat(180);
+  const state = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([
+      [
+        "msg-1",
+        {
+          id: "msg-1",
+          type: "agentMessage",
+          phase: "completed",
+          value: { text: messageText },
+        },
+      ],
+    ]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  };
+  let injectedFailure = false;
+  const written = [];
+  const output = {
+    destroyed: false,
+    once(event, _listener) {
+      assert.equal(event, "error");
+      return this;
+    },
+    removeListener(event, _listener) {
+      assert.equal(event, "error");
+      return this;
+    },
+    write(value, callback) {
+      const line = String(value);
+      if (!injectedFailure && /msg-1 agentMessage completed \[2\//.test(line)) {
+        injectedFailure = true;
+        callback(new Error("fixture write failure"));
+        return false;
+      }
+      written.push(line);
+      callback();
+      return true;
+    },
+  };
+  const harness = operationHarness(repositoryRoot);
+  harness.dependencies.renderTurnState = rendererModule.renderTurnState;
+  harness.dependencies.startNewThread = async (_request, commandDependencies) => {
+    await assert.rejects(
+      commandDependencies.reportTurnState(state),
+      { code: "COMMAND_OUTPUT_FAILED" },
+    );
+    await commandDependencies.reportTurnState(state);
+    return terminalRecord(repositoryRoot);
+  };
+
+  assert.equal(
+    await runModule.runCommand(
+      repositoryRoot,
+      "prompt",
+      { ...capture(), stdout: output },
+      harness.dependencies,
+    ),
+    0,
+  );
+  assert.equal(injectedFailure, true, "the second message chunk must fail once");
+  const deliveredText = written
+    .join("")
+    .split("\n")
+    .filter((line) => line.startsWith("msg-1 agentMessage completed"))
+    .map((line) =>
+      line.replace(
+        /^msg-1 agentMessage completed(?: \[\d+\/\d+\])?: /,
+        "",
+      ),
+    )
+    .join("");
+  assert.equal(deliveredText, messageText);
 });
 
 test("a callback-only output error does not retain an error listener forever", async () => {

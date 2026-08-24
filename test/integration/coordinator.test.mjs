@@ -1662,19 +1662,25 @@ test("lets a terminal notification beat grace while approval interaction is pend
   assert.equal(fixture.stored().terminalStatus, "completed");
 });
 
-test("keeps an observed terminal notification authoritative when reporting fails", async () => {
+test("persists an observed terminal notification before surfacing reporting failure", async () => {
+  const reportError = Object.assign(new Error("renderer unavailable"), {
+    code: "COMMAND_OUTPUT_FAILED",
+  });
   const fixture = harness({
     record: null,
-    reportStateError: new Error("renderer unavailable"),
+    reportStateError: reportError,
   });
   fixture.client.onTurnStart = async (client) => {
     client.emitNotification(terminalNotification("thread-1", "turn-1"));
   };
-  const result = await coordinator().startNewThread(
-    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
-    fixture.dependencies,
+  await assert.rejects(
+    coordinator().startNewThread(
+      { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+      fixture.dependencies,
+    ),
+    (error) => error === reportError,
   );
-  assert.equal(result.terminalStatus, "completed");
+  assert.equal(fixture.stored().terminalStatus, "completed");
 });
 
 test("persists one failed active turn before close and rethrows infrastructure failure", async () => {
@@ -2141,4 +2147,151 @@ test("terminal approval writer rejects non-TTY, abort, partial, and failed write
     ).writePrompt("x", signal),
     { code: "TERMINAL_WRITE_FAILED" },
   );
+});
+
+// An interrupt settles the turn without another notification, so nothing
+// re-rendered the state and the renderer's in-flight constant was the last
+// word: everything the message had generated was thrown away.
+test("an interrupted turn reports a terminal state so partial output survives", async () => {
+  const fixture = harness({ record: null, interruptGraceMs: 5 });
+  fixture.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", startedAtMs: 1, item: { type: "agentMessage", id: "msg-1", text: "" } },
+    });
+    client.emitNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "partial answer" },
+    });
+    setImmediate(() => {
+      fixture.interrupt();
+      fixture.interrupt();
+    });
+  };
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+  assert.equal(result.terminalStatus, "interrupted");
+  const last = fixture.states.at(-1);
+  assert.notEqual(last, undefined, "the turn state must be reported at least once");
+  assert.notEqual(last.terminalStatus, "running", "the last reported state must be terminal");
+  assert.equal(last.items.get("msg-1").value.text, "partial answer");
+});
+
+test("a normal completion retries its failed terminal report", async () => {
+  const fixture = harness({ record: null });
+  let terminalAttempts = 0;
+  fixture.dependencies.reportTurnState = async (state) => {
+    fixture.states.push(state);
+    if (state.terminalStatus === "running") return;
+    terminalAttempts += 1;
+    if (terminalAttempts === 1) throw new Error("first terminal report failed");
+  };
+  fixture.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", startedAtMs: 1, item: { type: "agentMessage", id: "msg-1", text: "" } },
+    });
+    client.emitNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "complete answer" },
+    });
+    client.emitNotification({
+      method: "turn/completed",
+      params: {
+        threadId: "thread-1",
+        turn: { id: "turn-1", itemsView: "summary", items: [], status: "completed" },
+      },
+    });
+  };
+
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+
+  assert.equal(result.terminalStatus, "completed");
+  assert.equal(terminalAttempts, 2);
+  assert.equal(fixture.states.at(-1).items.get("msg-1").value.text, "complete answer");
+});
+
+test("an interrupt retries its failed terminal report", async () => {
+  const fixture = harness({ record: null, interruptGraceMs: 5 });
+  let terminalAttempts = 0;
+  fixture.dependencies.reportTurnState = async (state) => {
+    fixture.states.push(state);
+    if (state.terminalStatus === "running") return;
+    terminalAttempts += 1;
+    if (terminalAttempts === 1) throw new Error("first terminal report failed");
+  };
+  fixture.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", startedAtMs: 1, item: { type: "agentMessage", id: "msg-1", text: "" } },
+    });
+    client.emitNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "partial answer" },
+    });
+    setImmediate(() => {
+      fixture.interrupt();
+      fixture.interrupt();
+    });
+  };
+
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+
+  assert.equal(result.terminalStatus, "interrupted");
+  assert.equal(terminalAttempts, 2);
+  assert.equal(fixture.states.at(-1).items.get("msg-1").value.text, "partial answer");
+});
+
+// Reporting is presentation, but losing it cannot look successful. The
+// coordinator must persist the terminal record before returning the typed
+// output failure to the command layer.
+test("exhausted terminal reports persist the interrupted record before failing", async () => {
+  const fixture = harness({
+    record: null,
+    interruptGraceMs: 5,
+  });
+  const reportError = new Error("stdout closed");
+  reportError.code = "COMMAND_OUTPUT_FAILED";
+  let terminalAttempts = 0;
+  fixture.dependencies.reportTurnState = async (state) => {
+    fixture.states.push(state);
+    if (state.terminalStatus === "running") return;
+    terminalAttempts += 1;
+    throw reportError;
+  };
+  fixture.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", startedAtMs: 1, item: { type: "agentMessage", id: "msg-1", text: "" } },
+    });
+    client.emitNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "partial answer" },
+    });
+    setImmediate(() => {
+      fixture.interrupt();
+      fixture.interrupt();
+    });
+  };
+  let failure = null;
+  try {
+    await coordinator().startNewThread(
+      { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+      fixture.dependencies,
+    );
+  } catch (error) {
+    failure = error;
+  }
+
+  assert.equal(failure, reportError);
+  assert.equal(terminalAttempts, 2);
+  assert.equal(fixture.writes.at(-1).terminalStatus, "interrupted");
 });

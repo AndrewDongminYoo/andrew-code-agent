@@ -209,3 +209,225 @@ test("bounds control-heavy renderer input without allocating a full escaped copy
   assert.equal(child.signal, null, child.stderr);
   assert.equal(child.status, 0, child.stderr);
 });
+
+test("hashes a hostile item ID without allocating one full encoded copy", () => {
+  const script = `
+    import { renderTurnState } from ${JSON.stringify(new URL("../../dist/app-server/renderer.js", import.meta.url).href)};
+    const originalFrom = Buffer.from;
+    Buffer.from = function(value, ...rest) {
+      if (typeof value === "string" && value.length > 4_096) throw new Error("unbounded string copy");
+      return Reflect.apply(originalFrom, this, [value, ...rest]);
+    };
+    const hugeId = "x".repeat(1_000_000);
+    const lines = renderTurnState({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      items: new Map([[hugeId, { id: hugeId, type: "agentMessage", phase: "completed", value: { text: "answer" } }]]),
+      observedCommands: [],
+      diff: null,
+      warnings: [],
+      terminalStatus: "completed",
+    });
+    if (!lines.some((line) => line.includes("agentMessage completed") && line.endsWith(": answer"))) process.exit(2);
+  `;
+  const child = spawnSync(
+    process.execPath,
+    ["--max-old-space-size=32", "--input-type=module", "--eval", script],
+    { encoding: "utf8", killSignal: "SIGKILL", maxBuffer: 1024 * 1024, timeout: 10_000 },
+  );
+
+  assert.equal(child.signal, null, child.stderr);
+  assert.equal(child.status, 0, child.stderr);
+});
+
+// A streaming message rendered its whole accumulated prefix on every delta, so
+// a fifteen-second turn produced 142 near-identical lines. `reasoning` already
+// renders a constant while it runs; text items now do the same.
+test("a message in flight renders a constant, and its text only when complete", () => {
+  const base = { threadId: "thread-1", turnId: "turn-1", items: new Map(), observedCommands: [], diff: null, warnings: [], terminalStatus: "running" };
+  const streaming = (text) => renderer().renderTurnState({
+    ...base,
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "started", value: { text } }]]),
+  }).join("\n");
+  assert.equal(streaming("The ans"), streaming("The answer is fo"));
+  assert.doesNotMatch(streaming("The answer is forty two"), /forty two/);
+
+  const done = renderer().renderTurnState({
+    ...base,
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text: "The answer is forty two" } }]]),
+  }).join("\n");
+  assert.match(done, /The answer is forty two/);
+});
+
+// The same cap that bounded the reprints also truncated the answer where it was
+// printed, mid-sentence, in the one place the operator reads it.
+test("a completed message longer than the old cap renders without truncation", () => {
+  const text = "요약: ".concat("변경 사항을 확인했습니다. ".repeat(40));
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  }).join("\n");
+  assert.doesNotMatch(lines, /\[truncated\]/);
+});
+
+// Command output still streams, so its line must stay small: the raised bound
+// is for the message that renders once, not for a value reprinted per delta.
+test("streaming command output stays bounded well below the message bound", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["cmd-1", { id: "cmd-1", type: "commandExecution", phase: "started", value: { command: "npm test", cwd: "/repo", exitCode: null, output: "x".repeat(4096) } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "running",
+  });
+  const output = lines.find((line) => line.startsWith("Command output:"));
+  assert.notEqual(output, undefined);
+  assert.ok(Buffer.byteLength(output, "utf8") <= 600, `command output line was ${Buffer.byteLength(output, "utf8")} bytes`);
+});
+
+// reportTurnState skips a line it has already written, keyed on the whole
+// string, so two chunks of one message that happen to be identical would be
+// silently dropped and the answer corrupted.
+test("every line of a chunked message is distinguishable from the others", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text: "x".repeat(3000) } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const messageLines = lines.filter((line) => line.includes("x".repeat(20)));
+  assert.ok(messageLines.length >= 3, `expected several chunks, got ${messageLines.length}`);
+  assert.equal(new Set(messageLines).size, messageLines.length, "chunks must not collide");
+});
+
+test("chunked messages stay distinct when their displayed protocol IDs collide", () => {
+  const sharedPrefix = "x".repeat(180);
+  const text = "same answer ".repeat(100);
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([
+      [
+        `${sharedPrefix}a`,
+        {
+          id: `${sharedPrefix}a`,
+          type: "agentMessage",
+          phase: "completed",
+          value: { text },
+        },
+      ],
+      [
+        `${sharedPrefix}b`,
+        {
+          id: `${sharedPrefix}b`,
+          type: "agentMessage",
+          phase: "completed",
+          value: { text },
+        },
+      ],
+    ]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const messageLines = lines.filter((line) =>
+    line.includes("agentMessage completed"),
+  );
+  assert.ok(messageLines.length >= 4, `expected chunked messages, got ${messageLines.length}`);
+  assert.equal(
+    new Set(messageLines).size,
+    messageLines.length,
+    "different raw item IDs must never converge on the same delivery lines",
+  );
+});
+
+test("reuses the completed message render while item identity is unchanged", () => {
+  let textReads = 0;
+  const value = {};
+  Object.defineProperty(value, "text", {
+    enumerable: true,
+    get() {
+      textReads += 1;
+      return "cached answer ".repeat(100);
+    },
+  });
+  const itemState = {
+    id: "msg-1",
+    type: "agentMessage",
+    phase: "completed",
+    value,
+  };
+  const state = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", itemState]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  };
+
+  const first = renderer().renderTurnState(state);
+  const second = renderer().renderTurnState(state);
+
+  assert.deepEqual(second, first);
+  assert.equal(textReads, 1);
+});
+
+// The reducer retains 4096 UTF-16 code units, so anything it accepts must be
+// renderable: a line cap smaller than that budget throws away a message the
+// product deliberately kept.
+test("a message at the reducer's retained size renders without truncation", () => {
+  for (const [name, text] of [
+    ["hangul", "가".repeat(4096)],
+    ["separators", "\u2028".repeat(4096)],
+  ]) {
+    const lines = renderer().renderTurnState({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text } }]]),
+      observedCommands: [],
+      diff: null,
+      warnings: [],
+      terminalStatus: "completed",
+    });
+    assert.ok(!lines.some((line) => line.endsWith(" [truncated]")), `${name} was truncated`);
+    for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+  }
+});
+
+// A turn can end while a message is still `started` — an interrupt, or a
+// failure after deltas. Holding the text back until completion would throw
+// away everything the turn generated.
+test("a terminal turn shows the text of a message that never completed", () => {
+  const partial = "생성 중이던 답변입니다. ".repeat(6);
+  const stateFor = (terminalStatus) => ({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "started", value: { text: partial } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus,
+  });
+  for (const terminalStatus of ["interrupted", "failed", "completed"]) {
+    const rendered = renderer().renderTurnState(stateFor(terminalStatus)).join("\n");
+    assert.match(rendered, /생성 중이던 답변입니다/, terminalStatus);
+  }
+  // While the turn is still running the constant stands, or the reprinting
+  // this PR removed comes straight back.
+  const running = renderer().renderTurnState(stateFor("running")).join("\n");
+  assert.doesNotMatch(running, /생성 중이던 답변입니다/);
+  assert.match(running, /Message updated/);
+});

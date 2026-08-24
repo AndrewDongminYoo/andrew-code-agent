@@ -1,11 +1,61 @@
-import type { ItemState, TurnState } from "./reducer.js";
-import { boundedTerminalText } from "./terminal.js";
+import { createHash } from "node:crypto";
 
+import type { ItemState, TurnState } from "./reducer.js";
+import {
+  boundedTerminalText,
+  escapeTerminalPart,
+  fitsEscapedTerminalBytes,
+} from "./terminal.js";
+
+// Escaped bytes, not characters: boundedTerminalText counts what reaches the
+// terminal, and a Korean character costs three while a newline costs the four
+// of a literal \x0A. Every rendered line stays within this bound.
 const MAX_RENDERED_VALUE = 512;
+// A completed message is emitted across as many bounded lines as it needs. The
+// cap exists for a value handed straight to the renderer, not for one the
+// reducer produced, so it has to clear anything the reducer retains: 4096
+// UTF-16 code units, at most 8 escaped bytes each (`\u{2028}` is the worst
+// measured), against the smallest chunk budget a maximal lifecycle prefix
+// leaves. A smaller cap would discard a message the product deliberately kept.
+const MAX_RETAINED_TEXT_BYTES = 4096 * 8;
+const MIN_CHUNK_BUDGET = 64;
+const MAX_MESSAGE_LINES =
+  Math.ceil(MAX_RETAINED_TEXT_BYTES / MIN_CHUNK_BUDGET) + 1;
 const TRUNCATION_MARKER = " [truncated]";
+const MAX_RENDERED_PROTOCOL_PART = 128;
+const PROTOCOL_ID_DIGEST_LENGTH = 16;
+const PROTOCOL_ID_HASH_CHUNK_CODE_UNITS = 4096;
+const completedTextItemLines = new WeakMap<ItemState, readonly string[]>();
 
 function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
   return boundedTerminalText(value, limit, TRUNCATION_MARKER);
+}
+
+function protocolIdDigest(value: string): string {
+  const hash = createHash("sha256");
+  for (
+    let offset = 0;
+    offset < value.length;
+    offset += PROTOCOL_ID_HASH_CHUNK_CODE_UNITS
+  )
+    hash.update(
+      value.slice(offset, offset + PROTOCOL_ID_HASH_CHUNK_CODE_UNITS),
+      "utf16le",
+    );
+  return hash.digest("hex").slice(0, PROTOCOL_ID_DIGEST_LENGTH);
+}
+
+function renderedItemId(value: string): string {
+  if (fitsEscapedTerminalBytes(value, MAX_RENDERED_PROTOCOL_PART))
+    return bounded(value, MAX_RENDERED_PROTOCOL_PART);
+  const digest = protocolIdDigest(value);
+  const suffix = `#${digest}`;
+  const prefix = boundedTerminalText(
+    value,
+    MAX_RENDERED_PROTOCOL_PART - Buffer.byteLength(suffix, "utf8"),
+    "",
+  );
+  return `${prefix}${suffix}`;
 }
 
 function record(value: unknown): Record<string, unknown> | null {
@@ -19,10 +69,72 @@ function valueText(value: unknown, key: string): string | null {
   return typeof candidate === "string" ? bounded(candidate) : null;
 }
 
-function renderItem(item: ItemState): readonly string[] {
-  const lifecycle = `${bounded(item.id, 128)} ${bounded(item.type, 128)} ${item.phase}`;
-  if (item.type === "agentMessage" || item.type === "plan")
-    return [bounded(`${lifecycle}: ${valueText(item.value, "text") ?? ""}`)];
+// The whole message reaches the operator, but never as one unbounded write:
+// it is split on character boundaries into lines that each satisfy the same
+// byte bound as every other rendered line. Escaping happens per part and the
+// walk stops at the line cap, so a hostile value is never materialised — the
+// property `boundedTerminalText` exists to hold.
+function messageLines(lifecycle: string, text: string): readonly string[] {
+  const chunks: string[] = [];
+  let current = "";
+  let bytes = 0;
+  const budget = Math.max(
+    MIN_CHUNK_BUDGET,
+    MAX_RENDERED_VALUE - Buffer.byteLength(lifecycle, "utf8") - 16,
+  );
+  for (const part of text) {
+    const escaped = escapeTerminalPart(part);
+    const size = Buffer.byteLength(escaped, "utf8");
+    if (bytes + size > budget) {
+      if (chunks.length + 1 === MAX_MESSAGE_LINES) {
+        chunks.push(`${current}${TRUNCATION_MARKER}`);
+        current = "";
+        break;
+      }
+      chunks.push(current);
+      current = "";
+      bytes = 0;
+    }
+    current += escaped;
+    bytes += size;
+  }
+  if (current !== "") chunks.push(current);
+  if (chunks.length <= 1) return [bounded(`${lifecycle}: ${chunks[0] ?? ""}`)];
+  // Every line repeats the lifecycle and carries its own ordinal, because
+  // reportTurnState skips a line it has already written keyed on the whole
+  // string: two chunks that happened to be identical would be dropped and the
+  // answer silently corrupted.
+  return chunks.map((chunk, index) =>
+    bounded(`${lifecycle} [${index + 1}/${chunks.length}]: ${chunk}`),
+  );
+}
+
+function renderItem(item: ItemState, settled: boolean): readonly string[] {
+  const textItem = item.type === "agentMessage" || item.type === "plan";
+  if (textItem && item.phase === "completed") {
+    const cached = completedTextItemLines.get(item);
+    if (cached !== undefined) return cached;
+  }
+  const lifecycle = `${renderedItemId(item.id)} ${bounded(item.type, MAX_RENDERED_PROTOCOL_PART)} ${item.phase}`;
+  // While a text item is still streaming its own value is a growing prefix of
+  // the final one, and rendering it produced a near-identical line per delta.
+  // `reasoning` below already renders a constant in flight; these do the same,
+  // and the text arrives once, whole, when the item completes.
+  if (textItem) {
+    // The constant stands only while the turn is still moving. Once the turn
+    // is terminal the retained prefix is all there will ever be, and an
+    // interrupted or failed turn must not throw away what it generated.
+    if (item.phase !== "completed" && !settled)
+      return [
+        bounded(
+          `${lifecycle}: ${item.type === "plan" ? "Plan" : "Message"} updated`,
+        ),
+      ];
+    const text = record(item.value)?.text;
+    const lines = messageLines(lifecycle, typeof text === "string" ? text : "");
+    if (item.phase === "completed") completedTextItemLines.set(item, lines);
+    return lines;
+  }
   if (item.type === "reasoning")
     return [bounded(`${lifecycle}: Reasoning updated`)];
   if (item.type === "commandExecution") {
@@ -82,7 +194,9 @@ export function renderTurnState(state: TurnState): readonly string[] {
     `Thread: ${bounded(state.threadId, 504)}`,
     `Turn: ${bounded(state.turnId, 506)}`,
   ];
-  for (const item of state.items.values()) lines.push(...renderItem(item));
+  const settled = state.terminalStatus !== "running";
+  for (const item of state.items.values())
+    lines.push(...renderItem(item, settled));
   for (const command of state.observedCommands)
     lines.push(
       bounded(
