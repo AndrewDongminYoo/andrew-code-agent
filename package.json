@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.build.json && cp src/generated/package.json dist/generated/package.json",
     "typecheck": "tsc --noEmit",
     "test:unit": "pnpm build && node --test test/unit/*.test.mjs",
-    "test:integration": "pnpm build && { test -d test/integration || exit 0; test_files=$(find test/integration -type f -name '*.test.mjs'); test -z \"$test_files\" || node --test $test_files; }",
+    "test:integration": "pnpm build && { test -d test/integration || exit 0; test_files=$(find test/integration -type f -name '*.test.mjs'); test -z \"$test_files\" || node --test --test-concurrency=1 $test_files; }",
     "test:contract": "pnpm build && { test -d test/contract || exit 0; test_files=$(find test/contract -type f -name '*.test.mjs'); test -z \"$test_files\" || node --test $test_files; }",
     "test:e2e": "pnpm build && { test -d test/e2e || exit 0; test_files=$(find test/e2e -type f -name '*.test.mjs'); test -z \"$test_files\" || node --test $test_files; }",
     "test": "pnpm test:unit && pnpm test:integration && pnpm test:contract && pnpm test:e2e",
