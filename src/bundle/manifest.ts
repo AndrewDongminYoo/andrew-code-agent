@@ -5,10 +5,7 @@ export type FileMode = "0600" | "0644" | "0755";
 export type CapabilityName = "oracle" | "shared-memory";
 
 export type AllowedToken =
-  | "HOME"
-  | "CODEX_HOME"
-  | "WORKSPACE_ROOT"
-  | "LLM_WIKI_ROOT";
+  "HOME" | "CODEX_HOME" | "WORKSPACE_ROOT" | "LLM_WIKI_ROOT";
 
 export interface ReplacementRule {
   readonly search: string;

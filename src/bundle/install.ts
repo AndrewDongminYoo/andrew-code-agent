@@ -50,8 +50,7 @@ interface LegacyActiveInstallMetadata {
 }
 
 type StoredActiveInstallMetadata =
-  | ActiveInstallMetadata
-  | LegacyActiveInstallMetadata;
+  ActiveInstallMetadata | LegacyActiveInstallMetadata;
 
 export type FileFingerprint =
   | { readonly kind: "absent" }

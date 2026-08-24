@@ -24,11 +24,7 @@ export interface ThreadRecord {
   readonly codexVersion: string;
   readonly turnId: string | null;
   readonly terminalStatus:
-    | "not-started"
-    | "running"
-    | "completed"
-    | "failed"
-    | "interrupted";
+    "not-started" | "running" | "completed" | "failed" | "interrupted";
   readonly finalGitStatus: string | null;
 }
 
