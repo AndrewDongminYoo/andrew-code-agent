@@ -25,6 +25,7 @@ const TRUNCATION_MARKER = " [truncated]";
 const MAX_RENDERED_PROTOCOL_PART = 128;
 const PROTOCOL_ID_DIGEST_LENGTH = 16;
 const PROTOCOL_ID_HASH_CHUNK_CODE_UNITS = 4096;
+const completedTextItemLines = new WeakMap<ItemState, readonly string[]>();
 
 function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
   return boundedTerminalText(value, limit, TRUNCATION_MARKER);
@@ -109,12 +110,17 @@ function messageLines(lifecycle: string, text: string): readonly string[] {
 }
 
 function renderItem(item: ItemState, settled: boolean): readonly string[] {
+  const textItem = item.type === "agentMessage" || item.type === "plan";
+  if (textItem && item.phase === "completed") {
+    const cached = completedTextItemLines.get(item);
+    if (cached !== undefined) return cached;
+  }
   const lifecycle = `${renderedItemId(item.id)} ${bounded(item.type, MAX_RENDERED_PROTOCOL_PART)} ${item.phase}`;
   // While a text item is still streaming its own value is a growing prefix of
   // the final one, and rendering it produced a near-identical line per delta.
   // `reasoning` below already renders a constant in flight; these do the same,
   // and the text arrives once, whole, when the item completes.
-  if (item.type === "agentMessage" || item.type === "plan") {
+  if (textItem) {
     // The constant stands only while the turn is still moving. Once the turn
     // is terminal the retained prefix is all there will ever be, and an
     // interrupted or failed turn must not throw away what it generated.
@@ -125,7 +131,9 @@ function renderItem(item: ItemState, settled: boolean): readonly string[] {
         ),
       ];
     const text = record(item.value)?.text;
-    return messageLines(lifecycle, typeof text === "string" ? text : "");
+    const lines = messageLines(lifecycle, typeof text === "string" ? text : "");
+    if (item.phase === "completed") completedTextItemLines.set(item, lines);
+    return lines;
   }
   if (item.type === "reasoning")
     return [bounded(`${lifecycle}: Reasoning updated`)];

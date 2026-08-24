@@ -352,6 +352,39 @@ test("chunked messages stay distinct when their displayed protocol IDs collide",
   );
 });
 
+test("reuses the completed message render while item identity is unchanged", () => {
+  let textReads = 0;
+  const value = {};
+  Object.defineProperty(value, "text", {
+    enumerable: true,
+    get() {
+      textReads += 1;
+      return "cached answer ".repeat(100);
+    },
+  });
+  const itemState = {
+    id: "msg-1",
+    type: "agentMessage",
+    phase: "completed",
+    value,
+  };
+  const state = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", itemState]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  };
+
+  const first = renderer().renderTurnState(state);
+  const second = renderer().renderTurnState(state);
+
+  assert.deepEqual(second, first);
+  assert.equal(textReads, 1);
+});
+
 // The reducer retains 4096 UTF-16 code units, so anything it accepts must be
 // renderable: a line cap smaller than that budget throws away a message the
 // product deliberately kept.
