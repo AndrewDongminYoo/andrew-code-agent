@@ -301,3 +301,28 @@ test("a message at the reducer's retained size renders without truncation", () =
     for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
   }
 });
+
+// A turn can end while a message is still `started` — an interrupt, or a
+// failure after deltas. Holding the text back until completion would throw
+// away everything the turn generated.
+test("a terminal turn shows the text of a message that never completed", () => {
+  const partial = "생성 중이던 답변입니다. ".repeat(6);
+  const stateFor = (terminalStatus) => ({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "started", value: { text: partial } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus,
+  });
+  for (const terminalStatus of ["interrupted", "failed", "completed"]) {
+    const rendered = renderer().renderTurnState(stateFor(terminalStatus)).join("\n");
+    assert.match(rendered, /생성 중이던 답변입니다/, terminalStatus);
+  }
+  // While the turn is still running the constant stands, or the reprinting
+  // this PR removed comes straight back.
+  const running = renderer().renderTurnState(stateFor("running")).join("\n");
+  assert.doesNotMatch(running, /생성 중이던 답변입니다/);
+  assert.match(running, /Message updated/);
+});

@@ -2142,3 +2142,33 @@ test("terminal approval writer rejects non-TTY, abort, partial, and failed write
     { code: "TERMINAL_WRITE_FAILED" },
   );
 });
+
+// An interrupt settles the turn without another notification, so nothing
+// re-rendered the state and the renderer's in-flight constant was the last
+// word: everything the message had generated was thrown away.
+test("an interrupted turn reports a terminal state so partial output survives", async () => {
+  const fixture = harness({ record: null, interruptGraceMs: 5 });
+  fixture.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "item/started",
+      params: { threadId: "thread-1", turnId: "turn-1", startedAtMs: 1, item: { type: "agentMessage", id: "msg-1", text: "" } },
+    });
+    client.emitNotification({
+      method: "item/agentMessage/delta",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "msg-1", delta: "partial answer" },
+    });
+    setImmediate(() => {
+      fixture.interrupt();
+      fixture.interrupt();
+    });
+  };
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/repo", prompt: "x", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+  assert.equal(result.terminalStatus, "interrupted");
+  const last = fixture.states.at(-1);
+  assert.notEqual(last, undefined, "the turn state must be reported at least once");
+  assert.notEqual(last.terminalStatus, "running", "the last reported state must be terminal");
+  assert.equal(last.items.get("msg-1").value.text, "partial answer");
+});

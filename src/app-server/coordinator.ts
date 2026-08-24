@@ -611,6 +611,16 @@ async function runTurn(
     await notificationSerial;
     const terminalStatus = await settlement;
     await Promise.all([notificationSerial, requestSerial]);
+    // An interrupt or a grace timeout settles the turn without another
+    // notification, so nothing re-reports the state and the renderer's
+    // in-flight view is the last word. Report the settled state once, or
+    // everything a message had generated is thrown away.
+    if (
+      state !== null &&
+      terminalStatus !== "not-started" &&
+      state.terminalStatus !== terminalStatus
+    )
+      await dependencies.reportTurnState({ ...state, terminalStatus });
     const failure = infrastructureFailure;
     if (failure === null) await closeOnce();
     const finalSnapshot = requireSnapshotRepository(

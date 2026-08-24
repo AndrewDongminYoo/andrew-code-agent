@@ -72,14 +72,17 @@ function messageLines(lifecycle: string, text: string): readonly string[] {
   );
 }
 
-function renderItem(item: ItemState): readonly string[] {
+function renderItem(item: ItemState, settled: boolean): readonly string[] {
   const lifecycle = `${bounded(item.id, 128)} ${bounded(item.type, 128)} ${item.phase}`;
   // While a text item is still streaming its own value is a growing prefix of
   // the final one, and rendering it produced a near-identical line per delta.
   // `reasoning` below already renders a constant in flight; these do the same,
   // and the text arrives once, whole, when the item completes.
   if (item.type === "agentMessage" || item.type === "plan") {
-    if (item.phase !== "completed")
+    // The constant stands only while the turn is still moving. Once the turn
+    // is terminal the retained prefix is all there will ever be, and an
+    // interrupted or failed turn must not throw away what it generated.
+    if (item.phase !== "completed" && !settled)
       return [
         bounded(
           `${lifecycle}: ${item.type === "plan" ? "Plan" : "Message"} updated`,
@@ -147,7 +150,9 @@ export function renderTurnState(state: TurnState): readonly string[] {
     `Thread: ${bounded(state.threadId, 504)}`,
     `Turn: ${bounded(state.turnId, 506)}`,
   ];
-  for (const item of state.items.values()) lines.push(...renderItem(item));
+  const settled = state.terminalStatus !== "running";
+  for (const item of state.items.values())
+    lines.push(...renderItem(item, settled));
   for (const command of state.observedCommands)
     lines.push(
       bounded(
