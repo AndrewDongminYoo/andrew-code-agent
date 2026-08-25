@@ -156,6 +156,24 @@ declined without being executed.
 Beyond approvals, the agent refuses to start when the target repository is
 not clean, and it re-reads HEAD after the turn to report exactly what changed.
 
+### The turn may only write inside the repository
+
+Every turn runs under a `workspaceWrite` sandbox whose writable roots are the
+target repository, the process temporary directory, and `/tmp`. Network access
+is off. Everything else is denied, including everything under `$HOME` and any
+shared SDK root.
+
+That keeps a turn's blast radius equal to the thing under version control. It
+also means **a command that populates a cache outside the repository has
+nowhere to write**, so a toolchain whose mutable state lives outside the
+workspace may not work inside a turn. A repository whose dependency tree is
+already installed can hide that entirely.
+
+No specific toolchain is named here because none has been observed failing this
+way. `docs/notes/2026-08-25-writable-root-boundary.md` records which caches on
+one machine sit outside the boundary, and why an earlier claim that this
+stopped a real run was withdrawn.
+
 ## Runtime locations
 
 Two roots, which must not overlap, and which you can override:
