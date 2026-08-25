@@ -21,11 +21,20 @@ directory, and `/tmp`. Everything else is denied, including everything under
 `$HOME` and any shared SDK root.
 
 The agent traced the defect correctly and then tried to confirm it against the
-existing tests. `flutter test` refreshes the Flutter SDK cache before running,
-that cache is outside the repository, the write was denied, and the turn ended
-there:
+existing tests, reporting that it had been blocked:
 
 > Flutter가 작업공간 밖 SDK 캐시를 갱신하려다 샌드박스에서 막혔습니다.
+
+**That report was taken at face value and it should not have been.** The Codex
+session log for that turn records the command's own outcome as
+`aborted by user after 0.1s`, and the turn as
+`turn_aborted, reason: interrupted`. The "user" there is this product's
+coordinator, which interrupted the turn; the agent's message was written before
+that and describes what it expected, not what the sandbox returned.
+
+**So it is not established that the sandbox refused anything.** Whether
+`flutter test` is denied under this policy is now an open question, and the
+cause of the interrupt is tracked separately.
 
 Nothing was written to the target; `Final Git status` was empty and the
 worktree stayed clean.
@@ -72,6 +81,16 @@ runs.
 - That any specific ecosystem beyond Flutter fails. Only the Flutter case was
   observed. The table above says which caches exist here, not which commands
   would be denied.
+
+## What this note still supports
+
+The policy quoted above is read from the code and is not in doubt: a turn may
+write in the repository, the process temporary directory, and `/tmp`, and
+nowhere else. The caches below do sit outside all three.
+
+What is no longer supported is the claim that this was observed stopping a real
+turn. That observation was a misreading, and the note keeps the boundary
+description while withdrawing the incident.
 
 ## Effect on the acceptance measurement
 
