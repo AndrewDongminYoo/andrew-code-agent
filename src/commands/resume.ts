@@ -32,9 +32,10 @@ export async function resumeCommand(
   io: CommandIO,
   dependencies: CommandDependencies = defaultCommandDependencies,
   // Trails the injection seam so the existing call sites keep their shape.
-  // ponytail: accepted and not yet used; step 4 of
+  // ponytail: the CLI refuses `--capability` on resume, so this is always the
+  // empty set today. Step 4 of
   // docs/plans/2026-08-25-v0.2-oracle-capability.md derives the boundary from
-  // the thread record instead, and refuses a flag that disagrees with it.
+  // the thread record and only then accepts a flag that agrees with it.
   _capabilities: readonly RequestedCapability[] = [],
 ): Promise<number> {
   let phase: "local" | "setup" | "app-server" = "local";

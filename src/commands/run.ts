@@ -17,6 +17,7 @@ import {
 import { renderTurnState } from "../app-server/renderer.js";
 import { boundedTerminalText } from "../app-server/terminal.js";
 import { ArtifactError, buildBundle } from "../bundle/artifact.js";
+import { RenderError, type CapabilityInputs } from "../bundle/render.js";
 import {
   InstallError,
   installBundle,
@@ -135,10 +136,7 @@ export async function runCommand(
   io: CommandIO,
   dependencies: CommandDependencies = defaultCommandDependencies,
   // Trails the injection seam so the existing call sites keep their shape.
-  // ponytail: accepted and not yet used; step 2 of
-  // docs/plans/2026-08-25-v0.2-oracle-capability.md threads it into
-  // prepareCandidate, which still requests an empty set.
-  _capabilities: readonly RequestedCapability[] = [],
+  capabilities: readonly RequestedCapability[] = [],
 ): Promise<number> {
   let phase: "preflight" | "setup" | "app-server" = "preflight";
   let lock: Awaited<ReturnType<typeof acquireProcessLock>> | undefined;
@@ -147,13 +145,13 @@ export async function runCommand(
   let outcome = 3;
   let diagnostic: string | undefined;
   try {
-    const paths = await dependencies.resolveRuntimePaths();
+    const paths = await dependencies.resolveRuntimePaths({ capabilities });
     const snapshot = await dependencies.readGitSnapshot(repository);
     dependencies.assertCleanGitSnapshot(snapshot);
     phase = "setup";
     await dependencies.initializeRuntimeState(paths);
     lock = await dependencies.acquireProcessLock(paths.stateRoot);
-    const artifact = await prepareCandidate(paths, dependencies);
+    const artifact = await prepareCandidate(paths, dependencies, capabilities);
     phase = "app-server";
     client = await dependencies.startAppServer(appServerInput(paths));
     const coordinator = coordinatorDependencies(
@@ -214,13 +212,20 @@ export async function runCommand(
 export async function prepareCandidate(
   paths: RuntimePaths,
   dependencies: CommandDependencies,
+  capabilities: readonly RequestedCapability[] = [],
 ) {
+  // Derived from the resolved paths rather than the environment, so the bundle
+  // and the doctor gate that admits it see the same root, canonicalized once.
+  const capabilityInputs: CapabilityInputs =
+    paths.oracleRoot === undefined
+      ? {}
+      : { oracle: { llmWikiRoot: paths.oracleRoot } };
   await dependencies.recoverInterruptedInstall(paths.stateRoot);
   const artifact = await dependencies.buildBundle({
     sourceRoot: paths.sourceRoot,
     artifactsRoot: join(paths.stateRoot, "bundles"),
-    requestedCapabilities: [],
-    capabilityInputs: {},
+    requestedCapabilities: capabilities,
+    capabilityInputs,
     builderVersion: PRODUCT_VERSION,
   });
   await dependencies.installBundle(paths.stateRoot, artifact);
@@ -230,8 +235,8 @@ export async function prepareCandidate(
     platformVersion: dependencies.platformVersion ?? release(),
     paths,
     builderVersion: PRODUCT_VERSION,
-    requestedCapabilities: [],
-    capabilityInputs: {},
+    requestedCapabilities: capabilities,
+    capabilityInputs,
     scratchParent: dependencies.scratchParent ?? (await realpath(tmpdir())),
     commandTimeoutMs: DOCTOR_TIMEOUT_MS,
   });
@@ -450,7 +455,11 @@ function errorCode(error: unknown): string | undefined {
     error instanceof InstallError ||
     error instanceof ArtifactError ||
     error instanceof GitRuntimeError ||
-    error instanceof RuntimePathError
+    error instanceof RuntimePathError ||
+    // Reachable only once a capability can be requested: renderBundle throws
+    // this straight through buildBundle, and without it a refused capability
+    // aborts the run with no name for why.
+    error instanceof RenderError
   )
     return error.code;
   return undefined;

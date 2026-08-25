@@ -12,6 +12,7 @@ const execFile = promisify(execFileCallback);
 const cliModule = await import("../../dist/cli.js").catch(() => null);
 const runModule = await import("../../dist/commands/run.js").catch(() => null);
 const resumeModule = await import("../../dist/commands/resume.js").catch(() => null);
+const renderModule = await import("../../dist/bundle/render.js").catch(() => null);
 const statusModule = await import("../../dist/commands/status.js").catch(() => null);
 const rendererModule = await import("../../dist/app-server/renderer.js").catch(() => null);
 const gitModule = await import("../../dist/runtime/git.js");
@@ -1255,4 +1256,50 @@ test("the capability flag is parsed, validated, and gated on its declared input"
   const helpOutput = capture();
   assert.equal(await cliModule.main(["run", "--capability", "oracle", "--help"], { ...helpOutput, handlers, env: {} }), 0);
   assert.equal(helpOutput.output().stdout, "Usage: andrew-agent run <repository> <prompt>\n");
+});
+
+test("the requested capability set and its resolved root reach the bundle and the doctor gate", async () => {
+  const repositoryRoot = await createRepository();
+  const seen = [];
+  const harness = operationHarness(repositoryRoot);
+  const resolveCalls = [];
+  const paths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex", oracleRoot: "/fixture/wiki" };
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths(options) { resolveCalls.push(options); return options?.capabilities?.includes("oracle") ? paths : { ...paths, oracleRoot: undefined }; },
+    async buildBundle(input) { seen.push(["build", input.requestedCapabilities, input.capabilityInputs]); return { artifactRoot: "/fixture/artifact", metadata: { bundleDigest: "c".repeat(64) } }; },
+    async runDoctor(input) { seen.push(["doctor", input.requestedCapabilities, input.capabilityInputs]); return { exitCode: 0, findings: [] }; },
+  };
+
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, ["oracle"]), 0);
+  assert.deepEqual(resolveCalls, [{ capabilities: ["oracle"] }]);
+  // Both literal pairs move together: a doctor that validated an empty set
+  // would be admitting a bundle it was never shown.
+  assert.deepEqual(seen, [["build", ["oracle"], { oracle: { llmWikiRoot: "/fixture/wiki" } }], ["doctor", ["oracle"], { oracle: { llmWikiRoot: "/fixture/wiki" } }]]);
+
+  seen.length = 0;
+  resolveCalls.length = 0;
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, []), 0);
+  assert.deepEqual(resolveCalls, [{ capabilities: [] }]);
+  assert.deepEqual(seen, [["build", [], {}], ["doctor", [], {}]]);
+
+  // resume carries the empty set until step 4 gives it a record to compare.
+  seen.length = 0;
+  assert.equal(await resumeModule.resumeCommand("thread-1", "prompt", capture(), dependencies), 0);
+  assert.deepEqual(seen, [["build", [], {}], ["doctor", [], {}]]);
+});
+
+test("requesting a capability the bundle source does not declare aborts the run", async () => {
+  const repositoryRoot = await createRepository();
+  const harness = operationHarness(repositoryRoot);
+  const refusal = new renderModule.RenderError("CAPABILITY_INPUT_INVALID", "Oracle input was provided without an Oracle capability declaration.");
+  const output = capture();
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths() { return { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex", oracleRoot: "/fixture/wiki" }; },
+    async buildBundle() { throw refusal; },
+    async installBundle() { throw new Error("install must not run after a refusal"); },
+  };
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, dependencies, ["oracle"]), 3);
+  assert.equal(output.output().stderr, "Runtime preparation failed: CAPABILITY_INPUT_INVALID.\n");
 });

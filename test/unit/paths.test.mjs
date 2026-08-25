@@ -185,3 +185,63 @@ test("rejects a pre-existing permissive state root without chmod", async () => {
     assert.equal((await lstat(stateRoot)).mode & 0o777, 0o755);
   });
 });
+
+test("the Oracle root is resolved only when its capability is requested", async () => {
+  await withFixture(async ({ root, home, source, codexBin }) => {
+    const state = join(root, "state");
+    const wiki = await realpath(await mkdtemp(join(tmpdir(), "andrew-agent-wiki-")));
+    const baseEnv = {
+      HOME: home,
+      PATH: "/usr/bin:/bin",
+      ANDREW_AGENT_CODEX_SOURCE: source,
+      ANDREW_AGENT_CODEX_BIN: codexBin,
+      ANDREW_AGENT_STATE_ROOT: state,
+    };
+    const resolve = (env, capabilities) =>
+      requirePaths().resolveRuntimePaths({ platform: "darwin", env, capabilities });
+    try {
+      // Requested: canonicalized like the other two roots.
+      const viaSymlink = join(root, "wiki-link");
+      await symlink(wiki, viaSymlink);
+      const enabled = await resolve({ ...baseEnv, ANDREW_AGENT_ORACLE_ROOT: viaSymlink }, ["oracle"]);
+      assert.equal(enabled.oracleRoot, wiki);
+
+      // Not requested: the variable is never read, so a broken value cannot
+      // fail an unrelated run. This is what keeps a no-flag run identical to
+      // v0.1, and it is the case that fails if the gate is ever removed.
+      for (const broken of [join(root, "missing"), join(state, "inside"), join(source, "inside"), "relative", ""]) {
+        const paths = await resolve({ ...baseEnv, ANDREW_AGENT_ORACLE_ROOT: broken }, []);
+        assert.equal(paths.oracleRoot, undefined, broken);
+        assert.equal(paths.stateRoot, state);
+      }
+      const omitted = await resolve(baseEnv, []);
+      assert.equal(omitted.oracleRoot, undefined);
+      assert.equal(Object.hasOwn(omitted, "oracleRoot"), false);
+
+      // Requested but unusable: rejected here, not deferred to the renderer.
+      for (const [value, code] of [[undefined, "RUNTIME_PATH_INVALID"], ["", "RUNTIME_PATH_INVALID"], ["relative", "RUNTIME_PATH_INVALID"], [join(root, "missing"), "RUNTIME_PATH_INVALID"], [codexBin, "RUNTIME_PATH_INVALID"]]) {
+        await assert.rejects(resolve({ ...baseEnv, ANDREW_AGENT_ORACLE_ROOT: value }, ["oracle"]), { code }, String(value));
+      }
+
+      // Each pairing is refused under its own code, in both directions.
+      await mkdir(join(state, "inside"), { recursive: true });
+      await mkdir(join(source, "inside"), { recursive: true });
+      await assert.rejects(resolve({ ...baseEnv, ANDREW_AGENT_ORACLE_ROOT: join(state, "inside") }, ["oracle"]), { code: "ORACLE_ROOT_OVERLAPS_STATE" });
+      await assert.rejects(resolve({ ...baseEnv, ANDREW_AGENT_ORACLE_ROOT: join(source, "inside") }, ["oracle"]), { code: "ORACLE_ROOT_OVERLAPS_SOURCE" });
+      await assert.rejects(resolve({ ...baseEnv, ANDREW_AGENT_ORACLE_ROOT: root, ANDREW_AGENT_STATE_ROOT: join(root, "state") }, ["oracle"]), { code: "ORACLE_ROOT_OVERLAPS_STATE" });
+      await assert.rejects(resolve({ ...baseEnv, ANDREW_AGENT_ORACLE_ROOT: root, ANDREW_AGENT_CODEX_SOURCE: source, ANDREW_AGENT_STATE_ROOT: join(tmpdir(), "andrew-agent-elsewhere-state") }, ["oracle"]), { code: "ORACLE_ROOT_OVERLAPS_SOURCE" });
+
+      // initializeRuntimeState re-validates it the way it re-validates the
+      // other roots, including which code each fault carries: a non-canonical
+      // form is RUNTIME_STATE_UNSAFE, while a path that cannot be canonicalized
+      // at all keeps canonicalExistingDirectory's own RUNTIME_PATH_INVALID,
+      // exactly as sourceRoot does on the line above it.
+      await assert.rejects(requirePaths().initializeRuntimeState({ ...enabled, oracleRoot: viaSymlink }), { code: "RUNTIME_STATE_UNSAFE" });
+      await assert.rejects(requirePaths().initializeRuntimeState({ ...enabled, oracleRoot: "relative" }), { code: "RUNTIME_STATE_UNSAFE" });
+      await assert.rejects(requirePaths().initializeRuntimeState({ ...enabled, oracleRoot: join(root, "missing") }), { code: "RUNTIME_PATH_INVALID" });
+      await assert.rejects(requirePaths().initializeRuntimeState({ ...enabled, oracleRoot: join(state, "inside") }), { code: "RUNTIME_STATE_UNSAFE" });
+    } finally {
+      await rm(wiki, { recursive: true, force: true });
+    }
+  });
+});

@@ -12,17 +12,28 @@ import {
   sep,
 } from "node:path";
 
+import type { RequestedCapability } from "../constants.js";
+
 export interface RuntimePaths {
   readonly sourceRoot: string;
   readonly stateRoot: string;
   readonly codexHome: string;
   readonly codexBin: string;
+  // Present only when the `oracle` capability was requested. A run that did
+  // not ask for it never reads the variable, so a stale or broken value
+  // cannot fail an unrelated run.
+  readonly oracleRoot?: string;
 }
 
 export type RuntimePathErrorCode =
   | "UNSUPPORTED_PLATFORM"
   | "RUNTIME_PATH_INVALID"
   | "RUNTIME_PATH_OVERLAP"
+  // One code per pair rather than per direction: containment either way is
+  // the same collision, and the message names the pair the code already
+  // identifies.
+  | "ORACLE_ROOT_OVERLAPS_STATE"
+  | "ORACLE_ROOT_OVERLAPS_SOURCE"
   | "CODEX_BINARY_NOT_FOUND"
   | "RUNTIME_STATE_UNSAFE";
 
@@ -39,6 +50,7 @@ export class RuntimePathError extends Error {
 export interface RuntimePathResolutionOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly platform?: NodeJS.Platform;
+  readonly capabilities?: readonly RequestedCapability[];
 }
 
 export async function resolveRuntimePaths(
@@ -65,12 +77,16 @@ export async function resolveRuntimePaths(
   const stateRoot = await canonicalPotentialPath(stateInput);
   assertSeparated(sourceRoot, stateRoot);
   const codexBin = await resolveCodexBinary(env);
+  const oracleRoot = (options.capabilities ?? []).includes("oracle")
+    ? await resolveOracleRoot(env, sourceRoot, stateRoot)
+    : undefined;
 
   return {
     sourceRoot,
     stateRoot,
     codexHome: join(stateRoot, "codex-home"),
     codexBin,
+    ...(oracleRoot === undefined ? {} : { oracleRoot }),
   };
 }
 
@@ -100,6 +116,28 @@ export async function initializeRuntimeState(
     );
   }
   assertSeparated(sourceRoot, stateRoot, "RUNTIME_STATE_UNSAFE");
+  if (paths.oracleRoot !== undefined) {
+    if (!isAbsolute(paths.oracleRoot)) {
+      throw new RuntimePathError(
+        "RUNTIME_STATE_UNSAFE",
+        "Oracle root must be absolute.",
+      );
+    }
+    const oracleRoot = await canonicalExistingDirectory(paths.oracleRoot);
+    if (oracleRoot !== paths.oracleRoot) {
+      throw new RuntimePathError(
+        "RUNTIME_STATE_UNSAFE",
+        "Oracle root must use its canonical absolute form.",
+      );
+    }
+    assertOracleSeparated(
+      oracleRoot,
+      sourceRoot,
+      stateRoot,
+      "RUNTIME_STATE_UNSAFE",
+      "RUNTIME_STATE_UNSAFE",
+    );
+  }
   await revalidateCodexBinary(paths.codexBin);
 
   await ensureOwnerDirectory(stateRoot);
@@ -198,6 +236,44 @@ async function canonicalPotentialPath(input: string): Promise<string> {
       );
       ancestor = parent;
     }
+  }
+}
+
+// The Oracle root must already exist and be readable, which is what the
+// renderer demands of it too; resolving it as a potential path would defer
+// that failure to a later layer and split one fault across two.
+async function resolveOracleRoot(
+  env: NodeJS.ProcessEnv,
+  sourceRoot: string,
+  stateRoot: string,
+): Promise<string> {
+  const input = requireAbsolute(
+    env.ANDREW_AGENT_ORACLE_ROOT,
+    "ANDREW_AGENT_ORACLE_ROOT",
+  );
+  const oracleRoot = await canonicalExistingDirectory(input);
+  assertOracleSeparated(oracleRoot, sourceRoot, stateRoot);
+  return oracleRoot;
+}
+
+function assertOracleSeparated(
+  oracleRoot: string,
+  sourceRoot: string,
+  stateRoot: string,
+  stateCode: RuntimePathErrorCode = "ORACLE_ROOT_OVERLAPS_STATE",
+  sourceCode: RuntimePathErrorCode = "ORACLE_ROOT_OVERLAPS_SOURCE",
+): void {
+  if (contains(oracleRoot, stateRoot) || contains(stateRoot, oracleRoot)) {
+    throw new RuntimePathError(
+      stateCode,
+      "Oracle and state roots must not overlap.",
+    );
+  }
+  if (contains(oracleRoot, sourceRoot) || contains(sourceRoot, oracleRoot)) {
+    throw new RuntimePathError(
+      sourceCode,
+      "Oracle and source roots must not overlap.",
+    );
   }
 }
 
