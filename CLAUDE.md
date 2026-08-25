@@ -10,7 +10,7 @@ so hard-wrap prose here instead of using one line per sentence.
 
 ## Commands
 
-All 21 test files import the compiled output (`await import("../../dist/...")`),
+All 22 test files import the compiled output (`await import("../../dist/...")`),
 and the CLI integration suite additionally asserts that `dist/cli.js` exists.
 A bare `node --test` against a stale or missing `dist/` therefore fails in a
 way that looks like a product bug.
