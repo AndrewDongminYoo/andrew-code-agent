@@ -1411,3 +1411,25 @@ test("a run records the grant it was given, so a later resume has something true
   assert.deepEqual(identities.map((identity) => [identity.requestedCapabilities, identity.oracleRootDigest]), [[["oracle"], expected], [[], null]]);
   for (const identity of identities) assert.equal(JSON.stringify(identity).includes(oracleRoot), false);
 });
+
+test("the read-only resume form works regardless of the grant or the current environment", async () => {
+  const repositoryRoot = await createRepository();
+  const digestOf = (root) => createHash("sha256").update(root, "utf8").digest("hex");
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+  const grant = { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf("/fixture/wiki-a") };
+
+  // `resume <thread-id>` starts no turn and no App Server, so there is nothing
+  // for a capability boundary to protect. It has to keep working when the
+  // caller passes no flag, and when the root has moved since.
+  for (const [flag, currentRoot] of [[[], "/fixture/wiki-a"], [["oracle"], "/fixture/wiki-b"], [[], undefined]]) {
+    const harness = operationHarness(repositoryRoot, { record: terminalRecord(repositoryRoot, "completed", grant) });
+    const output = capture();
+    const code = await resumeModule.resumeCommand("thread-1", undefined, output, {
+      ...harness.dependencies,
+      async resolveRuntimePaths(options) { return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot: currentRoot } : basePaths; },
+    }, flag);
+    assert.equal(code, 0, `${JSON.stringify(flag)} / ${currentRoot}`);
+    assert.equal(output.output().stderr, "");
+    assert.equal(harness.order.includes("lock"), false);
+  }
+});

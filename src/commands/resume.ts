@@ -53,6 +53,15 @@ export async function resumeCommand(
       locating.stateRoot,
       threadId,
     );
+    // The read-only form starts no turn and no App Server, so there is nothing
+    // for the capability boundary to protect and it is checked below instead.
+    // Gating it would make inspecting a granted thread fail whenever the flag
+    // is absent or the root has since moved.
+    if (prompt === undefined) {
+      await renderLocalRecord(existing, io.stdout);
+      outcome = 0;
+      return outcome;
+    }
     const granted = existing.requestedCapabilities;
     if (!sameCapabilitySet(capabilities, granted)) {
       await safeDiagnostic(io, "Resume refused: THREAD_CAPABILITY_MISMATCH.");
@@ -67,11 +76,6 @@ export async function resumeCommand(
       // no-leak requirement applies to diagnostics as much as to the bundle.
       await safeDiagnostic(io, "Resume refused: THREAD_ORACLE_ROOT_CHANGED.");
       return 3;
-    }
-    if (prompt === undefined) {
-      await renderLocalRecord(existing, io.stdout);
-      outcome = 0;
-      return outcome;
     }
     const snapshot = await dependencies.readGitSnapshot(
       existing.repositoryRoot,
