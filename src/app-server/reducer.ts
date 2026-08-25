@@ -570,6 +570,18 @@ export function reduceServerMessage(
   if (Object.hasOwn(message, "id"))
     throw new ReducerError("UNKNOWN_SERVER_REQUEST");
   const params = isRecord(message.params) ? message.params : null;
+  // The App Server multiplexes a sub-agent's thread over the same connection,
+  // so the parent receives frames naming a thread it does not own. They were
+  // never this turn's to reduce, and dropping them preserves exactly what the
+  // identity checks below protect: no other thread's data enters this state.
+  // Throwing instead interrupted the parent turn the moment a subagent
+  // started; see docs/notes/2026-08-26-issue-24-instrumented-runs.md.
+  if (
+    params !== null &&
+    typeof params.threadId === "string" &&
+    params.threadId !== state.threadId
+  )
+    return state;
 
   if (message.method === "item/started") {
     if (!params) throw new ReducerError("INVALID_SERVER_EVENT");

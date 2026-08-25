@@ -64,13 +64,43 @@ test("rejects invalid event identity and type transitions without mutating state
   const message = item("agentMessage", "message-1", { text: "", phase: null, memoryCitation: null });
   const active = api.reduceServerMessage(base, started(message));
   for (const malformed of [
-    { method: "item/agentMessage/delta", params: { threadId: "thread-2", turnId: "turn-1", itemId: "message-1", delta: "no" } },
+    { method: "item/agentMessage/delta", params: { threadId: "thread-1", turnId: "turn-2", itemId: "message-1", delta: "no" } },
     { method: "item/agentMessage/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "missing", delta: "no" } },
     { method: "item/plan/delta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "message-1", delta: "no" } },
   ]) {
     assert.throws(() => api.reduceServerMessage(active, malformed), { code: "INVALID_SERVER_EVENT" });
   }
   assert.deepEqual([...active.items.keys()], ["message-1"]);
+});
+
+// codex-cli 0.148.0 multiplexes a sub-agent's thread over the parent's
+// connection, so the parent receives frames naming a thread it does not own.
+// They are not this turn's to reduce, and throwing on them interrupted the
+// parent turn the moment a subagent started; see issue #24 and
+// docs/notes/2026-08-26-issue-24-instrumented-runs.md.
+test("drops notifications that name another thread", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "", phase: null, memoryCitation: null });
+  const active = api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), started(message));
+  for (const foreign of [
+    { method: "turn/started", params: { threadId: "thread-2", turn: { id: "turn-9", items: [], itemsView: "notLoaded", status: "inProgress", error: null, startedAt: null, completedAt: null, durationMs: null } } },
+    { method: "item/started", params: { threadId: "thread-2", turnId: "turn-9", startedAtMs: 1, item: item("reasoning", "thought-9", { summary: [], content: [] }) } },
+    { method: "item/completed", params: { threadId: "thread-2", turnId: "turn-9", completedAtMs: 2, item: item("agentMessage", "message-9", { text: "other thread", phase: null, memoryCitation: null }) } },
+    { method: "item/agentMessage/delta", params: { threadId: "thread-2", turnId: "turn-9", itemId: "message-9", delta: "no" } },
+    { method: "turn/completed", params: { threadId: "thread-2", turn: { id: "turn-9", items: [], itemsView: "summary", status: "completed", error: null, startedAt: null, completedAt: null, durationMs: null } } },
+  ]) {
+    assert.equal(api.reduceServerMessage(active, foreign), active, `${foreign.method} from another thread must leave the state untouched`);
+  }
+  assert.deepEqual([...active.items.keys()], ["message-1"], "a foreign thread must not add items to this turn");
+  assert.equal(active.terminalStatus, "running", "a foreign thread must not settle this turn");
+
+  assert.throws(
+    () => api.reduceServerMessage(active, { method: "item/started", params: { turnId: "turn-1", startedAtMs: 1, item: item("reasoning", "thought-1", { summary: [], content: [] }) } }),
+    { code: "INVALID_SERVER_EVENT" },
+    "a frame carrying no thread id cannot be attributed and stays fail-closed",
+  );
+  const warned = api.reduceServerMessage(active, { method: "warning", params: { threadId: null, message: "not thread-scoped" } });
+  assert.deepEqual(warned.warnings, ["not thread-scoped"], "an explicit null thread id means the frame is not thread-scoped, not foreign");
 });
 
 test("preserves authoritative completion and rejects conflicting terminal data", () => {
