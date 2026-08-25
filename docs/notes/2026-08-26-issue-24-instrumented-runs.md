@@ -147,9 +147,9 @@ it decides how much of D2's fix is needed.
 
 ## D1 verified against a real run
 
-`1de90be` drops a frame naming another thread at the top of
-`reduceServerMessage`. The same Oracle prompt was then re-run with the
-notification tally still instrumented.
+`98403bf`, on `fix/issue-24-cross-thread-notifications`, drops a frame naming
+another thread at the top of `reduceServerMessage`. The same Oracle prompt was
+then re-run with the notification tally still instrumented.
 
 - `Terminal status: completed`. The Oracle returned precedent for the first
   time, which is what "the adapter is reached" never reached before.
