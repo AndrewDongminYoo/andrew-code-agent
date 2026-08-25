@@ -1303,3 +1303,27 @@ test("requesting a capability the bundle source does not declare aborts the run"
   assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, dependencies, ["oracle"]), 3);
   assert.equal(output.output().stderr, "Runtime preparation failed: CAPABILITY_INPUT_INVALID.\n");
 });
+
+test("the resolved Oracle root reaches the App Server input, and only when it exists", async () => {
+  const repositoryRoot = await createRepository();
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+
+  // Directly, because appServerInput is the link between the resolved paths
+  // and the spawn: without this the whole chain still passes while the child
+  // is launched without the variable it needs.
+  assert.equal(Object.hasOwn(runModule.appServerInput(basePaths), "llmWikiRoot"), false);
+  assert.equal(runModule.appServerInput({ ...basePaths, oracleRoot: "/fixture/wiki" }).llmWikiRoot, "/fixture/wiki");
+
+  // And through a run, so the chain from the requested set to the child input
+  // is asserted end to end rather than at its two ends.
+  const harness = operationHarness(repositoryRoot);
+  const starts = [];
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths(options) { return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot: "/fixture/wiki" } : basePaths; },
+    async startAppServer(input) { starts.push(input.llmWikiRoot); return harness.dependencies.startAppServer(input); },
+  };
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, ["oracle"]), 0);
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, []), 0);
+  assert.deepEqual(starts, ["/fixture/wiki", undefined]);
+});

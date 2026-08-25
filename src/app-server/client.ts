@@ -25,6 +25,10 @@ export interface StartAppServerInput {
   readonly productVersion: string;
   readonly handshakeTimeoutMs: number;
   readonly requestTimeoutMs: number;
+  // Present only when the `oracle` capability was enabled for this run. The
+  // bundled configuration keeps `${LLM_WIKI_ROOT}` as a literal and nothing
+  // else expands it, so without this the adapter cannot locate the wiki.
+  readonly llmWikiRoot?: string;
 }
 
 export interface AppServerClient {
@@ -98,7 +102,16 @@ export async function startAppServer(
     input.codexBinary,
     ["app-server", "--strict-config", "--stdio"],
     {
-      env: { CODEX_HOME: input.codexHome, PATH: childPath },
+      // Constructed explicitly, never a copy of `process.env`: the child sees
+      // these two, plus the wiki root when the capability is on, and nothing
+      // else. The `--version` probe above stays on PATH alone.
+      env: {
+        CODEX_HOME: input.codexHome,
+        PATH: childPath,
+        ...(input.llmWikiRoot === undefined
+          ? {}
+          : { LLM_WIKI_ROOT: input.llmWikiRoot }),
+      },
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
     },

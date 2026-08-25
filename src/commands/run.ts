@@ -295,6 +295,12 @@ export function appServerInput(paths: RuntimePaths) {
     productVersion: PRODUCT_VERSION,
     handshakeTimeoutMs: APP_SERVER_HANDSHAKE_TIMEOUT_MS,
     requestTimeoutMs: APP_SERVER_REQUEST_TIMEOUT_MS,
+    // Taken from the resolved paths rather than re-read from the environment,
+    // so the child is told the same canonical root the bundle was rendered
+    // against. `oracleRoot` is set only when the capability was requested.
+    ...(paths.oracleRoot === undefined
+      ? {}
+      : { llmWikiRoot: paths.oracleRoot }),
   };
 }
 
