@@ -80,7 +80,11 @@ export async function renderBundle(
   const oracle = manifest.capabilities.find(
     (capability) => capability.name === "oracle",
   );
-  const oracleEnabled = await resolveOracleCapability(oracle, capabilities);
+  const oracleCanonicalRoot = await resolveOracleCapability(
+    oracle,
+    capabilities,
+  );
+  const oracleEnabled = oracleCanonicalRoot !== undefined;
   if (oracleEnabled) {
     await assertRequirements(manifest.requirements, "oracle");
   }
@@ -144,9 +148,12 @@ export async function renderBundle(
   validatePortableFiles(
     files,
     manifest,
-    oracleEnabled && capabilities.oracle !== undefined
-      ? [capabilities.oracle.llmWikiRoot]
-      : [],
+    // Both spellings: the one the caller supplied and the one it resolves to.
+    // They differ whenever the root is reached through a symbolic link, and a
+    // rendered file could carry either.
+    oracleCanonicalRoot === undefined || capabilities.oracle === undefined
+      ? []
+      : [...new Set([capabilities.oracle.llmWikiRoot, oracleCanonicalRoot])],
   );
   assertDisabledCapabilityTokens(
     files,
@@ -219,12 +226,16 @@ function hasOnlyOwnKeys(
   );
 }
 
+// Returns the canonical root when the capability is on, so the caller can scan
+// for the path the filesystem actually resolves to. Returning only a boolean
+// discarded that value and left a symlinked root scanned under one spelling
+// while a rendered file could carry the other.
 async function resolveOracleCapability(
   oracle: CapabilityDefinition | undefined,
   capabilities: CapabilityInputs,
-): Promise<boolean> {
+): Promise<string | undefined> {
   if (oracle === undefined || capabilities.oracle === undefined) {
-    return false;
+    return undefined;
   }
   const root = capabilities.oracle.llmWikiRoot;
   if (!isAbsolute(root)) {
@@ -240,13 +251,14 @@ async function resolveOracleCapability(
     if (!metadata.isDirectory()) {
       throw new Error("not a directory");
     }
-  } catch {
+    return canonicalRoot;
+  } catch (error) {
+    if (error instanceof RenderError) throw error;
     throw new RenderError(
       "ORACLE_INPUT_INVALID",
       "Oracle llmWikiRoot must be an absolute readable directory.",
     );
   }
-  return true;
 }
 
 async function assertRequirements(

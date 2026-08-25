@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -624,6 +633,35 @@ test("the enabled Oracle root is scanned for even when the manifest never heard 
     });
   } finally {
     await rm(wiki, { recursive: true, force: true });
+    await rm(repository, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked Oracle root is scanned under both spellings", async () => {
+  const canonical = await realpath(await mkdtemp(join(tmpdir(), "andrew-code-agent-wiki-real-")));
+  const linkParent = await mkdtemp(join(tmpdir(), "andrew-code-agent-wiki-link-"));
+  const link = join(linkParent, "wiki");
+  await symlink(canonical, link);
+  const repository = await createSourceRepository();
+  try {
+    assert.notEqual(link, canonical, "the fixture must actually differ from its target");
+
+    // A rendered file carrying the canonical target must be refused even
+    // though the capability input names the link, because they identify the
+    // same enabled root.
+    await writeFile(join(repository, "agents", "oracle.toml"), `name = "oracle"\nwiki_root = "${canonical}"\n`);
+    await execFile("git", ["-C", repository, "add", "--all"]);
+    await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "hardcode the canonical wiki root"]);
+    await assert.rejects(renderBundle(repository, manifest(), { oracle: { llmWikiRoot: link } }), { code: "FORBIDDEN_LITERAL" });
+
+    // And the reverse: a file carrying the link spelling is refused too.
+    await writeFile(join(repository, "agents", "oracle.toml"), `name = "oracle"\nwiki_root = "${link}"\n`);
+    await execFile("git", ["-C", repository, "add", "--all"]);
+    await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "hardcode the link spelling"]);
+    await assert.rejects(renderBundle(repository, manifest(), { oracle: { llmWikiRoot: link } }), { code: "FORBIDDEN_LITERAL" });
+  } finally {
+    await rm(linkParent, { recursive: true, force: true });
+    await rm(canonical, { recursive: true, force: true });
     await rm(repository, { recursive: true, force: true });
   }
 });
