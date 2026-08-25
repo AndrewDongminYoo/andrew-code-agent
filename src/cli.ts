@@ -215,18 +215,16 @@ function isAllowedOption(argument: string): boolean {
 // not expressible: an unsupported name, or the flag on a command that takes
 // none. Both are grammar failures, so the caller reports the usage code.
 //
-// `resume` refuses the flag outright for now, which is narrower than the plan
-// describes on purpose. Step 4 gives `resume` a recorded capability set to
-// compare a flag against; until then it has nothing to compare, and step 2
-// threads the requested set into the bundle. Accepting the flag in between
-// would let a thread started without a capability be resumed with one, which
-// is the widening step 4's boundary exists to refuse.
+// `resume` accepts it again now that it has a recorded set to compare against:
+// a flag there can only agree with what the thread was granted, never widen
+// it. It was refused between steps 1 and 3 precisely because that comparison
+// did not exist yet.
 function readCapabilities(
   command: PublicCommand,
   requested: readonly string[] | undefined,
 ): readonly RequestedCapability[] | undefined {
   if (requested === undefined) return [];
-  if (command !== "run") return undefined;
+  if (command !== "run" && command !== "resume") return undefined;
   if (!requested.every(isSupportedCapability)) return undefined;
   return [...new Set(requested)].sort();
 }

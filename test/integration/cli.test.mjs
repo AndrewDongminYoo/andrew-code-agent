@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -63,8 +64,11 @@ async function createRepositoryWithGitlink() {
   return { repositoryRoot, sourceRoot };
 }
 
-function terminalRecord(repositoryRoot, terminalStatus = "completed") {
-  return { threadId: "thread-1", repositoryRoot, startingHead: "a".repeat(40), terminalHead: "b".repeat(40), bundleDigest: "c".repeat(64), productVersion: "0.1.0", codexVersion: "0.148.0", turnId: "turn-1", terminalStatus, finalGitStatus: "1 .M N... tracked.txt" };
+function terminalRecord(repositoryRoot, terminalStatus = "completed", grant = {}) {
+  // readThreadRecord always yields these two, migrating a pre-schema-2 record
+  // to the empty grant, so a fake that omitted them would not be a record the
+  // product can produce.
+  return { threadId: "thread-1", repositoryRoot, startingHead: "a".repeat(40), terminalHead: "b".repeat(40), bundleDigest: "c".repeat(64), productVersion: "0.1.0", codexVersion: "0.148.0", turnId: "turn-1", terminalStatus, finalGitStatus: "1 .M N... tracked.txt", requestedCapabilities: grant.requestedCapabilities ?? [], oracleRootDigest: grant.oracleRootDigest ?? null };
 }
 
 function operationHarness(repositoryRoot, overrides = {}) {
@@ -1214,11 +1218,14 @@ test("the capability flag is parsed, validated, and gated on its declared input"
   const calls = [];
   const handlers = { doctor: async () => { calls.push(["doctor"]); return 0; }, run: async (...args) => { calls.push(["run", args[0], args[1], args[4]]); return 0; }, resume: async (...args) => { calls.push(["resume", args[0], args[1], args[4]]); return 0; }, status: async (...args) => { calls.push(["status", args[0]]); return 0; } };
 
-  // Accepted on run only: both spellings, and a repeat collapsing to one.
+  // Accepted: both spellings, a repeat collapsing to one, and resume, which
+  // compares the flag against the thread's recorded grant rather than acting
+  // on it directly.
   for (const argv of [["run", "--capability", "oracle", "/repo", "prompt"], ["run", "--capability=oracle", "/repo", "prompt"], ["run", "/repo", "prompt", "--capability", "oracle", "--capability", "oracle"]]) {
     assert.equal(await cliModule.main(argv, { ...capture(), handlers, env: oracleEnv }), 0, argv.join(" "));
   }
-  assert.deepEqual(calls, [["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]]]);
+  assert.equal(await cliModule.main(["resume", "--capability", "oracle", "thread-1"], { ...capture(), handlers, env: oracleEnv }), 0);
+  assert.deepEqual(calls, [["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]], ["resume", "thread-1", undefined, ["oracle"]]]);
 
   // The default is an empty set, and it does not consult the environment.
   calls.length = 0;
@@ -1230,7 +1237,7 @@ test("the capability flag is parsed, validated, and gated on its declared input"
   // parseArgs rather than the dash guard, so these cases assert the outcome
   // and do not distinguish which of the two gates produced it.
   calls.length = 0;
-  for (const argv of [["run", "--capability", "bogus", "/repo", "prompt"], ["run", "--capability=bogus", "/repo", "prompt"], ["run", "--capabilityx", "oracle", "/repo", "prompt"], ["run", "--capability-foo", "/repo", "prompt"], ["run", "-c", "oracle", "/repo", "prompt"], ["run", "--capability", "/repo", "prompt"], ["doctor", "--capability", "oracle"], ["status", "--capability", "oracle"], ["status", "thread-1", "--capability", "oracle"], ["resume", "--capability", "oracle", "thread-1"], ["resume", "--capability=oracle", "thread-1", "next"], ["run", "--capability", "ORACLE", "/repo", "prompt"], ["run", "--capability", "", "/repo", "prompt"]]) {
+  for (const argv of [["run", "--capability", "bogus", "/repo", "prompt"], ["run", "--capability=bogus", "/repo", "prompt"], ["run", "--capabilityx", "oracle", "/repo", "prompt"], ["run", "--capability-foo", "/repo", "prompt"], ["run", "-c", "oracle", "/repo", "prompt"], ["run", "--capability", "/repo", "prompt"], ["doctor", "--capability", "oracle"], ["status", "--capability", "oracle"], ["status", "thread-1", "--capability", "oracle"], ["run", "--capability", "ORACLE", "/repo", "prompt"], ["run", "--capability", "", "/repo", "prompt"]]) {
     const output = capture();
     assert.equal(await cliModule.main(argv, { ...output, handlers, env: oracleEnv }), 2, argv.join(" "));
     assert.equal(output.output().stderr, "Invalid command usage.\n", argv.join(" "));
@@ -1238,7 +1245,7 @@ test("the capability flag is parsed, validated, and gated on its declared input"
   assert.deepEqual(calls, []);
 
   // Requested without its declared input: a named diagnostic, never a silent downgrade.
-  for (const argv of [["run", "--capability", "oracle", "/repo", "prompt"], ["run", "--capability=oracle", "/repo", "prompt"]]) {
+  for (const argv of [["run", "--capability", "oracle", "/repo", "prompt"], ["resume", "--capability", "oracle", "thread-1"]]) {
     for (const env of [{}, { ANDREW_AGENT_ORACLE_ROOT: "" }]) {
       const output = capture();
       assert.equal(await cliModule.main(argv, { ...output, handlers, env }), 3, argv.join(" "));
@@ -1326,4 +1333,81 @@ test("the resolved Oracle root reaches the App Server input, and only when it ex
   assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, ["oracle"]), 0);
   assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, []), 0);
   assert.deepEqual(starts, ["/fixture/wiki", undefined]);
+});
+
+test("resume derives its boundary from the record and refuses to be widened", async () => {
+  const repositoryRoot = await createRepository();
+  const rootA = "/fixture/wiki-a";
+  const rootB = "/fixture/wiki-b";
+  const digestOf = (root) => createHash("sha256").update(root, "utf8").digest("hex");
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+
+  const attempt = async ({ grant, flag, currentRoot }) => {
+    const harness = operationHarness(repositoryRoot, { record: terminalRecord(repositoryRoot, "completed", grant) });
+    const output = capture();
+    const dependencies = {
+      ...harness.dependencies,
+      async resolveRuntimePaths(options) {
+        harness.order.push("paths");
+        return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot: currentRoot } : basePaths;
+      },
+    };
+    const code = await resumeModule.resumeCommand("thread-1", "prompt", output, dependencies, flag);
+    return { code, stderr: output.output().stderr, order: harness.order };
+  };
+
+  // A thread granted nothing cannot be resumed with a capability.
+  const widened = await attempt({ grant: {}, flag: ["oracle"], currentRoot: rootA });
+  assert.equal(widened.code, 3);
+  assert.equal(widened.stderr, "Resume refused: THREAD_CAPABILITY_MISMATCH.\n");
+  assert.equal(widened.order.includes("lock"), false);
+
+  // And a granted thread cannot be resumed as if it had none.
+  const narrowed = await attempt({ grant: { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf(rootA) }, flag: [], currentRoot: rootA });
+  assert.equal(narrowed.code, 3);
+  assert.equal(narrowed.stderr, "Resume refused: THREAD_CAPABILITY_MISMATCH.\n");
+
+  // The set agreeing is not enough: the same ["oracle"] can name two wikis.
+  const moved = await attempt({ grant: { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf(rootA) }, flag: ["oracle"], currentRoot: rootB });
+  assert.equal(moved.code, 3);
+  assert.equal(moved.stderr, "Resume refused: THREAD_ORACLE_ROOT_CHANGED.\n");
+  // Neither root is disclosed, and no path reaches the operator at all.
+  for (const path of [rootA, rootB]) assert.equal(moved.stderr.includes(path), false);
+  assert.equal(moved.order.includes("lock"), false);
+
+  // Agreement on both admits the resume, and the grant reaches the turn.
+  const agreed = await attempt({ grant: { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf(rootA) }, flag: ["oracle"], currentRoot: rootA });
+  assert.equal(agreed.code, 0);
+  assert.equal(agreed.stderr, "");
+
+  // A pre-capability thread resumes exactly as it did before this step.
+  const untouched = await attempt({ grant: {}, flag: [], currentRoot: undefined });
+  assert.equal(untouched.code, 0);
+  assert.deepEqual(untouched.order.filter((entry) => entry === "paths"), ["paths"]);
+});
+
+test("a run records the grant it was given, so a later resume has something true to compare", async () => {
+  const repositoryRoot = await createRepository();
+  const oracleRoot = "/fixture/wiki-a";
+  const expected = createHash("sha256").update(oracleRoot, "utf8").digest("hex");
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+
+  // Directly: the digest is of the canonical root, and the path itself is
+  // nowhere in the identity the records are built from.
+  assert.equal(runModule.oracleRootDigest(basePaths), null);
+  assert.equal(runModule.oracleRootDigest({ ...basePaths, oracleRoot }), expected);
+
+  // And through a run, because the line that puts it on the release identity
+  // is the only link between what was granted and what a resume reads back.
+  const identities = [];
+  const harness = operationHarness(repositoryRoot);
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths(options) { return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot } : basePaths; },
+    async startNewThread(request, coordinator) { identities.push(coordinator.releaseIdentity); return harness.dependencies.startNewThread(request, coordinator); },
+  };
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, ["oracle"]), 0);
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, []), 0);
+  assert.deepEqual(identities.map((identity) => [identity.requestedCapabilities, identity.oracleRootDigest]), [[["oracle"], expected], [[], null]]);
+  for (const identity of identities) assert.equal(JSON.stringify(identity).includes(oracleRoot), false);
 });

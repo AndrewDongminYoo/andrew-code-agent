@@ -1,5 +1,6 @@
 /// <reference types="node" />
 
+import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -160,6 +161,7 @@ export async function runCommand(
       client,
       io,
       dependencies,
+      capabilities,
     );
     delegated = true;
     const record = await dependencies.startNewThread(
@@ -249,12 +251,22 @@ export async function prepareCandidate(
   return artifact;
 }
 
+// The Oracle root is bound as a digest of its canonical form, never the path:
+// the record has to be able to refuse a different wiki without storing where
+// either one lives.
+export function oracleRootDigest(paths: RuntimePaths): string | null {
+  return paths.oracleRoot === undefined
+    ? null
+    : createHash("sha256").update(paths.oracleRoot, "utf8").digest("hex");
+}
+
 export function coordinatorDependencies(
   paths: RuntimePaths,
   bundleDigest: string,
   client: AppServerClient,
   io: CommandIO,
   dependencies: CommandDependencies,
+  capabilities: readonly RequestedCapability[] = [],
 ): CoordinatorDependencies {
   const rendered = new Set<string>();
   return {
@@ -266,6 +278,8 @@ export function coordinatorDependencies(
       bundleDigest,
       productVersion: PRODUCT_VERSION,
       codexVersion: REQUIRED_CODEX_VERSION,
+      requestedCapabilities: capabilities,
+      oracleRootDigest: oracleRootDigest(paths),
     },
     approvalInput: io.stdin ?? process.stdin,
     approvalWriter: dependencies.createTerminalApprovalPromptWriter(io.stderr),
