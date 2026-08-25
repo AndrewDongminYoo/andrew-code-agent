@@ -156,6 +156,24 @@ declined without being executed.
 Beyond approvals, the agent refuses to start when the target repository is
 not clean, and it re-reads HEAD after the turn to report exactly what changed.
 
+### The turn may only write inside the repository
+
+Every turn runs under a `workspaceWrite` sandbox whose writable roots are the
+target repository, the process temporary directory, and `/tmp`. Network access
+is off. Everything else is denied, including everything under `$HOME` and any
+shared SDK root.
+
+That keeps a turn's blast radius equal to the thing under version control, and
+it means **a command that populates a cache outside the repository fails inside
+a turn**. `flutter test` refreshes the Flutter SDK cache before running and is
+denied for that reason; the same shape applies to any toolchain whose mutable
+state lives outside the workspace, and a repository whose dependency tree is
+already installed can hide the boundary entirely.
+
+Install or warm those caches before the run, or keep the turn's commands
+read-only. `docs/notes/2026-08-25-writable-root-boundary.md` records what was
+measured and the options that were considered.
+
 ## Runtime locations
 
 Two roots, which must not overlap, and which you can override:
