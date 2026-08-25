@@ -1,8 +1,10 @@
 # The writable-root boundary assumes a toolchain that writes only in-repo
 
-Found on 2026-08-25 while running the first v0.2 acceptance task against
-`bubble_shooter`. The turn ended `failed` with no deliverable, and the cause is
-a support boundary rather than a defect in the target repository.
+Written on 2026-08-25 while running the first v0.2 acceptance task against
+`bubble_shooter`, and corrected the next day. The turn ended `failed` with no
+deliverable; the boundary described here was blamed for that and did not cause
+it. What survives is the boundary itself, read from the code, and a measurement
+of which caches sit outside it.
 
 ## What happens
 
@@ -68,9 +70,12 @@ Measured on this machine, outside any repository:
 claimed about them.
 
 The general shape: **the policy assumes a toolchain whose entire mutable state
-lives inside the repository.** Few ecosystems satisfy that. A pre-populated
-in-repo dependency tree can hide it, which is exactly what happened for two
-runs.
+lives inside the repository.** Few ecosystems satisfy that, and a pre-populated
+in-repo dependency tree would hide it.
+
+That is a reading of the policy, not an observation. **No toolchain has been
+seen failing this way**, including Flutter — the run that looked like one was
+interrupted by the coordinator, as the section above records.
 
 ## What is not being claimed
 
@@ -78,9 +83,9 @@ runs.
   keeps a turn's blast radius equal to the thing under version control, and
   widening it to `$HOME` would give a turn write access to credentials, shell
   configuration, and every other repository on the machine.
-- That any specific ecosystem beyond Flutter fails. Only the Flutter case was
-  observed. The table above says which caches exist here, not which commands
-  would be denied.
+- That any ecosystem fails, Flutter included. **No denied write has been
+  observed at all.** The table above says which caches exist on one machine,
+  not which commands would be refused.
 
 ## What this note still supports
 

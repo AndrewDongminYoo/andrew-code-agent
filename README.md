@@ -163,16 +163,16 @@ target repository, the process temporary directory, and `/tmp`. Network access
 is off. Everything else is denied, including everything under `$HOME` and any
 shared SDK root.
 
-That keeps a turn's blast radius equal to the thing under version control, and
-it means **a command that populates a cache outside the repository has nowhere
-to write**. `flutter test` refreshes the Flutter SDK cache before running, and
-the same shape applies to any toolchain whose mutable state lives outside the
-workspace; a repository whose dependency tree is already installed can hide the
-boundary entirely.
+That keeps a turn's blast radius equal to the thing under version control. It
+also means **a command that populates a cache outside the repository has
+nowhere to write**, so a toolchain whose mutable state lives outside the
+workspace may not work inside a turn. A repository whose dependency tree is
+already installed can hide that entirely.
 
-Install or warm those caches before the run, or keep the turn's commands
-read-only. `docs/notes/2026-08-25-writable-root-boundary.md` records what was
-measured and the options that were considered.
+No specific toolchain is named here because none has been observed failing this
+way. `docs/notes/2026-08-25-writable-root-boundary.md` records which caches on
+one machine sit outside the boundary, and why an earlier claim that this
+stopped a real run was withdrawn.
 
 ## Runtime locations
 
