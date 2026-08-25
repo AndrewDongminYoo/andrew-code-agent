@@ -1457,3 +1457,35 @@ test("an unusable Oracle root is reported by code, never by path", async () => {
     assert.equal(output.output().stdout.includes(secret), false);
   }
 });
+
+test("doctor evaluates the capability the environment offers and survives one it cannot resolve", async () => {
+  const inputs = [];
+  const doctorRun = async (env, resolveImpl) => {
+    inputs.length = 0;
+    const output = capture();
+    const code = await cliModule.doctorCommand(output, env, { resolveRuntimePaths: resolveImpl, runDoctor: async (input) => { inputs.push(input); return { exitCode: 0, findings: [{ severity: "ready", code: "OPTIONAL_ORACLE", message: "Oracle is enabled for this candidate." }] }; }, realpath: async (value) => value });
+    return { code, stdout: output.output().stdout, stderr: output.output().stderr };
+  };
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+  const withOracle = { ...basePaths, oracleRoot: "/fixture/wiki" };
+
+  // Set and usable: the capability and its input both reach runDoctor.
+  const enabled = await doctorRun({ ANDREW_AGENT_ORACLE_ROOT: "/fixture/wiki" }, async (options) => (options?.capabilities?.includes("oracle") ? withOracle : basePaths));
+  assert.equal(enabled.code, 0);
+  assert.deepEqual(inputs.map((input) => [input.requestedCapabilities, input.capabilityInputs]), [[["oracle"], { oracle: { llmWikiRoot: "/fixture/wiki" } }]]);
+
+  // Unset: doctor asks for nothing and consults no capability input.
+  const absent = await doctorRun({}, async () => basePaths);
+  assert.equal(absent.code, 0);
+  assert.deepEqual(inputs.map((input) => [input.requestedCapabilities, input.capabilityInputs]), [[[], {}]]);
+
+  // Set but unresolvable: doctor still runs and reports, rather than becoming
+  // harder to run than the thing it diagnoses.
+  const broken = await doctorRun({ ANDREW_AGENT_ORACLE_ROOT: "/fixture/missing" }, async (options) => {
+    if (options?.capabilities?.includes("oracle")) throw new Error("unresolvable");
+    return basePaths;
+  });
+  assert.equal(broken.code, 0);
+  assert.deepEqual(inputs.map((input) => [input.requestedCapabilities, input.capabilityInputs]), [[[], {}]]);
+  assert.equal(broken.stderr, "");
+});

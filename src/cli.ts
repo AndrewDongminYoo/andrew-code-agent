@@ -20,7 +20,7 @@ import {
   type CommandIO,
 } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
-import { resolveRuntimePaths } from "./runtime/paths.js";
+import { resolveRuntimePaths, type RuntimePaths } from "./runtime/paths.js";
 
 const usage = {
   doctor: "andrew-agent doctor",
@@ -46,7 +46,7 @@ const CAPABILITY_ASSIGNMENT = `${CAPABILITY_FLAG}=`;
 // The CLI never supplies one and passes `undefined` so the callee's default
 // applies, but the type says what the functions actually accept.
 interface CommandHandlers {
-  readonly doctor: (io: CommandIO) => Promise<ExitCode>;
+  readonly doctor: (io: CommandIO, env: NodeJS.ProcessEnv) => Promise<ExitCode>;
   readonly run: (
     repository: string,
     prompt: string,
@@ -140,7 +140,7 @@ export async function main(
       );
       return 3;
     }
-    if (command === "doctor") return await handlers.doctor(io);
+    if (command === "doctor") return await handlers.doctor(io, env);
     // ponytail: the requested set reaches the handler and is ignored there
     // until step 2 of docs/plans/2026-08-25-v0.2-oracle-capability.md threads
     // it into prepareCandidate. Parsing it is not yet enabling it.
@@ -171,18 +171,66 @@ export async function main(
   }
 }
 
-async function doctorCommand(io: CommandIO): Promise<number> {
+// Doctor reports what a run would get, so it evaluates the capability the
+// environment offers rather than assuming none. It must not become harder to
+// run than the thing it diagnoses: an Oracle root that cannot be resolved
+// leaves the base paths and lets `runDoctor` report the capability as absent,
+// instead of failing the whole command.
+async function doctorPaths(
+  env: NodeJS.ProcessEnv,
+  dependencies: DoctorCommandDependencies,
+): Promise<{
+  paths: RuntimePaths;
+  capabilities: readonly RequestedCapability[];
+}> {
+  if ((env.ANDREW_AGENT_ORACLE_ROOT ?? "") !== "") {
+    try {
+      return {
+        paths: await dependencies.resolveRuntimePaths({
+          capabilities: ["oracle"],
+        }),
+        capabilities: ["oracle"],
+      };
+    } catch {
+      // Fall through to the base paths below and report rather than abort.
+    }
+  }
+  return { paths: await dependencies.resolveRuntimePaths(), capabilities: [] };
+}
+
+// The same substitution seam `run` and `resume` take, so the capability
+// evaluation above can be exercised without a real state tree.
+export interface DoctorCommandDependencies {
+  readonly resolveRuntimePaths: typeof resolveRuntimePaths;
+  readonly runDoctor: typeof runDoctor;
+  readonly realpath: typeof realpath;
+}
+
+const defaultDoctorDependencies: DoctorCommandDependencies = {
+  resolveRuntimePaths,
+  runDoctor,
+  realpath,
+};
+
+export async function doctorCommand(
+  io: CommandIO,
+  env: NodeJS.ProcessEnv = process.env,
+  dependencies: DoctorCommandDependencies = defaultDoctorDependencies,
+): Promise<number> {
   try {
-    const paths = await resolveRuntimePaths();
-    const result = await runDoctor({
+    const { paths, capabilities } = await doctorPaths(env, dependencies);
+    const result = await dependencies.runDoctor({
       productVersion: PRODUCT_VERSION,
       platform: process.platform,
       platformVersion: release(),
       paths,
       builderVersion: PRODUCT_VERSION,
-      requestedCapabilities: [],
-      capabilityInputs: {},
-      scratchParent: await realpath(tmpdir()),
+      requestedCapabilities: capabilities,
+      capabilityInputs:
+        paths.oracleRoot === undefined
+          ? {}
+          : { oracle: { llmWikiRoot: paths.oracleRoot } },
+      scratchParent: await dependencies.realpath(tmpdir()),
       commandTimeoutMs: 10_000,
     });
     for (const finding of result.findings) {
