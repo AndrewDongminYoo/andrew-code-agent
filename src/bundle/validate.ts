@@ -28,9 +28,17 @@ const trustedHookHash =
 const runtimeIdentifier =
   /\b(?:session|thread|rollout)(?:[_-]?id)?\s*["']?\s*(?:=|:)\s*["']?(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[a-z0-9_-]{12,})\b/iu;
 
+// `runtimeLiterals` carries values known only at run time, chiefly the
+// operator's Oracle root. They are checked alongside the manifest's list
+// rather than merged into it: the manifest declares what is forbidden for
+// every run, while these are forbidden for this one.
+//
+// Without them the scan covers only what `agent-bundle.toml` happened to
+// declare, so a root outside those prefixes would never be looked for at all.
 export function validatePortableFiles(
   files: readonly ResolvedSourceFile[],
   manifest: BundleManifest,
+  runtimeLiterals: readonly string[] = [],
 ): void {
   const forbiddenSegments = new Set(
     manifest.forbiddenPathSegments.map(normalizeSegment),
@@ -41,11 +49,10 @@ export function validatePortableFiles(
   for (const file of files) {
     assertSafePath(file.targetPath, forbiddenSegments);
     const content = decodePortableContent(file);
-    assertNoForbiddenLiteral(
-      file.targetPath,
-      content,
-      manifest.forbiddenLiterals,
-    );
+    assertNoForbiddenLiteral(file.targetPath, content, [
+      ...manifest.forbiddenLiterals,
+      ...runtimeLiterals,
+    ]);
     assertNoForbiddenContentPath(file.targetPath, content, forbiddenSegments);
     assertNoRuntimeState(file.targetPath, content);
     assertResolvedTokens(file.targetPath, content, allowedTokens);

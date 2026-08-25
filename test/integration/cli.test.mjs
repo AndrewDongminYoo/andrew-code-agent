@@ -1433,3 +1433,27 @@ test("the read-only resume form works regardless of the grant or the current env
     assert.equal(harness.order.includes("lock"), false);
   }
 });
+
+test("an unusable Oracle root is reported by code, never by path", async () => {
+  const repositoryRoot = await createRepository();
+  const secret = "/private/wiki-nobody-should-see";
+  const paths = await import("../../dist/runtime/paths.js");
+  const harness = operationHarness(repositoryRoot);
+  // Real errors, because the containment is diagnosticFor taking the code and
+  // dropping the message — and these messages carry the path on purpose, so
+  // the runtime layer can still say what it means internally.
+  const cases = [
+    new paths.RuntimePathError("RUNTIME_PATH_INVALID", `Runtime directory does not exist or is unsafe: ${secret}`),
+    new paths.RuntimePathError("ORACLE_ROOT_OVERLAPS_STATE", `Oracle and state roots must not overlap: ${secret}`),
+    new paths.RuntimePathError("RUNTIME_STATE_UNSAFE", `Runtime state path must not be a symbolic link: ${secret}`),
+  ];
+  for (const error of cases) {
+    assert.equal(error.message.includes(secret), true, "the fixture must actually carry the path");
+    const output = capture();
+    const code = await runModule.runCommand(repositoryRoot, "prompt", output, { ...harness.dependencies, async resolveRuntimePaths() { throw error; } }, ["oracle"]);
+    assert.equal(code, 3);
+    assert.equal(output.output().stderr, `Runtime preparation failed: ${error.code}.\n`);
+    assert.equal(output.output().stderr.includes(secret), false);
+    assert.equal(output.output().stdout.includes(secret), false);
+  }
+});
