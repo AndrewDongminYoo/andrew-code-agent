@@ -86,7 +86,11 @@ as well.
 ```json
 "availableDecisions": [
   "accept",
-  { "acceptWithExecpolicyAmendment": { "execpolicy_amendment": ["flutter", "test"] } },
+  {
+    "acceptWithExecpolicyAmendment": {
+      "execpolicy_amendment": ["flutter", "test"]
+    }
+  },
   "cancel"
 ]
 ```
@@ -140,6 +144,28 @@ So allowing the key alone may move the failure one step later rather than
 close it, to `client.respond` and `coordinator.ts:537`. Whether
 `availableDecisions` is advisory or binding is unmeasured `[UNCERTAIN]`, and
 it decides how much of D2's fix is needed.
+
+## D1 verified against a real run
+
+`1de90be` drops a frame naming another thread at the top of
+`reduceServerMessage`. The same Oracle prompt was then re-run with the
+notification tally still instrumented.
+
+- `Terminal status: completed`. The Oracle returned precedent for the first
+  time, which is what "the adapter is reached" never reached before.
+- 1,538 notifications arrived on the parent's connection, and **1,191 of them
+  named the sub-agent's thread** across nine methods, `item/agentMessage/delta`
+  alone accounting for 1,064. All were dropped and none reached an identity
+  check.
+- No `failClosed()` call site fired, and `interruptActiveTurn` was never
+  entered.
+
+The four cross-thread frames counted in D1 above were not the stream. They
+were the first four, because the turn died on the fourth.
+
+D2 stays open: this run's subagent needed no escalated command, so nothing
+reached `coordinator.ts:520`. A control run that runs the project's tests
+still dies there.
 
 ## What this does not say
 
