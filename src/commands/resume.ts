@@ -2,6 +2,7 @@
 
 import type { ProcessLockHandle } from "../runtime/lock.js";
 import type { AppServerClient } from "../app-server/client.js";
+import type { RequestedCapability } from "../constants.js";
 import { ThreadStoreError } from "../runtime/thread-store.js";
 import { GitRuntimeError } from "../runtime/git.js";
 import {
@@ -30,6 +31,11 @@ export async function resumeCommand(
   prompt: string | undefined,
   io: CommandIO,
   dependencies: CommandDependencies = defaultCommandDependencies,
+  // Trails the injection seam so the existing call sites keep their shape.
+  // ponytail: accepted and not yet used; step 4 of
+  // docs/plans/2026-08-25-v0.2-oracle-capability.md derives the boundary from
+  // the thread record instead, and refuses a flag that disagrees with it.
+  _capabilities: readonly RequestedCapability[] = [],
 ): Promise<number> {
   let phase: "local" | "setup" | "app-server" = "local";
   let lock: ProcessLockHandle | undefined;

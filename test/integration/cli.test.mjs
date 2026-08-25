@@ -1206,3 +1206,53 @@ test("package bin targets the executable compiled CLI", async () => {
   const { stdout } = await execFile(process.execPath, [fileURLToPath(new URL("../../dist/cli.js", import.meta.url)), "--help"]);
   assert.match(stdout, /andrew-agent run <repository> <prompt>/);
 });
+
+test("the capability flag is parsed, validated, and gated on its declared input", async () => {
+  const { cliModule } = modules();
+  const oracleEnv = { ANDREW_AGENT_ORACLE_ROOT: "/wiki" };
+  const calls = [];
+  const handlers = { doctor: async () => { calls.push(["doctor"]); return 0; }, run: async (...args) => { calls.push(["run", args[0], args[1], args[4]]); return 0; }, resume: async (...args) => { calls.push(["resume", args[0], args[1], args[4]]); return 0; }, status: async (...args) => { calls.push(["status", args[0]]); return 0; } };
+
+  // Accepted on run only: both spellings, and a repeat collapsing to one.
+  for (const argv of [["run", "--capability", "oracle", "/repo", "prompt"], ["run", "--capability=oracle", "/repo", "prompt"], ["run", "/repo", "prompt", "--capability", "oracle", "--capability", "oracle"]]) {
+    assert.equal(await cliModule.main(argv, { ...capture(), handlers, env: oracleEnv }), 0, argv.join(" "));
+  }
+  assert.deepEqual(calls, [["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]]]);
+
+  // The default is an empty set, and it does not consult the environment.
+  calls.length = 0;
+  assert.equal(await cliModule.main(["run", "/repo", "prompt"], { ...capture(), handlers, env: {} }), 0);
+  assert.equal(await cliModule.main(["resume", "thread-1"], { ...capture(), handlers, env: {} }), 0);
+  assert.deepEqual(calls, [["run", "/repo", "prompt", []], ["resume", "thread-1", undefined, []]]);
+
+  // Rejected at exit 2. A near-miss token reaches this outcome through strict
+  // parseArgs rather than the dash guard, so these cases assert the outcome
+  // and do not distinguish which of the two gates produced it.
+  calls.length = 0;
+  for (const argv of [["run", "--capability", "bogus", "/repo", "prompt"], ["run", "--capability=bogus", "/repo", "prompt"], ["run", "--capabilityx", "oracle", "/repo", "prompt"], ["run", "--capability-foo", "/repo", "prompt"], ["run", "-c", "oracle", "/repo", "prompt"], ["run", "--capability", "/repo", "prompt"], ["doctor", "--capability", "oracle"], ["status", "--capability", "oracle"], ["status", "thread-1", "--capability", "oracle"], ["resume", "--capability", "oracle", "thread-1"], ["resume", "--capability=oracle", "thread-1", "next"], ["run", "--capability", "ORACLE", "/repo", "prompt"], ["run", "--capability", "", "/repo", "prompt"]]) {
+    const output = capture();
+    assert.equal(await cliModule.main(argv, { ...output, handlers, env: oracleEnv }), 2, argv.join(" "));
+    assert.equal(output.output().stderr, "Invalid command usage.\n", argv.join(" "));
+  }
+  assert.deepEqual(calls, []);
+
+  // Requested without its declared input: a named diagnostic, never a silent downgrade.
+  for (const argv of [["run", "--capability", "oracle", "/repo", "prompt"], ["run", "--capability=oracle", "/repo", "prompt"]]) {
+    for (const env of [{}, { ANDREW_AGENT_ORACLE_ROOT: "" }]) {
+      const output = capture();
+      assert.equal(await cliModule.main(argv, { ...output, handlers, env }), 3, argv.join(" "));
+      assert.equal(output.output().stderr, "Capability preparation failed: ORACLE_ROOT_UNSET.\n");
+      assert.equal(output.output().stdout, "");
+    }
+  }
+  assert.deepEqual(calls, []);
+
+  // The trailing separator still carries a dash-prefixed prompt through.
+  assert.equal(await cliModule.main(["run", "--capability", "oracle", "/repo", "--", "-prompt"], { ...capture(), handlers, env: oracleEnv }), 0);
+  assert.deepEqual(calls, [["run", "/repo", "-prompt", ["oracle"]]]);
+
+  // Help still short-circuits ahead of the capability gate.
+  const helpOutput = capture();
+  assert.equal(await cliModule.main(["run", "--capability", "oracle", "--help"], { ...helpOutput, handlers, env: {} }), 0);
+  assert.equal(helpOutput.output().stdout, "Usage: andrew-agent run <repository> <prompt>\n");
+});

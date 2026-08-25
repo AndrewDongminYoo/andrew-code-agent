@@ -23,7 +23,11 @@ import {
   recoverInterruptedInstall,
 } from "../bundle/install.js";
 import { runDoctor } from "./doctor.js";
-import { PRODUCT_VERSION, REQUIRED_CODEX_VERSION } from "../constants.js";
+import {
+  PRODUCT_VERSION,
+  REQUIRED_CODEX_VERSION,
+  type RequestedCapability,
+} from "../constants.js";
 import {
   assertCleanGitSnapshot,
   GitRuntimeError,
@@ -130,6 +134,11 @@ export async function runCommand(
   prompt: string,
   io: CommandIO,
   dependencies: CommandDependencies = defaultCommandDependencies,
+  // Trails the injection seam so the existing call sites keep their shape.
+  // ponytail: accepted and not yet used; step 2 of
+  // docs/plans/2026-08-25-v0.2-oracle-capability.md threads it into
+  // prepareCandidate, which still requests an empty set.
+  _capabilities: readonly RequestedCapability[] = [],
 ): Promise<number> {
   let phase: "preflight" | "setup" | "app-server" = "preflight";
   let lock: Awaited<ReturnType<typeof acquireProcessLock>> | undefined;
