@@ -3,6 +3,7 @@
 import { writeSync } from "node:fs";
 import { isPromise, isProxy } from "node:util/types";
 import type { GitSnapshot } from "../runtime/git.js";
+import type { RequestedCapability } from "../constants.js";
 import type { ThreadRecord } from "../runtime/thread-store.js";
 import { answerApproval, type ApprovalPromptWriter } from "./approvals.js";
 import type { AppServerClient } from "./client.js";
@@ -23,6 +24,11 @@ export interface ReleaseIdentity {
   readonly bundleDigest: string;
   readonly productVersion: string;
   readonly codexVersion: string;
+  // Carried here rather than passed to each construction site: every record a
+  // turn writes describes the same grant, and the four sites already read
+  // their release fields from this one object.
+  readonly requestedCapabilities: readonly RequestedCapability[];
+  readonly oracleRootDigest: string | null;
 }
 
 export interface CoordinatorDependencies {
@@ -350,6 +356,8 @@ async function finalizeWithoutTurn(
     codexVersion: dependencies.releaseIdentity.codexVersion,
     turnId: null,
     terminalStatus: status,
+    requestedCapabilities: dependencies.releaseIdentity.requestedCapabilities,
+    oracleRootDigest: dependencies.releaseIdentity.oracleRootDigest,
     finalGitStatus: finalSnapshot.porcelainV2,
   };
   await dependencies.threadStore.writeThreadRecord(
@@ -377,6 +385,8 @@ function runningRecord(
     codexVersion: release.codexVersion,
     turnId,
     terminalStatus: "running",
+    requestedCapabilities: release.requestedCapabilities,
+    oracleRootDigest: release.oracleRootDigest,
     finalGitStatus: null,
   };
 }
@@ -736,6 +746,8 @@ export async function startNewThread(
       codexVersion: dependencies.releaseIdentity.codexVersion,
       turnId: null,
       terminalStatus: "not-started",
+      requestedCapabilities: dependencies.releaseIdentity.requestedCapabilities,
+      oracleRootDigest: dependencies.releaseIdentity.oracleRootDigest,
       finalGitStatus: null,
     };
     await dependencies.threadStore.writeThreadRecord(

@@ -2,6 +2,7 @@
 
 import type { ProcessLockHandle } from "../runtime/lock.js";
 import type { AppServerClient } from "../app-server/client.js";
+import type { RequestedCapability } from "../constants.js";
 import { ThreadStoreError } from "../runtime/thread-store.js";
 import { GitRuntimeError } from "../runtime/git.js";
 import {
@@ -10,6 +11,7 @@ import {
   coordinatorDependencies,
   defaultCommandDependencies,
   diagnosticFor,
+  oracleRootDigest,
   prepareCandidate,
   renderFinalRecord,
   renderLocalRecord,
@@ -30,6 +32,10 @@ export async function resumeCommand(
   prompt: string | undefined,
   io: CommandIO,
   dependencies: CommandDependencies = defaultCommandDependencies,
+  // Trails the injection seam so the existing call sites keep their shape.
+  // A flag here can only agree with the record or be refused; the boundary
+  // itself is always derived from what the thread was granted.
+  capabilities: readonly RequestedCapability[] = [],
 ): Promise<number> {
   let phase: "local" | "setup" | "app-server" = "local";
   let lock: ProcessLockHandle | undefined;
@@ -38,15 +44,38 @@ export async function resumeCommand(
   let outcome = 3;
   let diagnostic: string | undefined;
   try {
-    const paths = await dependencies.resolveRuntimePaths();
+    // The state root does not depend on the capability set, so the first pass
+    // is only how the record is found. A thread granted nothing needs no
+    // second pass, which keeps resuming a pre-capability thread identical to
+    // what it was before this step.
+    const locating = await dependencies.resolveRuntimePaths();
     const existing = await dependencies.readThreadRecord(
-      paths.stateRoot,
+      locating.stateRoot,
       threadId,
     );
+    // The read-only form starts no turn and no App Server, so there is nothing
+    // for the capability boundary to protect and it is checked below instead.
+    // Gating it would make inspecting a granted thread fail whenever the flag
+    // is absent or the root has since moved.
     if (prompt === undefined) {
       await renderLocalRecord(existing, io.stdout);
       outcome = 0;
       return outcome;
+    }
+    const granted = existing.requestedCapabilities;
+    if (!sameCapabilitySet(capabilities, granted)) {
+      await safeDiagnostic(io, "Resume refused: THREAD_CAPABILITY_MISMATCH.");
+      return 3;
+    }
+    const paths =
+      granted.length === 0
+        ? locating
+        : await dependencies.resolveRuntimePaths({ capabilities: granted });
+    if (oracleRootDigest(paths) !== existing.oracleRootDigest) {
+      // Neither root is named: the codes say the scope moved, and step 5's
+      // no-leak requirement applies to diagnostics as much as to the bundle.
+      await safeDiagnostic(io, "Resume refused: THREAD_ORACLE_ROOT_CHANGED.");
+      return 3;
     }
     const snapshot = await dependencies.readGitSnapshot(
       existing.repositoryRoot,
@@ -74,7 +103,7 @@ export async function resumeCommand(
     phase = "setup";
     await dependencies.initializeRuntimeState(paths);
     lock = await dependencies.acquireProcessLock(paths.stateRoot);
-    const artifact = await prepareCandidate(paths, dependencies);
+    const artifact = await prepareCandidate(paths, dependencies, granted);
     phase = "app-server";
     client = await dependencies.startAppServer(appServerInput(paths));
     const coordinator = coordinatorDependencies(
@@ -83,6 +112,7 @@ export async function resumeCommand(
       client,
       io,
       dependencies,
+      granted,
     );
     delegated = true;
     const record = await dependencies.resumeThread(
@@ -122,6 +152,18 @@ export async function resumeCommand(
   }
   if (diagnostic !== undefined) await safeDiagnostic(io, diagnostic);
   return outcome;
+}
+
+function sameCapabilitySet(
+  requested: readonly RequestedCapability[],
+  granted: readonly RequestedCapability[],
+): boolean {
+  const left = [...new Set(requested)].sort();
+  const right = [...new Set(granted)].sort();
+  return (
+    left.length === right.length &&
+    left.every((entry, index) => entry === right[index])
+  );
 }
 
 async function safeDiagnostic(io: CommandIO, message: string): Promise<void> {

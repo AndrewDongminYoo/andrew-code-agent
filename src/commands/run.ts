@@ -1,5 +1,6 @@
 /// <reference types="node" />
 
+import { createHash } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,13 +18,18 @@ import {
 import { renderTurnState } from "../app-server/renderer.js";
 import { boundedTerminalText } from "../app-server/terminal.js";
 import { ArtifactError, buildBundle } from "../bundle/artifact.js";
+import { RenderError, type CapabilityInputs } from "../bundle/render.js";
 import {
   InstallError,
   installBundle,
   recoverInterruptedInstall,
 } from "../bundle/install.js";
 import { runDoctor } from "./doctor.js";
-import { PRODUCT_VERSION, REQUIRED_CODEX_VERSION } from "../constants.js";
+import {
+  PRODUCT_VERSION,
+  REQUIRED_CODEX_VERSION,
+  type RequestedCapability,
+} from "../constants.js";
 import {
   assertCleanGitSnapshot,
   GitRuntimeError,
@@ -130,6 +136,8 @@ export async function runCommand(
   prompt: string,
   io: CommandIO,
   dependencies: CommandDependencies = defaultCommandDependencies,
+  // Trails the injection seam so the existing call sites keep their shape.
+  capabilities: readonly RequestedCapability[] = [],
 ): Promise<number> {
   let phase: "preflight" | "setup" | "app-server" = "preflight";
   let lock: Awaited<ReturnType<typeof acquireProcessLock>> | undefined;
@@ -138,13 +146,13 @@ export async function runCommand(
   let outcome = 3;
   let diagnostic: string | undefined;
   try {
-    const paths = await dependencies.resolveRuntimePaths();
+    const paths = await dependencies.resolveRuntimePaths({ capabilities });
     const snapshot = await dependencies.readGitSnapshot(repository);
     dependencies.assertCleanGitSnapshot(snapshot);
     phase = "setup";
     await dependencies.initializeRuntimeState(paths);
     lock = await dependencies.acquireProcessLock(paths.stateRoot);
-    const artifact = await prepareCandidate(paths, dependencies);
+    const artifact = await prepareCandidate(paths, dependencies, capabilities);
     phase = "app-server";
     client = await dependencies.startAppServer(appServerInput(paths));
     const coordinator = coordinatorDependencies(
@@ -153,6 +161,7 @@ export async function runCommand(
       client,
       io,
       dependencies,
+      capabilities,
     );
     delegated = true;
     const record = await dependencies.startNewThread(
@@ -205,13 +214,20 @@ export async function runCommand(
 export async function prepareCandidate(
   paths: RuntimePaths,
   dependencies: CommandDependencies,
+  capabilities: readonly RequestedCapability[] = [],
 ) {
+  // Derived from the resolved paths rather than the environment, so the bundle
+  // and the doctor gate that admits it see the same root, canonicalized once.
+  const capabilityInputs: CapabilityInputs =
+    paths.oracleRoot === undefined
+      ? {}
+      : { oracle: { llmWikiRoot: paths.oracleRoot } };
   await dependencies.recoverInterruptedInstall(paths.stateRoot);
   const artifact = await dependencies.buildBundle({
     sourceRoot: paths.sourceRoot,
     artifactsRoot: join(paths.stateRoot, "bundles"),
-    requestedCapabilities: [],
-    capabilityInputs: {},
+    requestedCapabilities: capabilities,
+    capabilityInputs,
     builderVersion: PRODUCT_VERSION,
   });
   await dependencies.installBundle(paths.stateRoot, artifact);
@@ -221,8 +237,8 @@ export async function prepareCandidate(
     platformVersion: dependencies.platformVersion ?? release(),
     paths,
     builderVersion: PRODUCT_VERSION,
-    requestedCapabilities: [],
-    capabilityInputs: {},
+    requestedCapabilities: capabilities,
+    capabilityInputs,
     scratchParent: dependencies.scratchParent ?? (await realpath(tmpdir())),
     commandTimeoutMs: DOCTOR_TIMEOUT_MS,
   });
@@ -235,12 +251,22 @@ export async function prepareCandidate(
   return artifact;
 }
 
+// The Oracle root is bound as a digest of its canonical form, never the path:
+// the record has to be able to refuse a different wiki without storing where
+// either one lives.
+export function oracleRootDigest(paths: RuntimePaths): string | null {
+  return paths.oracleRoot === undefined
+    ? null
+    : createHash("sha256").update(paths.oracleRoot, "utf8").digest("hex");
+}
+
 export function coordinatorDependencies(
   paths: RuntimePaths,
   bundleDigest: string,
   client: AppServerClient,
   io: CommandIO,
   dependencies: CommandDependencies,
+  capabilities: readonly RequestedCapability[] = [],
 ): CoordinatorDependencies {
   const rendered = new Set<string>();
   return {
@@ -252,6 +278,8 @@ export function coordinatorDependencies(
       bundleDigest,
       productVersion: PRODUCT_VERSION,
       codexVersion: REQUIRED_CODEX_VERSION,
+      requestedCapabilities: capabilities,
+      oracleRootDigest: oracleRootDigest(paths),
     },
     approvalInput: io.stdin ?? process.stdin,
     approvalWriter: dependencies.createTerminalApprovalPromptWriter(io.stderr),
@@ -281,6 +309,12 @@ export function appServerInput(paths: RuntimePaths) {
     productVersion: PRODUCT_VERSION,
     handshakeTimeoutMs: APP_SERVER_HANDSHAKE_TIMEOUT_MS,
     requestTimeoutMs: APP_SERVER_REQUEST_TIMEOUT_MS,
+    // Taken from the resolved paths rather than re-read from the environment,
+    // so the child is told the same canonical root the bundle was rendered
+    // against. `oracleRoot` is set only when the capability was requested.
+    ...(paths.oracleRoot === undefined
+      ? {}
+      : { llmWikiRoot: paths.oracleRoot }),
   };
 }
 
@@ -441,7 +475,11 @@ function errorCode(error: unknown): string | undefined {
     error instanceof InstallError ||
     error instanceof ArtifactError ||
     error instanceof GitRuntimeError ||
-    error instanceof RuntimePathError
+    error instanceof RuntimePathError ||
+    // Reachable only once a capability can be requested: renderBundle throws
+    // this straight through buildBundle, and without it a refused capability
+    // aborts the run with no name for why.
+    error instanceof RenderError
   )
     return error.code;
   return undefined;

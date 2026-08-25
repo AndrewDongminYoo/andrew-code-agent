@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
 import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -12,6 +13,7 @@ const execFile = promisify(execFileCallback);
 const cliModule = await import("../../dist/cli.js").catch(() => null);
 const runModule = await import("../../dist/commands/run.js").catch(() => null);
 const resumeModule = await import("../../dist/commands/resume.js").catch(() => null);
+const renderModule = await import("../../dist/bundle/render.js").catch(() => null);
 const statusModule = await import("../../dist/commands/status.js").catch(() => null);
 const rendererModule = await import("../../dist/app-server/renderer.js").catch(() => null);
 const gitModule = await import("../../dist/runtime/git.js");
@@ -62,8 +64,11 @@ async function createRepositoryWithGitlink() {
   return { repositoryRoot, sourceRoot };
 }
 
-function terminalRecord(repositoryRoot, terminalStatus = "completed") {
-  return { threadId: "thread-1", repositoryRoot, startingHead: "a".repeat(40), terminalHead: "b".repeat(40), bundleDigest: "c".repeat(64), productVersion: "0.1.0", codexVersion: "0.148.0", turnId: "turn-1", terminalStatus, finalGitStatus: "1 .M N... tracked.txt" };
+function terminalRecord(repositoryRoot, terminalStatus = "completed", grant = {}) {
+  // readThreadRecord always yields these two, migrating a pre-schema-2 record
+  // to the empty grant, so a fake that omitted them would not be a record the
+  // product can produce.
+  return { threadId: "thread-1", repositoryRoot, startingHead: "a".repeat(40), terminalHead: "b".repeat(40), bundleDigest: "c".repeat(64), productVersion: "0.1.0", codexVersion: "0.148.0", turnId: "turn-1", terminalStatus, finalGitStatus: "1 .M N... tracked.txt", requestedCapabilities: grant.requestedCapabilities ?? [], oracleRootDigest: grant.oracleRootDigest ?? null };
 }
 
 function operationHarness(repositoryRoot, overrides = {}) {
@@ -1205,4 +1210,282 @@ test("package bin targets the executable compiled CLI", async () => {
   assert.equal(source.startsWith("#!/usr/bin/env node\n"), true);
   const { stdout } = await execFile(process.execPath, [fileURLToPath(new URL("../../dist/cli.js", import.meta.url)), "--help"]);
   assert.match(stdout, /andrew-agent run <repository> <prompt>/);
+});
+
+test("the capability flag is parsed, validated, and gated on its declared input", async () => {
+  const { cliModule } = modules();
+  const oracleEnv = { ANDREW_AGENT_ORACLE_ROOT: "/wiki" };
+  const calls = [];
+  const handlers = { doctor: async () => { calls.push(["doctor"]); return 0; }, run: async (...args) => { calls.push(["run", args[0], args[1], args[4]]); return 0; }, resume: async (...args) => { calls.push(["resume", args[0], args[1], args[4]]); return 0; }, status: async (...args) => { calls.push(["status", args[0]]); return 0; } };
+
+  // Accepted: both spellings, a repeat collapsing to one, and resume, which
+  // compares the flag against the thread's recorded grant rather than acting
+  // on it directly.
+  for (const argv of [["run", "--capability", "oracle", "/repo", "prompt"], ["run", "--capability=oracle", "/repo", "prompt"], ["run", "/repo", "prompt", "--capability", "oracle", "--capability", "oracle"]]) {
+    assert.equal(await cliModule.main(argv, { ...capture(), handlers, env: oracleEnv }), 0, argv.join(" "));
+  }
+  assert.equal(await cliModule.main(["resume", "--capability", "oracle", "thread-1"], { ...capture(), handlers, env: oracleEnv }), 0);
+  assert.deepEqual(calls, [["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]], ["run", "/repo", "prompt", ["oracle"]], ["resume", "thread-1", undefined, ["oracle"]]]);
+
+  // The default is an empty set, and it does not consult the environment.
+  calls.length = 0;
+  assert.equal(await cliModule.main(["run", "/repo", "prompt"], { ...capture(), handlers, env: {} }), 0);
+  assert.equal(await cliModule.main(["resume", "thread-1"], { ...capture(), handlers, env: {} }), 0);
+  assert.deepEqual(calls, [["run", "/repo", "prompt", []], ["resume", "thread-1", undefined, []]]);
+
+  // Rejected at exit 2. A near-miss token reaches this outcome through strict
+  // parseArgs rather than the dash guard, so these cases assert the outcome
+  // and do not distinguish which of the two gates produced it.
+  calls.length = 0;
+  for (const argv of [["run", "--capability", "bogus", "/repo", "prompt"], ["run", "--capability=bogus", "/repo", "prompt"], ["run", "--capabilityx", "oracle", "/repo", "prompt"], ["run", "--capability-foo", "/repo", "prompt"], ["run", "-c", "oracle", "/repo", "prompt"], ["run", "--capability", "/repo", "prompt"], ["doctor", "--capability", "oracle"], ["status", "--capability", "oracle"], ["status", "thread-1", "--capability", "oracle"], ["run", "--capability", "ORACLE", "/repo", "prompt"], ["run", "--capability", "", "/repo", "prompt"]]) {
+    const output = capture();
+    assert.equal(await cliModule.main(argv, { ...output, handlers, env: oracleEnv }), 2, argv.join(" "));
+    assert.equal(output.output().stderr, "Invalid command usage.\n", argv.join(" "));
+  }
+  assert.deepEqual(calls, []);
+
+  // Requested without its declared input: a named diagnostic, never a silent downgrade.
+  for (const argv of [["run", "--capability", "oracle", "/repo", "prompt"], ["resume", "--capability", "oracle", "thread-1"]]) {
+    for (const env of [{}, { ANDREW_AGENT_ORACLE_ROOT: "" }]) {
+      const output = capture();
+      assert.equal(await cliModule.main(argv, { ...output, handlers, env }), 3, argv.join(" "));
+      assert.equal(output.output().stderr, "Capability preparation failed: ORACLE_ROOT_UNSET.\n");
+      assert.equal(output.output().stdout, "");
+    }
+  }
+  assert.deepEqual(calls, []);
+
+  // The trailing separator still carries a dash-prefixed prompt through.
+  assert.equal(await cliModule.main(["run", "--capability", "oracle", "/repo", "--", "-prompt"], { ...capture(), handlers, env: oracleEnv }), 0);
+  assert.deepEqual(calls, [["run", "/repo", "-prompt", ["oracle"]]]);
+
+  // Help still short-circuits ahead of the capability gate.
+  const helpOutput = capture();
+  assert.equal(await cliModule.main(["run", "--capability", "oracle", "--help"], { ...helpOutput, handlers, env: {} }), 0);
+  assert.equal(helpOutput.output().stdout, "Usage: andrew-agent run <repository> <prompt>\n");
+});
+
+test("the requested capability set and its resolved root reach the bundle and the doctor gate", async () => {
+  const repositoryRoot = await createRepository();
+  const seen = [];
+  const harness = operationHarness(repositoryRoot);
+  const resolveCalls = [];
+  const paths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex", oracleRoot: "/fixture/wiki" };
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths(options) { resolveCalls.push(options); return options?.capabilities?.includes("oracle") ? paths : { ...paths, oracleRoot: undefined }; },
+    async buildBundle(input) { seen.push(["build", input.requestedCapabilities, input.capabilityInputs]); return { artifactRoot: "/fixture/artifact", metadata: { bundleDigest: "c".repeat(64) } }; },
+    async runDoctor(input) { seen.push(["doctor", input.requestedCapabilities, input.capabilityInputs]); return { exitCode: 0, findings: [] }; },
+  };
+
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, ["oracle"]), 0);
+  assert.deepEqual(resolveCalls, [{ capabilities: ["oracle"] }]);
+  // Both literal pairs move together: a doctor that validated an empty set
+  // would be admitting a bundle it was never shown.
+  assert.deepEqual(seen, [["build", ["oracle"], { oracle: { llmWikiRoot: "/fixture/wiki" } }], ["doctor", ["oracle"], { oracle: { llmWikiRoot: "/fixture/wiki" } }]]);
+
+  seen.length = 0;
+  resolveCalls.length = 0;
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, []), 0);
+  assert.deepEqual(resolveCalls, [{ capabilities: [] }]);
+  assert.deepEqual(seen, [["build", [], {}], ["doctor", [], {}]]);
+
+  // resume carries the empty set until step 4 gives it a record to compare.
+  seen.length = 0;
+  assert.equal(await resumeModule.resumeCommand("thread-1", "prompt", capture(), dependencies), 0);
+  assert.deepEqual(seen, [["build", [], {}], ["doctor", [], {}]]);
+});
+
+test("requesting a capability the bundle source does not declare aborts the run", async () => {
+  const repositoryRoot = await createRepository();
+  const harness = operationHarness(repositoryRoot);
+  const refusal = new renderModule.RenderError("CAPABILITY_INPUT_INVALID", "Oracle input was provided without an Oracle capability declaration.");
+  const output = capture();
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths() { return { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex", oracleRoot: "/fixture/wiki" }; },
+    async buildBundle() { throw refusal; },
+    async installBundle() { throw new Error("install must not run after a refusal"); },
+  };
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, dependencies, ["oracle"]), 3);
+  assert.equal(output.output().stderr, "Runtime preparation failed: CAPABILITY_INPUT_INVALID.\n");
+});
+
+test("the resolved Oracle root reaches the App Server input, and only when it exists", async () => {
+  const repositoryRoot = await createRepository();
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+
+  // Directly, because appServerInput is the link between the resolved paths
+  // and the spawn: without this the whole chain still passes while the child
+  // is launched without the variable it needs.
+  assert.equal(Object.hasOwn(runModule.appServerInput(basePaths), "llmWikiRoot"), false);
+  assert.equal(runModule.appServerInput({ ...basePaths, oracleRoot: "/fixture/wiki" }).llmWikiRoot, "/fixture/wiki");
+
+  // And through a run, so the chain from the requested set to the child input
+  // is asserted end to end rather than at its two ends.
+  const harness = operationHarness(repositoryRoot);
+  const starts = [];
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths(options) { return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot: "/fixture/wiki" } : basePaths; },
+    async startAppServer(input) { starts.push(input.llmWikiRoot); return harness.dependencies.startAppServer(input); },
+  };
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, ["oracle"]), 0);
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, []), 0);
+  assert.deepEqual(starts, ["/fixture/wiki", undefined]);
+});
+
+test("resume derives its boundary from the record and refuses to be widened", async () => {
+  const repositoryRoot = await createRepository();
+  const rootA = "/fixture/wiki-a";
+  const rootB = "/fixture/wiki-b";
+  const digestOf = (root) => createHash("sha256").update(root, "utf8").digest("hex");
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+
+  const attempt = async ({ grant, flag, currentRoot }) => {
+    const harness = operationHarness(repositoryRoot, { record: terminalRecord(repositoryRoot, "completed", grant) });
+    const output = capture();
+    const dependencies = {
+      ...harness.dependencies,
+      async resolveRuntimePaths(options) {
+        harness.order.push("paths");
+        return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot: currentRoot } : basePaths;
+      },
+    };
+    const code = await resumeModule.resumeCommand("thread-1", "prompt", output, dependencies, flag);
+    return { code, stderr: output.output().stderr, order: harness.order };
+  };
+
+  // A thread granted nothing cannot be resumed with a capability.
+  const widened = await attempt({ grant: {}, flag: ["oracle"], currentRoot: rootA });
+  assert.equal(widened.code, 3);
+  assert.equal(widened.stderr, "Resume refused: THREAD_CAPABILITY_MISMATCH.\n");
+  assert.equal(widened.order.includes("lock"), false);
+
+  // And a granted thread cannot be resumed as if it had none.
+  const narrowed = await attempt({ grant: { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf(rootA) }, flag: [], currentRoot: rootA });
+  assert.equal(narrowed.code, 3);
+  assert.equal(narrowed.stderr, "Resume refused: THREAD_CAPABILITY_MISMATCH.\n");
+
+  // The set agreeing is not enough: the same ["oracle"] can name two wikis.
+  const moved = await attempt({ grant: { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf(rootA) }, flag: ["oracle"], currentRoot: rootB });
+  assert.equal(moved.code, 3);
+  assert.equal(moved.stderr, "Resume refused: THREAD_ORACLE_ROOT_CHANGED.\n");
+  // Neither root is disclosed, and no path reaches the operator at all.
+  for (const path of [rootA, rootB]) assert.equal(moved.stderr.includes(path), false);
+  assert.equal(moved.order.includes("lock"), false);
+
+  // Agreement on both admits the resume, and the grant reaches the turn.
+  const agreed = await attempt({ grant: { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf(rootA) }, flag: ["oracle"], currentRoot: rootA });
+  assert.equal(agreed.code, 0);
+  assert.equal(agreed.stderr, "");
+
+  // A pre-capability thread resumes exactly as it did before this step.
+  const untouched = await attempt({ grant: {}, flag: [], currentRoot: undefined });
+  assert.equal(untouched.code, 0);
+  assert.deepEqual(untouched.order.filter((entry) => entry === "paths"), ["paths"]);
+});
+
+test("a run records the grant it was given, so a later resume has something true to compare", async () => {
+  const repositoryRoot = await createRepository();
+  const oracleRoot = "/fixture/wiki-a";
+  const expected = createHash("sha256").update(oracleRoot, "utf8").digest("hex");
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+
+  // Directly: the digest is of the canonical root, and the path itself is
+  // nowhere in the identity the records are built from.
+  assert.equal(runModule.oracleRootDigest(basePaths), null);
+  assert.equal(runModule.oracleRootDigest({ ...basePaths, oracleRoot }), expected);
+
+  // And through a run, because the line that puts it on the release identity
+  // is the only link between what was granted and what a resume reads back.
+  const identities = [];
+  const harness = operationHarness(repositoryRoot);
+  const dependencies = {
+    ...harness.dependencies,
+    async resolveRuntimePaths(options) { return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot } : basePaths; },
+    async startNewThread(request, coordinator) { identities.push(coordinator.releaseIdentity); return harness.dependencies.startNewThread(request, coordinator); },
+  };
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, ["oracle"]), 0);
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), dependencies, []), 0);
+  assert.deepEqual(identities.map((identity) => [identity.requestedCapabilities, identity.oracleRootDigest]), [[["oracle"], expected], [[], null]]);
+  for (const identity of identities) assert.equal(JSON.stringify(identity).includes(oracleRoot), false);
+});
+
+test("the read-only resume form works regardless of the grant or the current environment", async () => {
+  const repositoryRoot = await createRepository();
+  const digestOf = (root) => createHash("sha256").update(root, "utf8").digest("hex");
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+  const grant = { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf("/fixture/wiki-a") };
+
+  // `resume <thread-id>` starts no turn and no App Server, so there is nothing
+  // for a capability boundary to protect. It has to keep working when the
+  // caller passes no flag, and when the root has moved since.
+  for (const [flag, currentRoot] of [[[], "/fixture/wiki-a"], [["oracle"], "/fixture/wiki-b"], [[], undefined]]) {
+    const harness = operationHarness(repositoryRoot, { record: terminalRecord(repositoryRoot, "completed", grant) });
+    const output = capture();
+    const code = await resumeModule.resumeCommand("thread-1", undefined, output, {
+      ...harness.dependencies,
+      async resolveRuntimePaths(options) { return options?.capabilities?.includes("oracle") ? { ...basePaths, oracleRoot: currentRoot } : basePaths; },
+    }, flag);
+    assert.equal(code, 0, `${JSON.stringify(flag)} / ${currentRoot}`);
+    assert.equal(output.output().stderr, "");
+    assert.equal(harness.order.includes("lock"), false);
+  }
+});
+
+test("an unusable Oracle root is reported by code, never by path", async () => {
+  const repositoryRoot = await createRepository();
+  const secret = "/private/wiki-nobody-should-see";
+  const paths = await import("../../dist/runtime/paths.js");
+  const harness = operationHarness(repositoryRoot);
+  // Real errors, because the containment is diagnosticFor taking the code and
+  // dropping the message — and these messages carry the path on purpose, so
+  // the runtime layer can still say what it means internally.
+  const cases = [
+    new paths.RuntimePathError("RUNTIME_PATH_INVALID", `Runtime directory does not exist or is unsafe: ${secret}`),
+    new paths.RuntimePathError("ORACLE_ROOT_OVERLAPS_STATE", `Oracle and state roots must not overlap: ${secret}`),
+    new paths.RuntimePathError("RUNTIME_STATE_UNSAFE", `Runtime state path must not be a symbolic link: ${secret}`),
+  ];
+  for (const error of cases) {
+    assert.equal(error.message.includes(secret), true, "the fixture must actually carry the path");
+    const output = capture();
+    const code = await runModule.runCommand(repositoryRoot, "prompt", output, { ...harness.dependencies, async resolveRuntimePaths() { throw error; } }, ["oracle"]);
+    assert.equal(code, 3);
+    assert.equal(output.output().stderr, `Runtime preparation failed: ${error.code}.\n`);
+    assert.equal(output.output().stderr.includes(secret), false);
+    assert.equal(output.output().stdout.includes(secret), false);
+  }
+});
+
+test("doctor evaluates the capability the environment offers and survives one it cannot resolve", async () => {
+  const inputs = [];
+  const doctorRun = async (env, resolveImpl) => {
+    inputs.length = 0;
+    const output = capture();
+    const code = await cliModule.doctorCommand(output, env, { resolveRuntimePaths: resolveImpl, runDoctor: async (input) => { inputs.push(input); return { exitCode: 0, findings: [{ severity: "ready", code: "OPTIONAL_ORACLE", message: "Oracle is enabled for this candidate." }] }; }, realpath: async (value) => value });
+    return { code, stdout: output.output().stdout, stderr: output.output().stderr };
+  };
+  const basePaths = { sourceRoot: "/fixture/source", stateRoot: "/fixture/state", codexHome: "/fixture/state/codex-home", codexBin: "/fixture/bin/codex" };
+  const withOracle = { ...basePaths, oracleRoot: "/fixture/wiki" };
+
+  // Set and usable: the capability and its input both reach runDoctor.
+  const enabled = await doctorRun({ ANDREW_AGENT_ORACLE_ROOT: "/fixture/wiki" }, async (options) => (options?.capabilities?.includes("oracle") ? withOracle : basePaths));
+  assert.equal(enabled.code, 0);
+  assert.deepEqual(inputs.map((input) => [input.requestedCapabilities, input.capabilityInputs]), [[["oracle"], { oracle: { llmWikiRoot: "/fixture/wiki" } }]]);
+
+  // Unset: doctor asks for nothing and consults no capability input.
+  const absent = await doctorRun({}, async () => basePaths);
+  assert.equal(absent.code, 0);
+  assert.deepEqual(inputs.map((input) => [input.requestedCapabilities, input.capabilityInputs]), [[[], {}]]);
+
+  // Set but unresolvable: doctor still runs and reports, rather than becoming
+  // harder to run than the thing it diagnoses.
+  const broken = await doctorRun({ ANDREW_AGENT_ORACLE_ROOT: "/fixture/missing" }, async (options) => {
+    if (options?.capabilities?.includes("oracle")) throw new Error("unresolvable");
+    return basePaths;
+  });
+  assert.equal(broken.code, 0);
+  assert.deepEqual(inputs.map((input) => [input.requestedCapabilities, input.capabilityInputs]), [[[], {}]]);
+  assert.equal(broken.stderr, "");
 });

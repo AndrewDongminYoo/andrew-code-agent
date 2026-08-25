@@ -13,6 +13,7 @@ const transportModule = await import(
 const clientModule = await import("../../dist/app-server/client.js").catch(
   () => null,
 );
+const { REQUIRED_CODEX_VERSION } = await import("../../dist/constants.js");
 
 function requireTransport() {
   assert.notEqual(
@@ -994,3 +995,51 @@ for (const [kind, frame] of [
     );
   });
 }
+
+test("the App Server child receives exactly the variables its capability set earns", async () => {
+  const root = await mkdtemp(join(tmpdir(), "andrew-agent-child-env-"));
+  const codexBin = join(root, "codex");
+  const dump = join(root, "child-env.json");
+  // Answers the version probe, then records its whole environment and exits.
+  // The handshake therefore fails, which is fine: the spawn has already
+  // happened and the file is what this test reads.
+  await writeFile(codexBin, `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+if (process.argv[2] === "--version") { process.stdout.write("codex-cli " + ${JSON.stringify(REQUIRED_CODEX_VERSION)} + "\\n"); process.exit(0); }
+writeFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env));
+process.exit(9);
+`, { mode: 0o700 });
+  const base = { codexBinary: codexBin, codexHome: join(root, "codex-home"), productVersion: "0.1.0", handshakeTimeoutMs: 2_000, requestTimeoutMs: 2_000 };
+  // macOS adds this to every child regardless of the env passed to spawn, so
+  // it is platform noise rather than something the product supplies. Every
+  // other key in the child has to be one this code put there.
+  const platformInjected = new Set(["__CF_USER_TEXT_ENCODING"]);
+  const childEnv = async (input) => {
+    await rm(dump, { force: true });
+    await assert.rejects(requireClient().startAppServer(input));
+    const env = JSON.parse(await readFile(dump, "utf8"));
+    return { env, supplied: Object.keys(env).filter((key) => !platformInjected.has(key)).sort() };
+  };
+  try {
+    const disabled = await childEnv(base);
+    assert.deepEqual(disabled.supplied, ["CODEX_HOME", "PATH"]);
+    assert.equal(disabled.env.CODEX_HOME, base.codexHome);
+    assert.equal(Object.hasOwn(disabled.env, "LLM_WIKI_ROOT"), false);
+
+    const enabled = await childEnv({ ...base, llmWikiRoot: "/fixture/wiki" });
+    assert.deepEqual(enabled.supplied, ["CODEX_HOME", "LLM_WIKI_ROOT", "PATH"]);
+    assert.equal(enabled.env.LLM_WIKI_ROOT, "/fixture/wiki");
+
+    // The environment is constructed, never inherited: a variable set on this
+    // process must not appear in the child even when the capability is on.
+    process.env.ANDREW_AGENT_CHILD_ENV_CANARY = "leaked";
+    try {
+      const canaried = await childEnv({ ...base, llmWikiRoot: "/fixture/wiki" });
+      assert.equal(Object.hasOwn(canaried.env, "ANDREW_AGENT_CHILD_ENV_CANARY"), false);
+    } finally {
+      delete process.env.ANDREW_AGENT_CHILD_ENV_CANARY;
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

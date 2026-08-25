@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  cp,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -594,4 +603,65 @@ test("the rendered config is owner-only and the rendered hooks file is not", asy
     assert.equal(renderedMode(bundle, "config.toml"), 0o600);
     assert.equal(renderedMode(bundle, "hooks.json"), 0o644);
   });
+});
+
+test("the enabled Oracle root is scanned for even when the manifest never heard of it", async () => {
+  // Deliberately outside forbiddenLiterals, which is ["/Users/dongminyu",
+  // "/Volumes/dongminyu"]. A root under either prefix would be caught by
+  // accident of this machine's layout and would prove nothing.
+  const wiki = await mkdtemp(join(tmpdir(), "andrew-code-agent-wiki-"));
+  const repository = await createSourceRepository();
+  try {
+    assert.equal(manifest().forbiddenLiterals.some((literal) => wiki.startsWith(literal)), false, "the fixture root must be one the manifest does not declare");
+
+    // Clean first: the same render with the same root passes while no file
+    // carries it, so the rejection below is about the content and not the
+    // capability being on.
+    const clean = await renderBundle(repository, manifest(), { oracle: { llmWikiRoot: wiki } });
+    assert.equal(clean.files.some((file) => new TextDecoder().decode(file.bytes).includes(wiki)), false);
+
+    // A bundled file that hardcodes the operator's wiki path instead of the
+    // token is exactly what this scan exists to stop.
+    await writeFile(join(repository, "agents", "oracle.toml"), `name = "oracle"\nwiki_root = "${wiki}"\n`);
+    await execFile("git", ["-C", repository, "add", "--all"]);
+    await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "hardcode the wiki root"]);
+    await assert.rejects(renderBundle(repository, manifest(), { oracle: { llmWikiRoot: wiki } }), (error) => {
+      assert.equal(error.code, "FORBIDDEN_LITERAL");
+      // The refusal names the file, never the path it found.
+      assert.equal(String(error.message).includes(wiki), false);
+      return true;
+    });
+  } finally {
+    await rm(wiki, { recursive: true, force: true });
+    await rm(repository, { recursive: true, force: true });
+  }
+});
+
+test("a symlinked Oracle root is scanned under both spellings", async () => {
+  const canonical = await realpath(await mkdtemp(join(tmpdir(), "andrew-code-agent-wiki-real-")));
+  const linkParent = await mkdtemp(join(tmpdir(), "andrew-code-agent-wiki-link-"));
+  const link = join(linkParent, "wiki");
+  await symlink(canonical, link);
+  const repository = await createSourceRepository();
+  try {
+    assert.notEqual(link, canonical, "the fixture must actually differ from its target");
+
+    // A rendered file carrying the canonical target must be refused even
+    // though the capability input names the link, because they identify the
+    // same enabled root.
+    await writeFile(join(repository, "agents", "oracle.toml"), `name = "oracle"\nwiki_root = "${canonical}"\n`);
+    await execFile("git", ["-C", repository, "add", "--all"]);
+    await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "hardcode the canonical wiki root"]);
+    await assert.rejects(renderBundle(repository, manifest(), { oracle: { llmWikiRoot: link } }), { code: "FORBIDDEN_LITERAL" });
+
+    // And the reverse: a file carrying the link spelling is refused too.
+    await writeFile(join(repository, "agents", "oracle.toml"), `name = "oracle"\nwiki_root = "${link}"\n`);
+    await execFile("git", ["-C", repository, "add", "--all"]);
+    await execFile("git", ["-C", repository, "commit", "--quiet", "-m", "hardcode the link spelling"]);
+    await assert.rejects(renderBundle(repository, manifest(), { oracle: { llmWikiRoot: link } }), { code: "FORBIDDEN_LITERAL" });
+  } finally {
+    await rm(linkParent, { recursive: true, force: true });
+    await rm(canonical, { recursive: true, force: true });
+    await rm(repository, { recursive: true, force: true });
+  }
 });

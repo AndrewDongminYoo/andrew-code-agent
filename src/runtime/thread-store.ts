@@ -14,6 +14,8 @@ import {
 } from "node:fs/promises";
 import { join } from "node:path";
 
+import type { RequestedCapability } from "../constants.js";
+
 export interface ThreadRecord {
   readonly threadId: string;
   readonly repositoryRoot: string;
@@ -26,6 +28,11 @@ export interface ThreadRecord {
   readonly terminalStatus:
     "not-started" | "running" | "completed" | "failed" | "interrupted";
   readonly finalGitStatus: string | null;
+  // What this thread was granted, and against which data scope. The set alone
+  // does not hold the boundary: the same ["oracle"] can name two different
+  // wikis, so the root is bound too, as a digest rather than the path.
+  readonly requestedCapabilities: readonly RequestedCapability[];
+  readonly oracleRootDigest: string | null;
 }
 
 export type ThreadStoreErrorCode =
@@ -58,6 +65,13 @@ const recordKeys = [
   "terminalStatus",
   "finalGitStatus",
 ] as const;
+// Schema 2 adds the capability binding. The key set is the discriminator —
+// there is no version field — so a record written before it is migrated in
+// memory to the empty grant and rewritten in the current shape.
+const capabilityKeys = ["requestedCapabilities", "oracleRootDigest"] as const;
+const legacyRecordKeys = recordKeys;
+const currentRecordKeys = [...recordKeys, ...capabilityKeys] as const;
+const oracleRootDigestPattern = /^[0-9a-f]{64}$/;
 const terminalStatuses = new Set([
   "not-started",
   "running",
@@ -353,7 +367,20 @@ async function readRecord(path: string): Promise<ThreadRecord> {
 }
 
 function validateRecord(value: unknown): ThreadRecord {
-  if (!isObject(value) || !hasOnlyKeys(value, recordKeys)) {
+  if (!isObject(value)) {
+    throw new ThreadStoreError(
+      "THREAD_CORRUPT",
+      "Thread record has an invalid schema.",
+    );
+  }
+  if (hasOnlyKeys(value, legacyRecordKeys)) {
+    return validateRecord({
+      ...value,
+      requestedCapabilities: [],
+      oracleRootDigest: null,
+    });
+  }
+  if (!hasOnlyKeys(value, currentRecordKeys)) {
     throw new ThreadStoreError(
       "THREAD_CORRUPT",
       "Thread record has an invalid schema.",
@@ -371,7 +398,9 @@ function validateRecord(value: unknown): ThreadRecord {
     !nullableString(value.turnId) ||
     typeof value.terminalStatus !== "string" ||
     !terminalStatuses.has(value.terminalStatus) ||
-    !nullableString(value.finalGitStatus)
+    !nullableString(value.finalGitStatus) ||
+    !isCapabilityList(value.requestedCapabilities) ||
+    !isOracleRootDigest(value.oracleRootDigest)
   ) {
     throw new ThreadStoreError(
       "THREAD_CORRUPT",
@@ -387,6 +416,23 @@ function nullableString(value: unknown): value is string | null {
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isCapabilityList(
+  value: unknown,
+): value is readonly RequestedCapability[] {
+  return (
+    Array.isArray(value) &&
+    value.every((entry) => entry === "oracle") &&
+    new Set(value).size === value.length
+  );
+}
+
+function isOracleRootDigest(value: unknown): value is string | null {
+  return (
+    value === null ||
+    (typeof value === "string" && oracleRootDigestPattern.test(value))
+  );
 }
 
 function hasOnlyKeys(

@@ -41,6 +41,8 @@ const makeRecord = (threadId, repositoryRoot, overrides = {}) => ({
   turnId: null,
   terminalStatus: "not-started",
   finalGitStatus: null,
+  requestedCapabilities: [],
+  oracleRootDigest: null,
   ...overrides,
 });
 
@@ -244,5 +246,45 @@ test("read and latest reject an unsafe threads directory without chmod", async (
       { code: "THREAD_STORE_UNSAFE" },
     );
     assert.equal((await lstat(threadsRoot)).mode & 0o777, 0o755);
+  });
+});
+
+test("the capability grant round-trips, migrates from schema 1, and refuses a corrupt one", async () => {
+  await withStore(async ({ stateRoot, repositoryRoot }) => {
+    const threads = requireThreads();
+    const digest = "d".repeat(64);
+
+    // The grant survives a write and a read in another process's shape.
+    const granted = makeRecord("granted", repositoryRoot, { requestedCapabilities: ["oracle"], oracleRootDigest: digest });
+    await threads.writeThreadRecord(stateRoot, granted);
+    const readBack = await threads.readThreadRecord(stateRoot, "granted");
+    assert.deepEqual(readBack.requestedCapabilities, ["oracle"]);
+    assert.equal(readBack.oracleRootDigest, digest);
+
+    // A record written before schema 2 reads as the empty grant rather than
+    // as corruption, and nothing about it names a path.
+    const legacy = makeRecord("legacy", repositoryRoot);
+    delete legacy.requestedCapabilities;
+    delete legacy.oracleRootDigest;
+    await writeFile(join(stateRoot, "threads", "legacy.json"), JSON.stringify(legacy), { mode: 0o600 });
+    const migrated = await threads.readThreadRecord(stateRoot, "legacy");
+    assert.deepEqual(migrated.requestedCapabilities, []);
+    assert.equal(migrated.oracleRootDigest, null);
+
+    // Each field is refused on its own terms rather than tolerated.
+    const corrupt = [
+      { requestedCapabilities: "oracle" },
+      { requestedCapabilities: ["shared-memory"] },
+      { requestedCapabilities: ["oracle", "oracle"] },
+      { oracleRootDigest: "" },
+      { oracleRootDigest: "not-a-digest" },
+      { oracleRootDigest: "D".repeat(64) },
+      { oracleRootDigest: "d".repeat(63) },
+    ];
+    for (const [index, override] of corrupt.entries()) {
+      const name = `corrupt-${index}`;
+      await writeFile(join(stateRoot, "threads", `${name}.json`), JSON.stringify(makeRecord(name, repositoryRoot, override)), { mode: 0o600 });
+      await assert.rejects(threads.readThreadRecord(stateRoot, name), { code: "THREAD_CORRUPT" }, JSON.stringify(override));
+    }
   });
 });
