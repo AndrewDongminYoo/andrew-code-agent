@@ -93,6 +93,14 @@ test("drops notifications that name another thread", () => {
   }
   assert.deepEqual([...active.items.keys()], ["message-1"], "a foreign thread must not add items to this turn");
   assert.equal(active.terminalStatus, "running", "a foreign thread must not settle this turn");
+
+  assert.throws(
+    () => api.reduceServerMessage(active, { method: "item/started", params: { turnId: "turn-1", startedAtMs: 1, item: item("reasoning", "thought-1", { summary: [], content: [] }) } }),
+    { code: "INVALID_SERVER_EVENT" },
+    "a frame carrying no thread id cannot be attributed and stays fail-closed",
+  );
+  const warned = api.reduceServerMessage(active, { method: "warning", params: { threadId: null, message: "not thread-scoped" } });
+  assert.deepEqual(warned.warnings, ["not thread-scoped"], "an explicit null thread id means the frame is not thread-scoped, not foreign");
 });
 
 test("preserves authoritative completion and rejects conflicting terminal data", () => {
