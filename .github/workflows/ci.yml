@@ -1,8 +1,10 @@
 name: CI
 
 on:
+  # No base filter: a `branches:` list here filters on the pull request's base,
+  # so a stacked pull request aimed at another feature branch would never run
+  # this workflow, and the rules that require it could never be satisfied.
   pull_request:
-    branches: [main]
   push:
     branches: [main]
 
