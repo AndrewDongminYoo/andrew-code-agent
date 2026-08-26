@@ -737,7 +737,9 @@ export function reduceServerMessage(
     const turn = params.turn;
     if (
       turn.id !== state.turnId ||
-      (turn.itemsView !== "full" && turn.itemsView !== "summary") ||
+      (turn.itemsView !== "full" &&
+        turn.itemsView !== "summary" &&
+        turn.itemsView !== "notLoaded") ||
       !Array.isArray(turn.items)
     )
       throw new ReducerError("INVALID_SERVER_EVENT");
@@ -753,8 +755,13 @@ export function reduceServerMessage(
       throw new ReducerError("INVALID_SERVER_EVENT");
     // A summary view carries an authoritative status over an item list that
     // is not the turn's complete inventory, so it settles the status and
-    // leaves every inventory claim as observed while streaming.
-    if (turn.itemsView === "summary") {
+    // leaves every inventory claim as observed while streaming. A notLoaded
+    // view makes the same claim with nothing loaded at all, and it is what an
+    // interrupted turn's completion actually carries, measured against codex
+    // 0.148.0 on 2026-08-26. Rejecting it threw away the server's own
+    // terminal report on every interrupt, so it settles the status here on
+    // the same terms and still contributes no inventory.
+    if (turn.itemsView === "summary" || turn.itemsView === "notLoaded") {
       // The retained inventory is carried straight to the renderer, so it has
       // to clear the same stored-state validation every other path applies.
       const settled: TurnState = {
