@@ -214,7 +214,9 @@ Two further facts from the same run:
 Measured 2026-08-26 after the fix, by interrupting the same live turn under
 both builds. A turn was started against the throwaway repository with a prompt
 that only writes prose, `SIGINT` was sent 25 seconds in, and the only
-difference between the runs was whether `reducer.ts` accepts `notLoaded`.
+difference between the runs was whether `reducer.ts` accepts `notLoaded`. Each
+arm ran once, on a machine loaded to between 5 and 11 all session, so the
+timings are the gap between two single runs rather than a distribution.
 
 | Build               | Reported status | Exit | SIGINT to exit |
 | ------------------- | --------------- | ---- | -------------- |

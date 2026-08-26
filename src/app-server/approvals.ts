@@ -486,11 +486,11 @@ function validCommandParams(params: RecordValue): boolean {
       "proposedExecpolicyAmendment",
       "proposedNetworkPolicyAmendments",
       // Sent by the pinned binary and absent from the generated params type,
-      // measured against codex 0.148.0 on 2026-08-26. It advertises the
-      // decisions that request's UI should offer and is advisory: the server
-      // accepted `decline` against an advertised set of accept,
-      // acceptWithExecpolicyAmendment and cancel, and the turn continued. So
-      // the key is allowed and nothing reads it.
+      // measured against codex 0.148.0 on 2026-08-26. It names a set of
+      // decisions, and that set does not bind the answer: the server accepted
+      // `decline` against a set of accept, acceptWithExecpolicyAmendment and
+      // cancel that omitted it, and the turn continued. So the key is allowed
+      // and nothing reads it.
       "availableDecisions",
     ]) ||
     !requiredString(params, "threadId") ||
