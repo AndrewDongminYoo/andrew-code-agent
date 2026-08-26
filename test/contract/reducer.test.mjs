@@ -1256,6 +1256,16 @@ test("accepts a notLoaded completion as an authoritative status", () => {
   assert.deepEqual([...terminal.items.keys()], ["message-1"], "items observed while streaming must survive a notLoaded completion");
 });
 
+test("rejects a notLoaded completion that contradicts itself with items", () => {
+  const api = reducer();
+  const carried = [item("agentMessage", "message-1", { text: "ACKNOWLEDGED", phase: null, memoryCitation: null })];
+  assert.throws(
+    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), summaryCompletion({ itemsView: "notLoaded", items: carried })),
+    { code: "INVALID_SERVER_EVENT" },
+    "a view that loaded nothing must not arrive carrying an inventory the settle path would drop",
+  );
+});
+
 test("still rejects a completion whose items view is not declared", () => {
   const api = reducer();
   assert.throws(

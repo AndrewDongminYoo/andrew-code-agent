@@ -740,7 +740,12 @@ export function reduceServerMessage(
       (turn.itemsView !== "full" &&
         turn.itemsView !== "summary" &&
         turn.itemsView !== "notLoaded") ||
-      !Array.isArray(turn.items)
+      !Array.isArray(turn.items) ||
+      // A notLoaded view states that nothing was loaded, so items alongside it
+      // contradict the envelope. The settle path below never reads turn.items,
+      // which is the semantic a summary view asks for and would silently drop
+      // an inventory this one never claimed to carry.
+      (turn.itemsView === "notLoaded" && turn.items.length > 0)
     )
       throw new ReducerError("INVALID_SERVER_EVENT");
     const statuses: Record<string, TurnState["terminalStatus"]> = {
