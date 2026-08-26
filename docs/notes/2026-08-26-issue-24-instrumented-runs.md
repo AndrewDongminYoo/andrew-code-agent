@@ -209,6 +209,26 @@ Two further facts from the same run:
   envelope with nothing loaded, not a truncated one. That is what makes D3's
   fix a single condition rather than a new shape.
 
+## The interrupt control: what rejecting notLoaded actually cost
+
+Measured 2026-08-26 after the fix, by interrupting the same live turn under
+both builds. A turn was started against the throwaway repository with a prompt
+that only writes prose, `SIGINT` was sent 25 seconds in, and the only
+difference between the runs was whether `reducer.ts` accepts `notLoaded`.
+
+| Build               | Reported status | Exit | SIGINT to exit |
+| ------------------- | --------------- | ---- | -------------- |
+| accepts `notLoaded` | `interrupted`   | 130  | 0.289 s        |
+| rejects `notLoaded` | `failed`        | 1    | 6.372 s        |
+
+So the cost was larger than this note first recorded. Rejecting the frame does
+not merely fall back to the five-second interrupt grace timer: the reducer
+throw sets `fatalFailure`, where `settle()` resolves `"failed"` regardless, so
+an interrupt the operator asked for was reported as a failure and exited 1.
+The earlier reading that D3 "changes no reported status until D1 and D2 are
+closed" held for those two captures, which already had `fatalFailure` set for
+another reason. It does not hold for a live interrupt.
+
 ## What this does not say
 
 The three findings name what the coordinator received. None of them is a fix.

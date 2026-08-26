@@ -759,8 +759,10 @@ export function reduceServerMessage(
     // view makes the same claim with nothing loaded at all, and it is what an
     // interrupted turn's completion actually carries, measured against codex
     // 0.148.0 on 2026-08-26. Rejecting it threw away the server's own
-    // terminal report on every interrupt, so it settles the status here on
-    // the same terms and still contributes no inventory.
+    // terminal report, which reported an operator's own interrupt as `failed`
+    // at exit 1 five seconds later rather than `interrupted` at 130, measured
+    // by interrupting the same live turn under both builds. So it settles the
+    // status here on the same terms and still contributes no inventory.
     if (turn.itemsView === "summary" || turn.itemsView === "notLoaded") {
       // The retained inventory is carried straight to the renderer, so it has
       // to clear the same stored-state validation every other path applies.
