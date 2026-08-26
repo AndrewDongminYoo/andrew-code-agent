@@ -290,6 +290,24 @@ test("rejects extra generated-request keys and grants a fresh non-null permissio
   assert.equal(injectedResult.kind, "failClosed");
 });
 
+// codex-cli 0.148.0 sends availableDecisions on a command approval request and
+// the generated params type does not declare it, measured 2026-08-26 against a
+// real run. The server accepted a decision that field did not advertise, so the
+// key is allowed and the decision vocabulary is unchanged.
+test("accepts the command approval field the pinned binary sends beyond its generated type", async () => {
+  const [command] = await requests();
+  const advertised = structuredClone(command);
+  advertised.params.availableDecisions = ["accept", { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["flutter", "test"] } }, "cancel"];
+
+  const prompted = await approvals().answerApproval(advertised, input("1\n"), output().stream, 100);
+  assert.equal(prompted.kind, "response");
+  assert.deepEqual(prompted.response, { decision: "accept" });
+
+  const noninteractive = await approvals().answerApproval(advertised, input("1\n", false), output().stream, 100);
+  assert.equal(noninteractive.kind, "response");
+  assert.deepEqual(noninteractive.response, { decision: "decline" }, "the safest answer stays decline against an advertised set that omits it");
+});
+
 test("renders complete bounded approval context and waits for a newline-delimited selection", async () => {
   const [command, , permission] = await requests();
   command.params.commandActions = [{

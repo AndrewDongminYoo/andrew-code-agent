@@ -737,8 +737,15 @@ export function reduceServerMessage(
     const turn = params.turn;
     if (
       turn.id !== state.turnId ||
-      (turn.itemsView !== "full" && turn.itemsView !== "summary") ||
-      !Array.isArray(turn.items)
+      (turn.itemsView !== "full" &&
+        turn.itemsView !== "summary" &&
+        turn.itemsView !== "notLoaded") ||
+      !Array.isArray(turn.items) ||
+      // A notLoaded view states that nothing was loaded, so items alongside it
+      // contradict the envelope. The settle path below never reads turn.items,
+      // which is the semantic a summary view asks for and would silently drop
+      // an inventory this one never claimed to carry.
+      (turn.itemsView === "notLoaded" && turn.items.length > 0)
     )
       throw new ReducerError("INVALID_SERVER_EVENT");
     const statuses: Record<string, TurnState["terminalStatus"]> = {
@@ -753,8 +760,15 @@ export function reduceServerMessage(
       throw new ReducerError("INVALID_SERVER_EVENT");
     // A summary view carries an authoritative status over an item list that
     // is not the turn's complete inventory, so it settles the status and
-    // leaves every inventory claim as observed while streaming.
-    if (turn.itemsView === "summary") {
+    // leaves every inventory claim as observed while streaming. A notLoaded
+    // view makes the same claim with nothing loaded at all, and it is what an
+    // interrupted turn's completion actually carries, measured against codex
+    // 0.148.0 on 2026-08-26. Rejecting it threw away the server's own
+    // terminal report, which reported an operator's own interrupt as `failed`
+    // at exit 1 five seconds later rather than `interrupted` at 130, measured
+    // by interrupting the same live turn under both builds. So it settles the
+    // status here on the same terms and still contributes no inventory.
+    if (turn.itemsView === "summary" || turn.itemsView === "notLoaded") {
       // The retained inventory is carried straight to the renderer, so it has
       // to clear the same stored-state validation every other path applies.
       const settled: TurnState = {

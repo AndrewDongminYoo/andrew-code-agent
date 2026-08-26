@@ -1240,12 +1240,38 @@ test("repeats a summary completion idempotently and rejects a changed one", () =
   assert.throws(() => api.reduceServerMessage(terminal, summaryCompletion({ status: "failed" })), { code: "INVALID_SERVER_EVENT" });
 });
 
-test("still rejects a completion whose items were never loaded", () => {
+// codex-cli 0.148.0 completes an interrupted turn with itemsView "notLoaded",
+// measured 2026-08-26: the status is authoritative and nothing was loaded, so
+// it settles on the same terms a summary view does.
+test("accepts a notLoaded completion as an authoritative status", () => {
+  const api = reducer();
+  const message = item("agentMessage", "message-1", { text: "ACKNOWLEDGED", phase: null, memoryCitation: null });
+  const streamed = stateWith([started(message), completed(message)]);
+
+  const terminal = api.reduceServerMessage(streamed, summaryCompletion({ itemsView: "notLoaded", status: "interrupted" }));
+
+  assert.equal(terminal.terminalStatus, "interrupted", "an interrupted turn's own completion has to settle the status");
+  assert.equal(terminal.terminalInventoryDigest, null, "a notLoaded view must not assert an inventory digest");
+  assert.equal(terminal.omittedItemsComplete, false, "a notLoaded view must not claim the omission set is complete");
+  assert.deepEqual([...terminal.items.keys()], ["message-1"], "items observed while streaming must survive a notLoaded completion");
+});
+
+test("rejects a notLoaded completion that contradicts itself with items", () => {
+  const api = reducer();
+  const carried = [item("agentMessage", "message-1", { text: "ACKNOWLEDGED", phase: null, memoryCitation: null })];
+  assert.throws(
+    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), summaryCompletion({ itemsView: "notLoaded", items: carried })),
+    { code: "INVALID_SERVER_EVENT" },
+    "a view that loaded nothing must not arrive carrying an inventory the settle path would drop",
+  );
+});
+
+test("still rejects a completion whose items view is not declared", () => {
   const api = reducer();
   assert.throws(
-    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), summaryCompletion({ itemsView: "notLoaded" })),
+    () => api.reduceServerMessage(api.createTurnState("thread-1", "turn-1"), summaryCompletion({ itemsView: "partial" })),
     { code: "INVALID_SERVER_EVENT" },
-    "notLoaded carries no observed inventory and stays fail-closed",
+    "an items view outside the generated union stays fail-closed",
   );
 });
 

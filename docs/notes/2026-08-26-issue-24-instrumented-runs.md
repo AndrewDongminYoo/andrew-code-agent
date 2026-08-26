@@ -142,8 +142,9 @@ advertised.
 
 So allowing the key alone may move the failure one step later rather than
 close it, to `client.respond` and `coordinator.ts:537`. Whether
-`availableDecisions` is advisory or binding is unmeasured `[UNCERTAIN]`, and
-it decides how much of D2's fix is needed.
+`availableDecisions` is advisory or binding decides how much of D2's fix is
+needed. It was unmeasured when this note was first written and was measured
+the same day; the section below carries the answer.
 
 ## D1 verified against a real run
 
@@ -166,6 +167,69 @@ were the first four, because the turn died on the fourth.
 D2 stays open: this run's subagent needed no escalated command, so nothing
 reached `coordinator.ts:520`. A control run that runs the project's tests
 still dies there.
+
+## The decision run: availableDecisions is advisory
+
+Run of 2026-08-26, after the two above. A throwaway Git repository holding one
+`test/game/` file, no capability, the prompt `Run the shell command: flutter
+test test/game/`, stdin from `/dev/null` so `safest()` answers. The single
+product change under test was `availableDecisions` added to
+`validCommandParams`' key list.
+
+The request arrived with the field, and the advertised set again omitted
+`decline`:
+
+```json
+"availableDecisions": [
+  "accept",
+  { "acceptWithExecpolicyAmendment": {
+      "execpolicy_amendment": ["flutter", "test"] } },
+  "cancel"
+]
+```
+
+The product answered `{"decision":"decline"}`, which that request did not
+advertise. The server honoured it: the command came back to the agent as
+`Rejected("rejected by user")`, the agent reported the rejection and carried
+on, and the run ended `Terminal status: completed`. No `failClosed()` fired,
+and `coordinator.ts:537` was never reached.
+
+So the field is advisory, and D2's whole fix is the one key. `choices()` and
+`safest()` keep their vocabulary, and a run that declines every escalation
+still finishes its turn, which is what the acceptance measurement needs
+because `gh issue view` is not in the five allowed execpolicy prefixes.
+
+Two further facts from the same run:
+
+- Regeneration would not have supplied the key. `pnpm test:contract` with
+  `ANDREW_AGENT_PINNED_CODEX_BIN` set regenerates the trees byte-for-byte at
+  0.148.0, so the binary omits from its own schema export a field it sends.
+- The `turn/started` frame carried `itemsView: "notLoaded"` together with
+  `items: []` and all eight `Turn` keys, so a `notLoaded` view is a full
+  envelope with nothing loaded, not a truncated one. That is what makes D3's
+  fix a single condition rather than a new shape.
+
+## The interrupt control: what rejecting notLoaded actually cost
+
+Measured 2026-08-26 after the fix, by interrupting the same live turn under
+both builds. A turn was started against the throwaway repository with a prompt
+that only writes prose, `SIGINT` was sent 25 seconds in, and the only
+difference between the runs was whether `reducer.ts` accepts `notLoaded`. Each
+arm ran once, on a machine loaded to between 5 and 11 all session, so the
+timings are the gap between two single runs rather than a distribution.
+
+| Build               | Reported status | Exit | SIGINT to exit |
+| ------------------- | --------------- | ---- | -------------- |
+| accepts `notLoaded` | `interrupted`   | 130  | 0.289 s        |
+| rejects `notLoaded` | `failed`        | 1    | 6.372 s        |
+
+So the cost was larger than this note first recorded. Rejecting the frame does
+not merely fall back to the five-second interrupt grace timer: the reducer
+throw sets `fatalFailure`, where `settle()` resolves `"failed"` regardless, so
+an interrupt the operator asked for was reported as a failure and exited 1.
+The earlier reading that D3 "changes no reported status until D1 and D2 are
+closed" held for those two captures, which already had `fatalFailure` set for
+another reason. It does not hold for a live interrupt.
 
 ## What this does not say
 
