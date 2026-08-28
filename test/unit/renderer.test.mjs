@@ -275,6 +275,56 @@ test("a completed message longer than the old cap renders without truncation", (
   assert.doesNotMatch(lines, /\[truncated\]/);
 });
 
+test("renders message newlines as ordinal line boundaries", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text: "first\nsecond\n" } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const messageLines = lines.filter((line) => line.includes("agentMessage completed"));
+
+  assert.deepEqual(messageLines, [
+    "msg-1 agentMessage completed [1/3]: first",
+    "msg-1 agentMessage completed [2/3]: second",
+    "msg-1 agentMessage completed [3/3]: ",
+  ]);
+  assert.ok(!messageLines.some((line) => line.includes("\\x0A")));
+  for (const [index, line] of messageLines.entries())
+    for (const later of messageLines.slice(index + 1))
+      assert.ok(!later.startsWith(line), `${JSON.stringify(line)} prefixes ${JSON.stringify(later)}`);
+});
+
+test("bounds newline-split messages and keeps other controls visible", () => {
+  const text = `head\n${"x".repeat(600)}\r\x1b[31m\x1b]8;;https://example.com\x07label\x1b]8;;\x07\u202e`;
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const messageLines = lines.filter((line) => line.includes("agentMessage completed"));
+  const rendered = messageLines.join("|");
+
+  assert.ok(messageLines.length >= 3, `expected structural and bounded lines, got ${messageLines.length}`);
+  assert.doesNotMatch(rendered, /\\x0A/);
+  for (const expected of [
+    "\\x0D",
+    "\\x1B[31m",
+    "\\x1B]8;;https://example.com\\x07label\\x1B]8;;\\x07",
+    "\\u{202E}",
+  ])
+    assert.ok(rendered.includes(expected), expected);
+  for (const line of messageLines)
+    assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+});
+
 // Command output still streams, so its line must stay small: the raised bound
 // is for the message that renders once, not for a value reprinted per delta.
 test("streaming command output stays bounded well below the message bound", () => {
@@ -405,6 +455,24 @@ test("a message at the reducer's retained size renders without truncation", () =
     assert.ok(!lines.some((line) => line.endsWith(" [truncated]")), `${name} was truncated`);
     for (const line of lines) assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
   }
+});
+
+test("renders every retained newline boundary without truncation", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["msg-1", { id: "msg-1", type: "agentMessage", phase: "completed", value: { text: "\n".repeat(4096) } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const messageLines = lines.filter((line) => line.includes("agentMessage completed"));
+
+  assert.equal(messageLines.length, 4097);
+  assert.ok(!messageLines.some((line) => line.endsWith(" [truncated]")));
+  for (const line of messageLines)
+    assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
 });
 
 // A turn can end while a message is still `started` — an interrupt, or a

@@ -13,14 +13,13 @@ import {
 const MAX_RENDERED_VALUE = 512;
 // A completed message is emitted across as many bounded lines as it needs. The
 // cap exists for a value handed straight to the renderer, not for one the
-// reducer produced, so it has to clear anything the reducer retains: 4096
-// UTF-16 code units, at most 8 escaped bytes each (`\u{2028}` is the worst
-// measured), against the smallest chunk budget a maximal lifecycle prefix
-// leaves. A smaller cap would discard a message the product deliberately kept.
-const MAX_RETAINED_TEXT_BYTES = 4096 * 8;
+// reducer produced, so it has to clear anything the reducer retains. Each of
+// its 4096 UTF-16 code units can be a newline, producing one additional
+// structural line. A smaller cap would discard a message the product
+// deliberately kept.
+const MAX_RETAINED_TEXT_CODE_UNITS = 4096;
 const MIN_CHUNK_BUDGET = 64;
-const MAX_MESSAGE_LINES =
-  Math.ceil(MAX_RETAINED_TEXT_BYTES / MIN_CHUNK_BUDGET) + 1;
+const MAX_MESSAGE_LINES = MAX_RETAINED_TEXT_CODE_UNITS + 1;
 const TRUNCATION_MARKER = " [truncated]";
 const MAX_RENDERED_PROTOCOL_PART = 128;
 const PROTOCOL_ID_DIGEST_LENGTH = 16;
@@ -70,25 +69,40 @@ function valueText(value: unknown, key: string): string | null {
 }
 
 // The whole message reaches the operator, but never as one unbounded write:
-// it is split on character boundaries into lines that each satisfy the same
-// byte bound as every other rendered line. Escaping happens per part and the
-// walk stops at the line cap, so a hostile value is never materialised — the
+// newlines form structural line boundaries, and long segments split on
+// character boundaries. Every resulting line satisfies the same byte bound as
+// other rendered output. Escaping happens per non-newline part and the walk
+// stops at the line cap, so a hostile value is never materialised — the
 // property `boundedTerminalText` exists to hold.
 function messageLines(lifecycle: string, text: string): readonly string[] {
   const chunks: string[] = [];
   let current = "";
   let bytes = 0;
+  let truncated = false;
   const budget = Math.max(
     MIN_CHUNK_BUDGET,
     MAX_RENDERED_VALUE - Buffer.byteLength(lifecycle, "utf8") - 16,
   );
   for (const part of text) {
+    if (part === "\n") {
+      if (chunks.length + 1 === MAX_MESSAGE_LINES) {
+        chunks.push(`${current}${TRUNCATION_MARKER}`);
+        current = "";
+        truncated = true;
+        break;
+      }
+      chunks.push(current);
+      current = "";
+      bytes = 0;
+      continue;
+    }
     const escaped = escapeTerminalPart(part);
     const size = Buffer.byteLength(escaped, "utf8");
     if (bytes + size > budget) {
       if (chunks.length + 1 === MAX_MESSAGE_LINES) {
         chunks.push(`${current}${TRUNCATION_MARKER}`);
         current = "";
+        truncated = true;
         break;
       }
       chunks.push(current);
@@ -98,7 +112,11 @@ function messageLines(lifecycle: string, text: string): readonly string[] {
     current += escaped;
     bytes += size;
   }
-  if (current !== "") chunks.push(current);
+  if (
+    !truncated &&
+    (current !== "" || chunks.length === 0 || text.endsWith("\n"))
+  )
+    chunks.push(current);
   if (chunks.length <= 1) return [bounded(`${lifecycle}: ${chunks[0] ?? ""}`)];
   // Every line repeats the lifecycle and carries its own ordinal, because
   // reportTurnState skips a line it has already written keyed on the whole
