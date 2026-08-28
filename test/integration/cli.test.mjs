@@ -122,15 +122,34 @@ test("command help exits before handlers and invalid grammar exits 2", async () 
   const { cliModule } = modules();
   const calls = [];
   const handlers = Object.fromEntries(["doctor", "run", "resume", "status"].map((name) => [name, async () => { calls.push(name); return 0; }]));
+  const topLevelUsage = "Usage:\nandrew-agent doctor\nandrew-agent run <repository> <prompt>\nandrew-agent resume <thread-id> [prompt]\nandrew-agent status [thread-id]\n";
   for (const [argv, usage] of [[["doctor", "-h"], "andrew-agent doctor"], [["run", "--help"], "andrew-agent run <repository> <prompt>"], [["resume", "-h"], "andrew-agent resume <thread-id> [prompt]"], [["status", "--help"], "andrew-agent status [thread-id]"]]) {
     const output = capture();
     assert.equal(await cliModule.main(argv, { ...output, handlers }), 0);
     assert.equal(output.output().stdout, `Usage: ${usage}\n`);
   }
-  for (const argv of [[], ["unknown"], ["--bad"], ["doctor", "-hh"], ["doctor", "--help=true"], ["doctor", "extra"], ["run", "", "p"], ["run", "/r"], ["run", "/r", "p", "extra"], ["resume", ""], ["resume", "thread", ""], ["resume", "thread", "p", "extra"], ["status", "a", "b"], ["status", "--bad"]]) {
+  for (const [argv, expected] of [
+    [[], `Invalid command usage.\n${topLevelUsage}`],
+    [["unknown"], `Invalid command usage.\n${topLevelUsage}`],
+    [["--bad"], `Invalid command usage.\n${topLevelUsage}`],
+    [["doctor", "-hh"], "Invalid command usage.\nUsage: andrew-agent doctor\n"],
+    [["doctor", "--help=true"], "Invalid command usage.\nUsage: andrew-agent doctor\n"],
+    [["doctor", "--bad"], "Invalid command usage.\nUsage: andrew-agent doctor\n"],
+    [["doctor", "extra"], "Invalid command usage.\nUsage: andrew-agent doctor\n"],
+    [["run", "--bad"], "Invalid command usage.\nUsage: andrew-agent run <repository> <prompt>\n"],
+    [["run", "", "p"], "Invalid command usage.\nUsage: andrew-agent run <repository> <prompt>\n"],
+    [["run", "/r"], "Invalid command usage.\nUsage: andrew-agent run <repository> <prompt>\n"],
+    [["run", "/r", "p", "extra"], "Invalid command usage.\nUsage: andrew-agent run <repository> <prompt>\n"],
+    [["resume", "--bad"], "Invalid command usage.\nUsage: andrew-agent resume <thread-id> [prompt]\n"],
+    [["resume", ""], "Invalid command usage.\nUsage: andrew-agent resume <thread-id> [prompt]\n"],
+    [["resume", "thread", ""], "Invalid command usage.\nUsage: andrew-agent resume <thread-id> [prompt]\n"],
+    [["resume", "thread", "p", "extra"], "Invalid command usage.\nUsage: andrew-agent resume <thread-id> [prompt]\n"],
+    [["status", "a", "b"], "Invalid command usage.\nUsage: andrew-agent status [thread-id]\n"],
+    [["status", "--bad"], "Invalid command usage.\nUsage: andrew-agent status [thread-id]\n"],
+  ]) {
     const output = capture();
     assert.equal(await cliModule.main(argv, { ...output, handlers }), 2, argv.join(" "));
-    assert.equal(output.output().stderr, "Invalid command usage.\n");
+    assert.equal(output.output().stderr, expected);
   }
   assert.deepEqual(calls, []);
 });
@@ -1237,10 +1256,20 @@ test("the capability flag is parsed, validated, and gated on its declared input"
   // parseArgs rather than the dash guard, so these cases assert the outcome
   // and do not distinguish which of the two gates produced it.
   calls.length = 0;
+  const usageByCommand = {
+    doctor: "andrew-agent doctor",
+    run: "andrew-agent run <repository> <prompt>",
+    resume: "andrew-agent resume <thread-id> [prompt]",
+    status: "andrew-agent status [thread-id]",
+  };
   for (const argv of [["run", "--capability", "bogus", "/repo", "prompt"], ["run", "--capability=bogus", "/repo", "prompt"], ["run", "--capabilityx", "oracle", "/repo", "prompt"], ["run", "--capability-foo", "/repo", "prompt"], ["run", "-c", "oracle", "/repo", "prompt"], ["run", "--capability", "/repo", "prompt"], ["doctor", "--capability", "oracle"], ["status", "--capability", "oracle"], ["status", "thread-1", "--capability", "oracle"], ["run", "--capability", "ORACLE", "/repo", "prompt"], ["run", "--capability", "", "/repo", "prompt"]]) {
     const output = capture();
     assert.equal(await cliModule.main(argv, { ...output, handlers, env: oracleEnv }), 2, argv.join(" "));
-    assert.equal(output.output().stderr, "Invalid command usage.\n", argv.join(" "));
+    assert.equal(
+      output.output().stderr,
+      `Invalid command usage.\nUsage: ${usageByCommand[argv[0]]}\n`,
+      argv.join(" "),
+    );
   }
   assert.deepEqual(calls, []);
 
