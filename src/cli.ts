@@ -108,7 +108,7 @@ export async function main(
         ? commandArguments
         : commandArguments.slice(0, separatorIndex);
     if (optionRegion.some((argument) => !isAllowedOption(argument)))
-      return await usageFailure(io);
+      return await usageFailure(io, command);
     let parsed;
     try {
       parsed = parseArgs({
@@ -121,17 +121,19 @@ export async function main(
         },
       });
     } catch {
-      return await usageFailure(io);
+      return await usageFailure(io, command);
     }
     if (parsed.values.help === true) {
-      if (parsed.positionals.length !== 0) return await usageFailure(io);
+      if (parsed.positionals.length !== 0)
+        return await usageFailure(io, command);
       await writeLine(io.stdout, `Usage: ${usage[command]}`);
       return 0;
     }
     const positionals = parsed.positionals;
-    if (!validPositionals(command, positionals)) return await usageFailure(io);
+    if (!validPositionals(command, positionals))
+      return await usageFailure(io, command);
     const capabilities = readCapabilities(command, parsed.values.capability);
-    if (capabilities === undefined) return await usageFailure(io);
+    if (capabilities === undefined) return await usageFailure(io, command);
     const missingInput = missingCapabilityInput(capabilities, env);
     if (missingInput !== undefined) {
       await writeLine(
@@ -314,16 +316,31 @@ function isPublicCommand(value: string | undefined): value is PublicCommand {
 }
 
 async function topLevelHelp(io: CommandIO): Promise<void> {
-  await writeLine(io.stdout, "Usage:");
-  await writeLine(io.stdout, usage.doctor);
-  await writeLine(io.stdout, usage.run);
-  await writeLine(io.stdout, usage.resume);
-  await writeLine(io.stdout, usage.status);
+  await writeUsage(io.stdout);
 }
 
-async function usageFailure(io: CommandIO): Promise<2> {
+async function usageFailure(
+  io: CommandIO,
+  command?: PublicCommand,
+): Promise<2> {
   await writeLine(io.stderr, "Invalid command usage.");
+  await writeUsage(io.stderr, command);
   return 2;
+}
+
+async function writeUsage(
+  output: CommandIO["stdout"],
+  command?: PublicCommand,
+): Promise<void> {
+  if (command !== undefined) {
+    await writeLine(output, `Usage: ${usage[command]}`);
+    return;
+  }
+  await writeLine(output, "Usage:");
+  await writeLine(output, usage.doctor);
+  await writeLine(output, usage.run);
+  await writeLine(output, usage.resume);
+  await writeLine(output, usage.status);
 }
 
 const invokedPath = process.argv[1];
