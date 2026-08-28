@@ -137,6 +137,46 @@ Exit codes:
 - `4` the App Server failed.
 - `130` the turn was interrupted.
 
+## Optional Oracle capability
+
+Oracle is disabled for normal runs and is enabled only when `run` requests the
+`oracle` capability.
+Set `ANDREW_AGENT_ORACLE_ROOT` to an existing absolute wiki root, then request
+the capability explicitly:
+
+```bash
+export ANDREW_AGENT_ORACLE_ROOT=/absolute/path/to/wiki
+andrew-agent run --capability oracle /path/to/repository \
+  "describe the change you want"
+```
+
+The bundle manifest must declare the optional `oracle` capability.
+The Oracle root must not overlap the bundle source or runtime state root.
+If the flag is present but `ANDREW_AGENT_ORACLE_ROOT` is unset, the command
+exits 3 with `Capability preparation failed: ORACLE_ROOT_UNSET.`
+A missing, unreadable, overlapping, or otherwise invalid root also makes the
+requested run exit 3 during runtime preparation.
+The command never continues as a non-Oracle run after either failure.
+
+Each new thread records its capability grant and a digest of the canonical
+Oracle root.
+To continue an Oracle thread with a new prompt, provide the same capability and
+root:
+
+```bash
+export ANDREW_AGENT_ORACLE_ROOT=/absolute/path/to/the-same-wiki
+andrew-agent resume --capability oracle <thread-id> "follow-up prompt"
+```
+
+A prompted resume refuses a different capability set or Oracle root.
+`andrew-agent resume <thread-id>` without a prompt only reads the stored record,
+so it does not require the flag or an available Oracle root.
+
+`andrew-agent doctor` does not take a capability flag.
+When `ANDREW_AGENT_ORACLE_ROOT` is set, Doctor evaluates the optional Oracle
+input and reports `OPTIONAL_ORACLE` as ready or as a nonblocking warning.
+When the variable is unset, Doctor reports that Oracle was not requested.
+
 ## Approval and safety model
 
 Codex asks for approval before a gated action. This agent answers that
@@ -176,13 +216,17 @@ stopped a real run was withdrawn.
 
 ## Runtime locations
 
-Two roots, which must not overlap, and which you can override:
+The two base roots must not overlap, and an Oracle run adds a third root that
+must not overlap either base root:
 
 - The bundle source root is `~/.codex`, overridden by
   `ANDREW_AGENT_CODEX_SOURCE`.
 - All runtime state lives under
   `~/Library/Application Support/andrew-code-agent`, overridden by
   `ANDREW_AGENT_STATE_ROOT`.
+- The optional Oracle root is read from `ANDREW_AGENT_ORACLE_ROOT` only when
+  the `oracle` capability is requested.
+  It must resolve from an absolute path to an existing readable directory.
 
 `ANDREW_AGENT_CODEX_BIN` overrides the `codex` binary, which is otherwise
 resolved from `PATH`.
@@ -281,8 +325,8 @@ behind a fallback.
   the line you asked for was printed. Read the full output, or redirect to a
   file first, before trusting a nonzero exit from a piped invocation.
 - **The Codex version is pinned exactly.** There is no compatibility range.
-- **`oracle` and `shared-memory` capabilities are unreachable.** The gating
-  exists in the renderer, but the CLI always requests no capabilities.
+- **The `shared-memory` capability is unreachable.** Oracle is supported
+  separately as the opt-in capability described above.
 
 ## Development
 
