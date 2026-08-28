@@ -58,6 +58,28 @@ test("keeps interleaved message and plan lifecycles by stable item ID", async ()
   assert.match(JSON.stringify([...state.items.values()]), /Plan B/);
 });
 
+test("keeps subagent lifecycle out of its descriptive label", () => {
+  const activity = item("subAgentActivity", "subagent-1", {
+    kind: "started",
+    agentPath: "/root/helper",
+  });
+  const active = stateWith([started(activity)]);
+  const finished = reducer().reduceServerMessage(active, completed(activity));
+
+  assert.deepEqual(active.items.get("subagent-1"), {
+    id: "subagent-1",
+    type: "subAgentActivity",
+    phase: "started",
+    value: { label: "Subagent: /root/helper" },
+  });
+  assert.deepEqual(finished.items.get("subagent-1"), {
+    id: "subagent-1",
+    type: "subAgentActivity",
+    phase: "completed",
+    value: { label: "Subagent: /root/helper" },
+  });
+});
+
 test("rejects invalid event identity and type transitions without mutating state", () => {
   const api = reducer();
   const base = api.createTurnState("thread-1", "turn-1");
