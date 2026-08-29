@@ -544,6 +544,49 @@ test("a preflight refusal names the check that refused", async (t) => {
   assert.match(output.output().stderr, /GIT_WORKTREE_DIRTY/);
 });
 
+test("a summarized dirty preflight escapes and bounds affected paths", async (t) => {
+  const { runModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const error = new gitModule.GitRuntimeError(
+    "GIT_WORKTREE_DIRTY",
+    "Git worktree is not clean.",
+  );
+  error.dirtyPathSummary = {
+    paths: ["line\nbreak.txt", `long-${"가".repeat(2_000)}.txt`],
+    omittedPathCount: 1,
+  };
+  const harness = operationHarness(repositoryRoot, {});
+  harness.dependencies.assertCleanGitSnapshot = () => {
+    throw error;
+  };
+  const output = capture();
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies), 3);
+  const { stderr } = output.output();
+  const [headline, paths] = stderr.trimEnd().split("\n");
+  assert.equal(headline, "Repository preflight failed: GIT_WORKTREE_DIRTY.");
+  assert.match(paths, /^Affected paths: line\\x0Abreak\.txt, long-/);
+  assert.match(paths, /\[truncated\]; 1 path\(s\) omitted\.$/);
+  assert.equal(Buffer.byteLength(paths, "utf8") <= 8 * 4_096, true);
+  assert.equal(stderr.includes(repositoryRoot), false);
+});
+
+test("a summarized dirty preflight bypasses an app-server phase fallback", () => {
+  const { runModule } = modules();
+  const error = new gitModule.GitRuntimeError(
+    "GIT_WORKTREE_DIRTY",
+    "Git worktree is not clean.",
+  );
+  error.dirtyPathSummary = {
+    paths: ["changed.txt"],
+    omittedPathCount: 0,
+  };
+  assert.equal(
+    runModule.diagnosticFor(error, "app-server"),
+    "Repository preflight failed: GIT_WORKTREE_DIRTY.\nAffected paths: changed.txt.",
+  );
+});
+
 test("resume reports a readiness blocker the same way run does", async (t) => {
   const { resumeModule } = modules();
   const repositoryRoot = await createRepository();

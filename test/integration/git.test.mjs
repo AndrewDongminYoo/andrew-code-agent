@@ -119,6 +119,26 @@ async function withGitListingShim(indexEntries, run) {
   }
 }
 
+async function withGitStatusShim(statusOutput, { requireNul }, run) {
+  const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
+  const shimPath = join(shimDirectory, "git");
+  const realGit = (await execFile("which", ["git"], { encoding: "utf8" })).stdout.trim();
+  const statusBase64 = Buffer.from(statusOutput, "utf8").toString("base64");
+  const originalPath = process.env.PATH;
+  await writeFile(
+    shimPath,
+    `#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst args = process.argv.slice(2);\nif (args[0] === "-C" && args[2] === "status") {\n  if (${JSON.stringify(requireNul)} && !args.includes("-z")) process.exit(64);\n  process.stdout.write(Buffer.from("${statusBase64}", "base64"), () => process.exit(0));\n} else {\n  const result = spawnSync("${realGit}", args, { stdio: "inherit" });\n  process.exit(result.status ?? 1);\n}\n`,
+  );
+  await chmod(shimPath, 0o755);
+  process.env.PATH = `${shimDirectory}:${originalPath}`;
+  try {
+    await run();
+  } finally {
+    process.env.PATH = originalPath;
+    await rm(shimDirectory, { recursive: true, force: true });
+  }
+}
+
 async function withOverflowGitListingShim(run) {
   const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
   const shimPath = join(shimDirectory, "git");
@@ -347,6 +367,79 @@ for (const [label, indexEntries] of [
   });
 }
 
+test("retains a bounded summary from each accepted porcelain v2 record type", async () => {
+  await withRepository(async (repository) => {
+    const hash = "0".repeat(40);
+    const status = [
+      `1 .M N... 100644 100644 100644 ${hash} ${hash} tracked.txt\0`,
+      `2 R. N... 100644 100644 100644 ${hash} ${hash} R100 renamed.txt\0tracked.txt\0`,
+      `u UU N... 100644 100644 100644 100644 ${hash} ${hash} ${hash} conflicted.txt\0`,
+      "? untracked.txt\0",
+    ].join("");
+    await withGitStatusShim(status, { requireNul: true }, async () => {
+      const snapshot = await requireGit().readGitSnapshot(repository);
+      assert.deepEqual(snapshot.dirtyPathSummary, {
+        paths: ["tracked.txt", "renamed.txt", "conflicted.txt", "untracked.txt"],
+        omittedPathCount: 0,
+      });
+      await assert.rejects(
+        async () => requireGit().assertCleanGitSnapshot(snapshot),
+        (error) => {
+          assert.equal(error.code, "GIT_WORKTREE_DIRTY");
+          assert.deepEqual(error.dirtyPathSummary, snapshot.dirtyPathSummary);
+          return true;
+        },
+      );
+    });
+  });
+});
+
+test("rejects malformed porcelain v2 without attaching a partial path summary", async () => {
+  await withRepository(async (repository) => {
+    const malformed = "? untracked-without-terminal-nul";
+    await withGitStatusShim(malformed, { requireNul: false }, async () => {
+      let snapshot;
+      await assert.rejects(
+        async () => {
+          snapshot = await requireGit().readGitSnapshot(repository);
+        },
+        { code: "GIT_STATUS_FAILED" },
+      );
+      assert.equal(snapshot, undefined);
+    });
+  });
+});
+
+test("rejects malformed porcelain metadata after a valid record", async () => {
+  await withRepository(async (repository) => {
+    const hash = "0".repeat(40);
+    const malformed = [
+      "? earlier.txt\0",
+      `1 ZZ N... 100644 100644 100644 ${hash} ${hash} later.txt\0`,
+    ].join("");
+    await withGitStatusShim(malformed, { requireNul: false }, async () => {
+      await assert.rejects(
+        requireGit().readGitSnapshot(repository),
+        { code: "GIT_STATUS_FAILED" },
+      );
+    });
+  });
+});
+
+test("bounds the dirty path summary before it reaches a caller", async () => {
+  await withRepository(async (repository) => {
+    const paths = Array.from({ length: 9 }, (_value, index) => `untracked-${index}.txt`);
+    const status = paths.map((path) => `? ${path}\0`).join("");
+    await withGitStatusShim(status, { requireNul: true }, async () => {
+      const snapshot = await requireGit().readGitSnapshot(repository);
+      assert.deepEqual(snapshot.dirtyPathSummary, {
+        paths: paths.slice(0, 8),
+        omittedPathCount: 1,
+      });
+    });
+  });
+});
+
 test("rejects an overflowing index inventory before status or partial snapshot authority", async () => {
   await withRepository(async (repository) => {
     await withOverflowGitListingShim(async (statusMarkerPath) => {
@@ -519,6 +612,7 @@ test("ignores inherited Git repository redirection without mutating either repos
         await git(repositoryA, [
           "status",
           "--porcelain=v2",
+          "-z",
           "--untracked-files=all",
         ])
       ).stdout;
@@ -526,6 +620,7 @@ test("ignores inherited Git repository redirection without mutating either repos
         await git(repositoryB, [
           "status",
           "--porcelain=v2",
+          "-z",
           "--untracked-files=all",
         ])
       ).stdout;
@@ -558,6 +653,7 @@ test("ignores inherited Git repository redirection without mutating either repos
           await git(repositoryA, [
             "status",
             "--porcelain=v2",
+            "-z",
             "--untracked-files=all",
           ])
         ).stdout,
@@ -568,6 +664,7 @@ test("ignores inherited Git repository redirection without mutating either repos
           await git(repositoryB, [
             "status",
             "--porcelain=v2",
+            "-z",
             "--untracked-files=all",
           ])
         ).stdout,

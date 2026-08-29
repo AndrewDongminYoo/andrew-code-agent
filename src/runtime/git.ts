@@ -4,11 +4,17 @@ import { realpath } from "node:fs/promises";
 
 import { executeGit } from "../git/process.js";
 
+export interface DirtyPathSummary {
+  readonly paths: readonly string[];
+  readonly omittedPathCount: number;
+}
+
 export interface GitSnapshot {
   readonly repositoryRoot: string;
   readonly head: string;
   readonly porcelainV2: string;
   readonly clean: boolean;
+  readonly dirtyPathSummary?: DirtyPathSummary;
 }
 
 export type GitRuntimeErrorCode =
@@ -21,13 +27,22 @@ export type GitRuntimeErrorCode =
 
 export class GitRuntimeError extends Error {
   readonly code: GitRuntimeErrorCode;
+  readonly dirtyPathSummary?: DirtyPathSummary;
 
-  constructor(code: GitRuntimeErrorCode, message: string) {
+  constructor(
+    code: GitRuntimeErrorCode,
+    message: string,
+    dirtyPathSummary?: DirtyPathSummary,
+  ) {
     super(message);
     this.name = "GitRuntimeError";
     this.code = code;
+    if (dirtyPathSummary !== undefined)
+      this.dirtyPathSummary = dirtyPathSummary;
   }
 }
+
+const MAX_DIRTY_PATHS = 8;
 
 export async function resolveRepositoryRoot(input: string): Promise<string> {
   let canonicalInput: string;
@@ -61,9 +76,17 @@ export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
     porcelainV2 = await runGit(repositoryRoot, [
       "status",
       "--porcelain=v2",
+      "-z",
       "--untracked-files=all",
     ]);
   } catch {
+    throw new GitRuntimeError(
+      "GIT_STATUS_FAILED",
+      "Unable to read Git worktree status.",
+    );
+  }
+  const dirtyPathSummary = parseDirtyPathSummary(porcelainV2);
+  if (dirtyPathSummary === null) {
     throw new GitRuntimeError(
       "GIT_STATUS_FAILED",
       "Unable to read Git worktree status.",
@@ -82,6 +105,7 @@ export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
     head: firstHead,
     porcelainV2,
     clean: porcelainV2.length === 0,
+    ...(dirtyPathSummary === undefined ? {} : { dirtyPathSummary }),
   };
 }
 
@@ -198,11 +222,139 @@ function parseIndexEntries(
   );
 }
 
+function parseDirtyPathSummary(
+  porcelainV2: string,
+): DirtyPathSummary | null | undefined {
+  if (porcelainV2.length === 0) return undefined;
+  if (!porcelainV2.endsWith("\0")) return null;
+  const records = porcelainV2.slice(0, -1).split("\0");
+  const paths: string[] = [];
+  let omittedPathCount = 0;
+  const addPath = (path: string): boolean => {
+    if (!isRepositoryRelativePath(path)) return false;
+    if (paths.length < MAX_DIRTY_PATHS) paths.push(path);
+    else omittedPathCount += 1;
+    return true;
+  };
+
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]!;
+    switch (record[0]) {
+      case "1": {
+        const fields = splitPorcelainPathRecord(record, 8);
+        if (
+          fields === null ||
+          fields[0] !== "1" ||
+          !isPorcelainStatus(fields[1]!) ||
+          !isPorcelainSubmodule(fields[2]!) ||
+          !isPorcelainMode(fields[3]!) ||
+          !isPorcelainMode(fields[4]!) ||
+          !isPorcelainMode(fields[5]!) ||
+          !isPorcelainObjectId(fields[6]!) ||
+          !isPorcelainObjectId(fields[7]!) ||
+          !addPath(fields[8]!)
+        )
+          return null;
+        break;
+      }
+      case "2": {
+        const fields = splitPorcelainPathRecord(record, 9);
+        const originalPath = records[index + 1];
+        if (
+          fields === null ||
+          fields[0] !== "2" ||
+          !isPorcelainStatus(fields[1]!) ||
+          !isPorcelainSubmodule(fields[2]!) ||
+          !isPorcelainMode(fields[3]!) ||
+          !isPorcelainMode(fields[4]!) ||
+          !isPorcelainMode(fields[5]!) ||
+          !isPorcelainObjectId(fields[6]!) ||
+          !isPorcelainObjectId(fields[7]!) ||
+          !/^[RC](?:100|[1-9]?[0-9])$/.test(fields[8]!) ||
+          originalPath === undefined ||
+          !isRepositoryRelativePath(originalPath) ||
+          !addPath(fields[9]!)
+        )
+          return null;
+        index += 1;
+        break;
+      }
+      case "u": {
+        const fields = splitPorcelainPathRecord(record, 10);
+        if (
+          fields === null ||
+          fields[0] !== "u" ||
+          !isPorcelainStatus(fields[1]!) ||
+          !isPorcelainSubmodule(fields[2]!) ||
+          !isPorcelainMode(fields[3]!) ||
+          !isPorcelainMode(fields[4]!) ||
+          !isPorcelainMode(fields[5]!) ||
+          !isPorcelainMode(fields[6]!) ||
+          !isPorcelainObjectId(fields[7]!) ||
+          !isPorcelainObjectId(fields[8]!) ||
+          !isPorcelainObjectId(fields[9]!) ||
+          !addPath(fields[10]!)
+        )
+          return null;
+        break;
+      }
+      case "?":
+        if (!record.startsWith("? ") || !addPath(record.slice(2))) return null;
+        break;
+      default:
+        return null;
+    }
+  }
+  return { paths, omittedPathCount };
+}
+
+function splitPorcelainPathRecord(
+  record: string,
+  fieldCount: number,
+): string[] | null {
+  const fields: string[] = [];
+  let offset = 0;
+  for (let index = 0; index < fieldCount; index += 1) {
+    const delimiter = record.indexOf(" ", offset);
+    if (delimiter < 0) return null;
+    fields.push(record.slice(offset, delimiter));
+    offset = delimiter + 1;
+  }
+  const path = record.slice(offset);
+  return path.length === 0 ? null : [...fields, path];
+}
+
+function isPorcelainStatus(value: string): boolean {
+  return /^[.MADRCUT]{2}$/.test(value);
+}
+
+function isPorcelainSubmodule(value: string): boolean {
+  return /^(?:N\.\.\.|S[.C][.M][.U])$/.test(value);
+}
+
+function isPorcelainMode(value: string): boolean {
+  return /^[0-7]{6}$/.test(value);
+}
+
+function isPorcelainObjectId(value: string): boolean {
+  return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(value);
+}
+
+function isRepositoryRelativePath(value: string): boolean {
+  return (
+    !value.startsWith("/") &&
+    value
+      .split("/")
+      .every((segment) => segment !== "" && segment !== "." && segment !== "..")
+  );
+}
+
 export function assertCleanGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
   if (!snapshot.clean || snapshot.porcelainV2.length !== 0) {
     throw new GitRuntimeError(
       "GIT_WORKTREE_DIRTY",
       "Git worktree is not clean.",
+      snapshot.dirtyPathSummary,
     );
   }
   return snapshot;
