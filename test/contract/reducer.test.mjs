@@ -58,6 +58,28 @@ test("keeps interleaved message and plan lifecycles by stable item ID", async ()
   assert.match(JSON.stringify([...state.items.values()]), /Plan B/);
 });
 
+test("retains subagent activity kind separately from the item lifecycle", () => {
+  const activity = item("subAgentActivity", "subagent-1", {
+    kind: "interrupted",
+    agentPath: "/root/helper",
+  });
+  const active = stateWith([started(activity)]);
+  const finished = reducer().reduceServerMessage(active, completed(activity));
+
+  assert.deepEqual(active.items.get("subagent-1"), {
+    id: "subagent-1",
+    type: "subAgentActivity",
+    phase: "started",
+    value: { label: "Subagent: /root/helper", activityKind: "interrupted" },
+  });
+  assert.deepEqual(finished.items.get("subagent-1"), {
+    id: "subagent-1",
+    type: "subAgentActivity",
+    phase: "completed",
+    value: { label: "Subagent: /root/helper", activityKind: "interrupted" },
+  });
+});
+
 test("rejects invalid event identity and type transitions without mutating state", () => {
   const api = reducer();
   const base = api.createTurnState("thread-1", "turn-1");
@@ -1338,6 +1360,7 @@ test("only message text takes the larger retained bound", () => {
     ["cwd", command.cwd],
     ["output", command.output],
     ["subagent label", state.items.get("subagent-1").value.label],
+    ["subagent activity kind", state.items.get("subagent-1").value.activityKind],
     ["warning", state.warnings[0]],
   ])
     assert.ok(value.length <= 512, `${name} kept ${value.length}`);

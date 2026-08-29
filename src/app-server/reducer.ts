@@ -386,8 +386,9 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
   } else if (type === "subAgentActivity") {
     value = {
       label: bounded(
-        `Subagent ${bounded(text(raw.kind) ?? "activity")}: ${bounded(text(raw.agentPath) ?? text(raw.agentThreadId) ?? "unknown")}`,
+        `Subagent: ${bounded(text(raw.agentPath) ?? text(raw.agentThreadId) ?? "unknown")}`,
       ),
+      activityKind: bounded(text(raw.kind) ?? "unknown"),
     };
   }
 
