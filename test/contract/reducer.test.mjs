@@ -58,9 +58,9 @@ test("keeps interleaved message and plan lifecycles by stable item ID", async ()
   assert.match(JSON.stringify([...state.items.values()]), /Plan B/);
 });
 
-test("keeps subagent lifecycle out of its descriptive label", () => {
+test("retains subagent activity kind separately from the item lifecycle", () => {
   const activity = item("subAgentActivity", "subagent-1", {
-    kind: "started",
+    kind: "interrupted",
     agentPath: "/root/helper",
   });
   const active = stateWith([started(activity)]);
@@ -70,13 +70,13 @@ test("keeps subagent lifecycle out of its descriptive label", () => {
     id: "subagent-1",
     type: "subAgentActivity",
     phase: "started",
-    value: { label: "Subagent: /root/helper" },
+    value: { label: "Subagent: /root/helper", activityKind: "interrupted" },
   });
   assert.deepEqual(finished.items.get("subagent-1"), {
     id: "subagent-1",
     type: "subAgentActivity",
     phase: "completed",
-    value: { label: "Subagent: /root/helper" },
+    value: { label: "Subagent: /root/helper", activityKind: "interrupted" },
   });
 });
 
@@ -1360,6 +1360,7 @@ test("only message text takes the larger retained bound", () => {
     ["cwd", command.cwd],
     ["output", command.output],
     ["subagent label", state.items.get("subagent-1").value.label],
+    ["subagent activity kind", state.items.get("subagent-1").value.activityKind],
     ["warning", state.warnings[0]],
   ])
     assert.ok(value.length <= 512, `${name} kept ${value.length}`);
