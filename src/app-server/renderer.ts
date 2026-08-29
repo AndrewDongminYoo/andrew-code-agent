@@ -197,7 +197,7 @@ function renderItem(item: ItemState, settled: boolean): readonly string[] {
   if (item.type === "subAgentActivity")
     return [
       bounded(
-        `${lifecycle}: ${valueText(item.value, "label") ?? "Subagent activity"}`,
+        `${lifecycle}: ${valueText(item.value, "label") ?? "Subagent activity"} (activity: ${valueText(item.value, "activityKind") ?? "unknown"})`,
       ),
     ];
   return [

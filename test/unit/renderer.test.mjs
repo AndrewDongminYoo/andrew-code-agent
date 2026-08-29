@@ -14,7 +14,7 @@ test("renders deterministic bounded turn output without raw reasoning", () => {
     threadId: "thread-1",
     turnId: "turn-1",
     items: new Map([
-      ["agent-1", { id: "agent-1", type: "subAgentActivity", phase: "completed", value: { label: "Subagent started: helper" } }],
+      ["agent-1", { id: "agent-1", type: "subAgentActivity", phase: "completed", value: { label: "Subagent: helper", activityKind: "started" } }],
       ["command-1", { id: "command-1", type: "commandExecution", phase: "completed", value: { command: "git status", cwd: "/repo", exitCode: 7, output: "[truncated]" } }],
       ["reasoning-1", { id: "reasoning-1", type: "reasoning", phase: "completed", value: { label: "Reasoning updated", raw: "private reasoning must never render" } }],
       ["unknown-1", { id: "unknown-1", type: "futureType", phase: "started", value: { credential: "do-not-dump" } }],
@@ -29,6 +29,25 @@ test("renders deterministic bounded turn output without raw reasoning", () => {
   assert.match(lines.join("\n"), /thread-1|turn-1|Subagent|git status|exit 7|\[truncated\]|diff --git|A bounded warning|interrupted/);
   assert.doesNotMatch(lines.join("\n"), /private reasoning|credential|do-not-dump/);
   assert.ok(lines.findIndex((line) => line.includes("agent-1")) < lines.findIndex((line) => line.includes("command-1")));
+});
+
+test("renders subagent activity kind separately from the item phase", () => {
+  const base = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  };
+  const render = (id, activityKind) =>
+    renderer().renderTurnState({
+      ...base,
+      items: new Map([[id, { id, type: "subAgentActivity", phase: "completed", value: { label: "Subagent: helper", activityKind } }]]),
+    }).join("\n");
+
+  assert.match(render("interacted", "interacted"), /interacted subAgentActivity completed: Subagent: helper \(activity: interacted\)/);
+  assert.match(render("interrupted", "interrupted"), /interrupted subAgentActivity completed: Subagent: helper \(activity: interrupted\)/);
 });
 
 test("bounds externally supplied IDs and types and renders projection omission metadata", () => {
@@ -146,7 +165,7 @@ test("visibly escapes terminal controls across every externally supplied rendere
       ["command", { id: "command", type: "commandExecution", phase: "completed", value: { command: "printf\u009b\u001b", cwd: "/repo\u0007\u202e", exitCode: 0, output: hugeOutput } }],
       ["files", { id: "files", type: "fileChange", phase: "completed", value: { files: [{ path: "/repo/file\u000a\u2028" }] } }],
       ["mcp", { id: "mcp", type: "mcpToolCall", phase: "completed", value: { server: "server\u000d\u2029", tool: "tool\u0000\u001b" } }],
-      ["subagent", { id: "subagent", type: "subAgentActivity", phase: "completed", value: { label: "helper\u202e" } }],
+      ["subagent", { id: "subagent", type: "subAgentActivity", phase: "completed", value: { label: "helper\u202e", activityKind: "interrupted\u001b" } }],
       ["future", { id: "item\u001b", type: "future\u2029", phase: "started", value: { label: "label\u2028" } }],
     ]),
     observedCommands: [{ command: "observed\u009b\u2029", cwd: "/observed\u007f\u001b", exitCode: 1 }],
@@ -172,6 +191,7 @@ test("visibly escapes terminal controls across every externally supplied rendere
     "server\\x0D\\u{2029}",
     "tool\\x00\\x1B",
     "helper\\u{202E}",
+    "interrupted\\x1B",
     "item\\x1B",
     "future\\u{2029}",
     "label\\u{2028}",
