@@ -592,7 +592,7 @@ test("classifies missing and drifted active installations", async (t) => {
 });
 
 test("uses exact Codex version and schema compatibility", async () => {
-  await withFixture({ codex: { version: "codex-cli 0.149.0" } }, async (fixture) => {
+  await withFixture({ codex: { version: "codex-cli 0.149.0", strict: "failure" } }, async (fixture) => {
     let strictSpawns = 0;
     const result = await runUnchanged(fixture, {}, {
       beforeStrictSpawn() {
@@ -606,8 +606,24 @@ test("uses exact Codex version and schema compatibility", async () => {
       message: "Resolved Codex version does not match codex-cli 0.148.0.",
       remediation: "Install codex-cli 0.148.0 and retry.",
     });
-    assert.equal(finding(result, "SCHEMA_COMPATIBILITY").severity, "blocker");
-    assert.equal(finding(result, "STRICT_CONFIG").severity, "blocker");
+    assert.deepEqual(
+      result.findings
+        .filter((entry) => entry.severity === "blocker")
+        .map((entry) => entry.code),
+      ["CODEX_VERSION"],
+    );
+    assert.deepEqual(finding(result, "SCHEMA_COMPATIBILITY"), {
+      severity: "warning",
+      code: "SCHEMA_COMPATIBILITY",
+      message: "Codex schema compatibility was not evaluated because the pinned Codex version was unavailable.",
+      remediation: "Install codex-cli 0.148.0 and retry.",
+    });
+    assert.deepEqual(finding(result, "STRICT_CONFIG"), {
+      severity: "warning",
+      code: "STRICT_CONFIG",
+      message: "Strict Codex configuration validation was not evaluated because the pinned Codex version was unavailable.",
+      remediation: "Install codex-cli 0.148.0 and retry.",
+    });
     assert.equal(strictSpawns, 0);
   });
 });

@@ -517,6 +517,24 @@ test("a readiness blocker names itself on stderr instead of one bare line", asyn
   assert.doesNotMatch(stderr, /OPTIONAL_ORACLE/);
 });
 
+test("readiness reports only the version blocker after skipped checks", async (t) => {
+  const { runModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const findings = [
+    { severity: "blocker", code: "CODEX_VERSION", message: "Resolved Codex version does not match codex-cli 0.148.0." },
+    { severity: "warning", code: "SCHEMA_COMPATIBILITY", message: "Codex schema compatibility was not evaluated because the pinned Codex version was unavailable." },
+    { severity: "warning", code: "STRICT_CONFIG", message: "Strict Codex configuration validation was not evaluated because the pinned Codex version was unavailable." },
+  ];
+  const harness = operationHarness(repositoryRoot, { doctorExit: 1, doctorFindings: findings });
+  const output = capture();
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies), 3);
+  assert.equal(
+    output.output().stderr,
+    "Candidate readiness failed: CODEX_VERSION.\n",
+  );
+});
+
 test("resume blames the path check, not thread lookup, when paths fail", async (t) => {
   const { resumeModule } = modules();
   const pathsModule = await import("../../dist/runtime/paths.js");
