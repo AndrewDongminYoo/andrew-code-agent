@@ -693,7 +693,20 @@ async function runManagedCacheBoundaryMeasurement(
     { stdin, stdout: stdout.stream, stderr: stderr.stream },
     dependencies,
   );
-  return { code, record, sandboxPolicy, stdout: stdout.text(), stderr: stderr.text() };
+  const persistedRecord = record === undefined
+    ? undefined
+    : await defaultCommandDependencies.readThreadRecord(
+        paths.stateRoot,
+        record.threadId,
+        fixture.target,
+      );
+  return {
+    code,
+    persistedRecord,
+    sandboxPolicy,
+    stdout: stdout.text(),
+    stderr: stderr.text(),
+  };
 }
 
 test(
@@ -900,9 +913,12 @@ test(
           sibling: "blocked",
         };
 
-        assert.equal(measurement.code, 0, `${measurement.stdout}\n${measurement.stderr}`);
-        assert.ok(measurement.record, "the real managed turn did not persist a record");
-        assert.equal(measurement.record.terminalStatus, "completed");
+        assert.equal(measurement.code, 0, "the managed run did not complete");
+        assert.ok(
+          measurement.persistedRecord,
+          "the real managed turn did not persist a readable record",
+        );
+        assert.equal(measurement.persistedRecord.terminalStatus, "completed");
         assert.deepEqual(
           JSON.parse(await readFile(helper.receipt, "utf8")),
           expected,
@@ -913,14 +929,28 @@ test(
         assert.equal(await pathExists(helper.paths.home), false);
         assert.equal(await pathExists(helper.paths.sibling), false);
 
-        assert.deepEqual(
-          measurement.sandboxPolicy.writableRoots,
-          mode === "narrow-cache" ? [fixture.target, roots.cache] : [fixture.target],
+        assert.ok(
+          measurement.sandboxPolicy,
+          "the test wrapper did not observe a sandbox policy",
+        );
+        const expectedWritableRootCount = mode === "narrow-cache" ? 2 : 1;
+        const hasExpectedWritableRoots =
+          measurement.sandboxPolicy.writableRoots.length === expectedWritableRootCount &&
+          measurement.sandboxPolicy.writableRoots[0] === fixture.target &&
+          (mode !== "narrow-cache" ||
+            measurement.sandboxPolicy.writableRoots[1] === roots.cache);
+        assert.equal(
+          hasExpectedWritableRoots,
+          true,
+          "the turn did not use the expected writable-root roles",
         );
         assert.equal(measurement.sandboxPolicy.networkAccess, false);
         assert.equal(measurement.sandboxPolicy.excludeTmpdirEnvVar, false);
         assert.equal(measurement.sandboxPolicy.excludeSlashTmp, false);
-        assert.equal(JSON.stringify(measurement.record).includes(roots.root), false);
+        assert.equal(
+          JSON.stringify(measurement.persistedRecord).includes(roots.root),
+          false,
+        );
         assert.equal(measurement.stdout.includes(roots.root), false);
         assert.equal(measurement.stderr.includes(roots.root), false);
       } finally {
