@@ -932,19 +932,30 @@ async function classifyStrictConfig(
       shadowHome,
       dependencies.commandTimeoutMs,
     );
-    if (
+    const boundedResult =
       !result.timedOut &&
       !result.outputExceeded &&
       !result.residualDescendants &&
-      !result.groupCleanupFailed &&
-      result.exitCode === 0
-    ) {
+      !result.groupCleanupFailed;
+    if (boundedResult && result.exitCode === 0) {
       setReady(
         findings,
         "STRICT_CONFIG",
         "Strict Codex configuration validation passed.",
       );
       return;
+    }
+    if (boundedResult && result.exitCode !== null) {
+      const diagnostic = parseStrictConfigDiagnostic(result.stderr);
+      if (diagnostic !== undefined) {
+        setBlocker(
+          findings,
+          "STRICT_CONFIG",
+          `Strict Codex configuration validation failed at ${diagnostic}.`,
+          "Resolve the managed portable configuration before retrying.",
+        );
+        return;
+      }
     }
   } catch {
     // The stable finding below intentionally hides config and child details.
@@ -955,6 +966,17 @@ async function classifyStrictConfig(
     "Strict Codex configuration validation failed.",
     "Resolve the managed portable configuration before retrying.",
   );
+}
+
+function parseStrictConfigDiagnostic(stderr: string): string | undefined {
+  const matches = [
+    ...stderr.matchAll(
+      /^config\.toml:([1-9]\d{0,5}):([1-9]\d{0,5}): duplicate key$/gm,
+    ),
+  ];
+  if (matches.length !== 1) return undefined;
+  const [, line, column] = matches[0]!;
+  return `config.toml:${line!}:${column!} (duplicate key)`;
 }
 
 async function materializeActiveInventory(
