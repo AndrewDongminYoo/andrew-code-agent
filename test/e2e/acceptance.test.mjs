@@ -11,6 +11,7 @@ import { execFile as execFileCallback, spawn } from "node:child_process";
 import {
   chmod,
   copyFile,
+  lstat,
   cp,
   mkdir,
   mkdtemp,
@@ -21,7 +22,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
+import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -539,6 +541,8 @@ test("an unauthenticated managed home blocks doctor and refuses to run", async (
 // A real turn additionally needs real credentials, which this smoke
 // deliberately does not supply, so it stops at configuration acceptance.
 const liveSmokeRequested = process.env.ANDREW_AGENT_REAL_SMOKE === "1";
+const cacheBoundarySmokeRequested =
+  process.env.ANDREW_AGENT_CACHE_BOUNDARY_SMOKE === "1";
 
 // The probe exits once its stdin closes; leaving the pipe open makes it serve.
 function probeStrictConfig(codexBin, codexHome) {
@@ -561,6 +565,154 @@ function probeStrictConfig(codexBin, codexHome) {
       resolve({ code, stderr });
     });
   });
+}
+
+function capturedStream() {
+  const stream = new PassThrough();
+  let text = "";
+  stream.setEncoding("utf8");
+  stream.on("data", (chunk) => { text += chunk; });
+  return { stream, text: () => text };
+}
+
+async function pathExists(path) {
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function createSyntheticBoundaryRoots() {
+  const createdRoot = await mkdtemp("/Users/Shared/andrew-agent-cache-boundary-");
+  let temporaryRoot;
+  try {
+    const root = await realpath(createdRoot);
+    await chmod(root, 0o700);
+    temporaryRoot = await mkdtemp("/tmp/andrew-agent-cache-boundary-");
+    await chmod(temporaryRoot, 0o700);
+    const roots = {
+      root,
+      temporaryRoot,
+      cache: join(root, "cache"),
+      home: join(root, "home"),
+      sibling: join(root, "sibling"),
+    };
+    await Promise.all(
+      [roots.cache, roots.home, roots.sibling].map((path) =>
+        mkdir(path, { recursive: true, mode: 0o700 }),
+      ),
+    );
+    return roots;
+  } catch (error) {
+    await rm(createdRoot, { recursive: true, force: true });
+    if (temporaryRoot !== undefined)
+      await rm(temporaryRoot, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+async function writeCacheBoundaryHelper(fixture, roots) {
+  const helper = join(fixture.target, "managed-cache-boundary.mjs");
+  const receipt = join(fixture.target, ".managed-cache-boundary-receipt.json");
+  const paths = {
+    repository: join(fixture.target, ".managed-cache-boundary-repository"),
+    temporary: join(roots.temporaryRoot, "managed-cache-boundary"),
+    cache: join(roots.cache, "managed-cache-boundary"),
+    home: join(roots.home, "managed-cache-boundary"),
+    sibling: join(roots.sibling, "managed-cache-boundary"),
+  };
+  await writeFile(
+    helper,
+    `import { mkdirSync, writeFileSync } from "node:fs";\nimport { dirname } from "node:path";\n\nconst paths = ${JSON.stringify(paths)};\nconst receipt = ${JSON.stringify(receipt)};\nconst result = {};\nfor (const [name, path] of Object.entries(paths)) {\n  try {\n    mkdirSync(dirname(path), { recursive: true });\n    writeFileSync(path, name + " canary\\n");\n    result[name] = "written";\n  } catch {\n    result[name] = "blocked";\n  }\n}\nwriteFileSync(receipt, JSON.stringify(result));\nprocess.stdout.write(JSON.stringify(result) + "\\n");\n`,
+  );
+  await execFile("git", ["-C", fixture.target, "add", helper]);
+  await execFile("git", ["-C", fixture.target, "commit", "--quiet", "-m", "add measurement helper"]);
+  return { receipt, paths };
+}
+
+async function runManagedCacheBoundaryMeasurement(
+  fixture,
+  codexBin,
+  additionalWritableRoot,
+) {
+  const { defaultCommandDependencies, runCommand } = await import(
+    new URL("../../dist/commands/run.js", import.meta.url).href
+  );
+  const environment = environmentFor(fixture, {
+    ANDREW_AGENT_CODEX_BIN: codexBin,
+  });
+  const paths = await defaultCommandDependencies.resolveRuntimePaths({
+    env: environment,
+  });
+  const stdout = capturedStream();
+  const stderr = capturedStream();
+  const stdin = new PassThrough();
+  stdin.end();
+  let record;
+  let sandboxPolicy;
+  const dependencies = {
+    ...defaultCommandDependencies,
+    resolveRuntimePaths: async () => paths,
+    scratchParent: fixture.root,
+    async startNewThread(request, coordinator) {
+      const client = coordinator.client;
+      const measurementClient = {
+        threadStart: (params) => client.threadStart(params),
+        threadResume: (params) => client.threadResume(params),
+        threadRead: (params) => client.threadRead(params),
+        turnStart: (params) => {
+          const candidate =
+            additionalWritableRoot === undefined
+              ? params
+              : {
+                  ...params,
+                  sandboxPolicy: {
+                    ...params.sandboxPolicy,
+                    writableRoots: [
+                      ...params.sandboxPolicy.writableRoots,
+                      additionalWritableRoot,
+                    ],
+                  },
+                };
+          sandboxPolicy = candidate.sandboxPolicy;
+          return client.turnStart(candidate);
+        },
+        turnInterrupt: (params) => client.turnInterrupt(params),
+        respond: (id, result) => client.respond(id, result),
+        onNotification: (listener) => client.onNotification(listener),
+        onRequest: (listener) => client.onRequest(listener),
+        onFailure: (listener) => client.onFailure(listener),
+        close: () => client.close(),
+      };
+      record = await defaultCommandDependencies.startNewThread(request, {
+        ...coordinator,
+        client: measurementClient,
+      });
+      return record;
+    },
+  };
+  const code = await runCommand(
+    fixture.target,
+    "Run exactly `node ./managed-cache-boundary.mjs` once. Do not run any other command or modify any other file. Then reply only MEASUREMENT_DONE.",
+    { stdin, stdout: stdout.stream, stderr: stderr.stream },
+    dependencies,
+  );
+  const persistedRecord = record === undefined
+    ? undefined
+    : await defaultCommandDependencies.readThreadRecord(
+        paths.stateRoot,
+        record.threadId,
+        fixture.target,
+      );
+  return {
+    code,
+    persistedRecord,
+    sandboxPolicy,
+    stdout: stdout.text(),
+    stderr: stderr.text(),
+  };
 }
 
 test(
@@ -720,6 +872,110 @@ test(
       assert.match(second.stdout, /Terminal status: completed/, second.stdout);
     } finally {
       await rm(fixture.root, { recursive: true, force: true });
+    }
+  },
+);
+
+test(
+  "live smoke: synthetic cache roots distinguish the current and narrow policies",
+  {
+    skip:
+      cacheBoundarySmokeRequested &&
+      process.env.ANDREW_AGENT_SMOKE_AUTH !== undefined
+        ? false
+        : "ANDREW_AGENT_CACHE_BOUNDARY_SMOKE or ANDREW_AGENT_SMOKE_AUTH is unset; the cache-boundary smoke did not run",
+    timeout: 600_000,
+  },
+  async () => {
+    const smokeCodexBin = await realpath(
+      process.env.ANDREW_AGENT_SMOKE_CODEX_BIN ?? "/nonexistent",
+    );
+    const version = await execFile(smokeCodexBin, ["--version"]);
+    assert.equal(version.stdout.trim(), `codex-cli ${REQUIRED_CODEX_VERSION}`);
+
+    for (const mode of ["current", "narrow-cache"]) {
+      const fixture = await createEnvironment();
+      let roots;
+      try {
+        roots = await createSyntheticBoundaryRoots();
+        const managedAuth = join(
+          fixture.stateRoot,
+          "codex-home",
+          ["auth", ".json"].join(""),
+        );
+        await copyFile(process.env.ANDREW_AGENT_SMOKE_AUTH, managedAuth);
+        await chmod(managedAuth, 0o600);
+        const helper = await writeCacheBoundaryHelper(fixture, roots);
+        const measurement = await runManagedCacheBoundaryMeasurement(
+          fixture,
+          smokeCodexBin,
+          mode === "narrow-cache" ? roots.cache : undefined,
+        );
+        const expected = {
+          repository: "written",
+          temporary: "written",
+          cache: mode === "narrow-cache" ? "written" : "blocked",
+          home: "blocked",
+          sibling: "blocked",
+        };
+
+        assert.equal(measurement.code, 0, "the managed run did not complete");
+        assert.ok(
+          measurement.persistedRecord,
+          "the real managed turn did not persist a readable record",
+        );
+        assert.equal(measurement.persistedRecord.terminalStatus, "completed");
+        assert.deepEqual(
+          JSON.parse(await readFile(helper.receipt, "utf8")),
+          expected,
+        );
+        assert.equal(await pathExists(helper.paths.repository), true);
+        assert.equal(await pathExists(helper.paths.temporary), true);
+        assert.equal(await pathExists(helper.paths.cache), mode === "narrow-cache");
+        assert.equal(await pathExists(helper.paths.home), false);
+        assert.equal(await pathExists(helper.paths.sibling), false);
+
+        assert.ok(
+          measurement.sandboxPolicy,
+          "the test wrapper did not observe a sandbox policy",
+        );
+        const expectedWritableRootCount = mode === "narrow-cache" ? 2 : 1;
+        const hasExpectedWritableRoots =
+          measurement.sandboxPolicy.writableRoots.length === expectedWritableRootCount &&
+          measurement.sandboxPolicy.writableRoots[0] === fixture.target &&
+          (mode !== "narrow-cache" ||
+            measurement.sandboxPolicy.writableRoots[1] === roots.cache);
+        assert.equal(
+          hasExpectedWritableRoots,
+          true,
+          "the turn did not use the expected writable-root roles",
+        );
+        assert.equal(measurement.sandboxPolicy.networkAccess, false);
+        assert.equal(measurement.sandboxPolicy.excludeTmpdirEnvVar, false);
+        assert.equal(measurement.sandboxPolicy.excludeSlashTmp, false);
+        assert.equal(
+          JSON.stringify(measurement.persistedRecord).includes(roots.root),
+          false,
+        );
+        assert.equal(
+          JSON.stringify(measurement.persistedRecord).includes(roots.temporaryRoot),
+          false,
+        );
+        assert.equal(measurement.stdout.includes(roots.root), false);
+        assert.equal(measurement.stdout.includes(roots.temporaryRoot), false);
+        assert.equal(measurement.stderr.includes(roots.root), false);
+        assert.equal(measurement.stderr.includes(roots.temporaryRoot), false);
+      } finally {
+        try {
+          if (roots !== undefined)
+            await Promise.all([
+              rm(roots.root, { recursive: true, force: true }),
+              rm(roots.temporaryRoot, { recursive: true, force: true }),
+            ]);
+        } finally {
+          await rm(fixture.root, { recursive: true, force: true });
+        }
+      }
     }
   },
 );

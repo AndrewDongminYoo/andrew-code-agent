@@ -37,7 +37,7 @@ export interface CoordinatorDependencies {
   readonly git: {
     resolveRepositoryRoot(input: string): Promise<string>;
     readGitSnapshot(input: string): Promise<GitSnapshot>;
-    assertCleanGitSnapshot(snapshot: GitSnapshot): GitSnapshot;
+    assertCleanGitSnapshot(snapshot: GitSnapshot): Promise<GitSnapshot>;
   };
   readonly threadStore: {
     readThreadRecord(
@@ -716,7 +716,7 @@ export async function startNewThread(
       throw new CoordinatorError("BUNDLE_DIGEST_MISMATCH");
     const repositoryRoot =
       await dependencies.git.resolveRepositoryRoot(repositoryInput);
-    const snapshot = dependencies.git.assertCleanGitSnapshot(
+    const snapshot = await dependencies.git.assertCleanGitSnapshot(
       requireSnapshotRepository(
         await dependencies.git.readGitSnapshot(repositoryRoot),
         repositoryRoot,
@@ -796,7 +796,7 @@ export async function resumeThread(
     );
     if (repositoryRoot !== record.repositoryRoot)
       throw new CoordinatorError("THREAD_REPOSITORY_MISMATCH");
-    const snapshot = dependencies.git.assertCleanGitSnapshot(
+    const snapshot = await dependencies.git.assertCleanGitSnapshot(
       requireSnapshotRepository(
         await dependencies.git.readGitSnapshot(repositoryRoot),
         repositoryRoot,

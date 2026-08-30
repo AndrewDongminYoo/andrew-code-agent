@@ -148,7 +148,7 @@ export async function runCommand(
   try {
     const paths = await dependencies.resolveRuntimePaths({ capabilities });
     const snapshot = await dependencies.readGitSnapshot(repository);
-    dependencies.assertCleanGitSnapshot(snapshot);
+    await dependencies.assertCleanGitSnapshot(snapshot);
     phase = "setup";
     await dependencies.initializeRuntimeState(paths);
     lock = await dependencies.acquireProcessLock(paths.stateRoot);
@@ -427,7 +427,7 @@ export async function writeLine(
 
 async function writeDiagnostic(output: CommandIO["stderr"], value: string) {
   try {
-    await writeLine(output, value);
+    for (const line of value.split("\n")) await writeLine(output, line);
   } catch {
     // There is no safe secondary output channel after stderr fails.
   }
@@ -445,6 +445,10 @@ export function diagnosticFor(error: unknown, phase: string): string {
   ) {
     return "Submodules are unsupported in v0.1.";
   }
+  if (error instanceof GitRuntimeError) {
+    const dirtyWorktreeDiagnostic = diagnosticForDirtyWorktree(error);
+    if (dirtyWorktreeDiagnostic !== undefined) return dirtyWorktreeDiagnostic;
+  }
   if (error instanceof ReadinessError)
     return withCause("Candidate readiness failed", blockerList(error.blockers));
   // Resolving the runtime paths is preparation whatever phase the caller
@@ -458,6 +462,23 @@ export function diagnosticFor(error: unknown, phase: string): string {
   if (phase === "preflight")
     return withCause("Repository preflight failed", errorCode(error));
   return withCause("Runtime preparation failed", errorCode(error));
+}
+
+function diagnosticForDirtyWorktree(
+  error: GitRuntimeError,
+): string | undefined {
+  if (
+    error.code !== "GIT_WORKTREE_DIRTY" ||
+    error.dirtyPathSummary === undefined ||
+    error.dirtyPathSummary.paths.length === 0
+  )
+    return undefined;
+  const { paths, omittedPathCount } = error.dirtyPathSummary;
+  const omitted =
+    omittedPathCount === 0 ? "" : `; ${omittedPathCount} path(s) omitted`;
+  return `${withCause("Repository preflight failed", error.code)}\nAffected paths: ${paths
+    .map((path) => bounded(path))
+    .join(", ")}${omitted}.`;
 }
 
 function blockerList(blockers: readonly string[]): string | undefined {

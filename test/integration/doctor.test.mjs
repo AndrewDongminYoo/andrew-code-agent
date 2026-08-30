@@ -218,6 +218,10 @@ async function writeCodexExecutable(path, options = {}) {
   const version = options.version ?? "codex-cli 0.148.0";
   const strict = options.strict ?? "success";
   const markerPath = options.markerPath;
+  const strictDiagnostic =
+    options.strictDiagnostic === undefined
+      ? ""
+      : `printf '%s\\n' ${JSON.stringify(options.strictDiagnostic)} >&2`;
   const invocationMarker =
     markerPath === undefined
       ? ""
@@ -266,6 +270,7 @@ ${versionBody}
   exit 0
 fi
 if [ "$1" = "app-server" ] && [ "$2" = "--strict-config" ] && [ "$3" = "--listen" ] && [ "$4" = "stdio://" ] && [ "$#" = "4" ]; then
+${strictDiagnostic}
 ${strictBody}
 fi
 exit 24
@@ -592,7 +597,7 @@ test("classifies missing and drifted active installations", async (t) => {
 });
 
 test("uses exact Codex version and schema compatibility", async () => {
-  await withFixture({ codex: { version: "codex-cli 0.149.0" } }, async (fixture) => {
+  await withFixture({ codex: { version: "codex-cli 0.149.0", strict: "failure" } }, async (fixture) => {
     let strictSpawns = 0;
     const result = await runUnchanged(fixture, {}, {
       beforeStrictSpawn() {
@@ -606,8 +611,24 @@ test("uses exact Codex version and schema compatibility", async () => {
       message: "Resolved Codex version does not match codex-cli 0.148.0.",
       remediation: "Install codex-cli 0.148.0 and retry.",
     });
-    assert.equal(finding(result, "SCHEMA_COMPATIBILITY").severity, "blocker");
-    assert.equal(finding(result, "STRICT_CONFIG").severity, "blocker");
+    assert.deepEqual(
+      result.findings
+        .filter((entry) => entry.severity === "blocker")
+        .map((entry) => entry.code),
+      ["CODEX_VERSION"],
+    );
+    assert.deepEqual(finding(result, "SCHEMA_COMPATIBILITY"), {
+      severity: "warning",
+      code: "SCHEMA_COMPATIBILITY",
+      message: "Codex schema compatibility was not evaluated because the pinned Codex version was unavailable.",
+      remediation: "Install codex-cli 0.148.0 and retry.",
+    });
+    assert.deepEqual(finding(result, "STRICT_CONFIG"), {
+      severity: "warning",
+      code: "STRICT_CONFIG",
+      message: "Strict Codex configuration validation was not evaluated because the pinned Codex version was unavailable.",
+      remediation: "Install codex-cli 0.148.0 and retry.",
+    });
     assert.equal(strictSpawns, 0);
   });
 });
@@ -866,7 +887,69 @@ test("accepts only pinned owner-only file-backed authentication shapes", async (
   });
 });
 
+test("reports one safe strict-config duplicate-key location", async () => {
+  const stderrCanary = "strict-config-stderr-canary";
+  const stdoutCanary = "strict-config-stdout-canary";
+  await withFixture({}, async (fixture) => {
+    await writeCodexExecutable(fixture.paths.codexBin, {
+      strictBody: [
+        "printf '%s\\n' 'config.toml:63:11: duplicate key' >&2",
+        `printf '%s\\n' ${JSON.stringify(stderrCanary)} >&2`,
+        `printf '%s\\n' ${JSON.stringify(stdoutCanary)}`,
+        "exit 23",
+      ].join("\n"),
+    });
+    const result = await runUnchanged(fixture);
+    assert.deepEqual(finding(result, "STRICT_CONFIG"), {
+      severity: "blocker",
+      code: "STRICT_CONFIG",
+      message: "Strict Codex configuration validation failed at config.toml:63:11 (duplicate key).",
+      remediation: "Resolve the managed portable configuration before retrying.",
+    });
+    const serializedFindings = JSON.stringify(result.findings);
+    assert.equal(serializedFindings.includes(stderrCanary), false);
+    assert.equal(serializedFindings.includes(stdoutCanary), false);
+  });
+});
+
+test("keeps untrusted strict-config diagnostics generic", async (t) => {
+  const secret = "strict-config-untrusted-canary";
+  const genericFinding = {
+    severity: "blocker",
+    code: "STRICT_CONFIG",
+    message: "Strict Codex configuration validation failed.",
+    remediation: "Resolve the managed portable configuration before retrying.",
+  };
+  const failureBody = (...stderrLines) => [
+    ...stderrLines.map((line) => `printf '%s\\n' ${JSON.stringify(line)} >&2`),
+    "exit 23",
+  ].join("\n");
+  const cases = [
+    ["wrong basename", failureBody(`private.toml:63:11: duplicate key`, secret)],
+    ["zero line", failureBody(`config.toml:0:11: duplicate key`, secret)],
+    ["zero column", failureBody(`config.toml:63:0: duplicate key`, secret)],
+    ["negative line", failureBody(`config.toml:-63:11: duplicate key`, secret)],
+    ["overlong line", failureBody(`config.toml:1234567:11: duplicate key`, secret)],
+    ["unknown class", failureBody(`config.toml:63:11: parse error`, secret)],
+    ["stdout diagnostic", `printf '%s\\n' 'config.toml:63:11: duplicate key'\nprintf '%s\\n' 'strict-config-untrusted-canary' >&2\nexit 23`],
+    ["embedded source text", failureBody(`value = \"config.toml:63:11: duplicate key ${secret}\"`)],
+    ["multiple matches", failureBody(`config.toml:63:11: duplicate key`, `config.toml:64:12: duplicate key`, secret)],
+    ["control suffix", "printf 'config.toml:63:11: duplicate key\\033[2J\\n' >&2\nprintf '%s\\n' 'strict-config-untrusted-canary' >&2\nexit 23"],
+  ];
+  for (const [name, strictBody] of cases) {
+    await t.test(name, async () => {
+      await withFixture({}, async (fixture) => {
+        await writeCodexExecutable(fixture.paths.codexBin, { strictBody });
+        const result = await runUnchanged(fixture);
+        assert.deepEqual(finding(result, "STRICT_CONFIG"), genericFinding);
+        assert.equal(JSON.stringify(result.findings).includes(secret), false);
+      });
+    });
+  }
+});
+
 test("fails strict config on nonzero exit and timeout without leaking scratch", async (t) => {
+  const safeDiagnostic = "config.toml:63:11: duplicate key";
   await t.test("nonzero", async () => {
     await withFixture({ codex: { strict: "failure" } }, async (fixture) => {
       const result = await runUnchanged(fixture);
@@ -879,10 +962,33 @@ test("fails strict config on nonzero exit and timeout without leaking scratch", 
     });
   });
   await t.test("timeout terminates and awaits the child", async () => {
-    await withFixture({ codex: { strict: "timeout" } }, async (fixture) => {
+    await withFixture({ codex: { strict: "timeout", strictDiagnostic: safeDiagnostic } }, async (fixture) => {
       const result = await runUnchanged(fixture, { commandTimeoutMs: 40 });
-      assert.equal(finding(result, "STRICT_CONFIG").severity, "blocker");
+      assert.deepEqual(finding(result, "STRICT_CONFIG"), {
+        severity: "blocker",
+        code: "STRICT_CONFIG",
+        message: "Strict Codex configuration validation failed.",
+        remediation: "Resolve the managed portable configuration before retrying.",
+      });
       assert.equal(finding(result, "SCRATCH_CLEANUP").severity, "ready");
+    });
+  });
+  await t.test("overflow keeps a safe diagnostic generic", async () => {
+    await withFixture({}, async (fixture) => {
+      await writeCodexExecutable(fixture.paths.codexBin, {
+        strictBody: [
+          `printf '%s\\n' ${JSON.stringify(safeDiagnostic)} >&2`,
+          "/usr/bin/yes x | /usr/bin/head -c 70000 >&2",
+          "exit 23",
+        ].join("\n"),
+      });
+      const result = await runUnchanged(fixture);
+      assert.deepEqual(finding(result, "STRICT_CONFIG"), {
+        severity: "blocker",
+        code: "STRICT_CONFIG",
+        message: "Strict Codex configuration validation failed.",
+        remediation: "Resolve the managed portable configuration before retrying.",
+      });
     });
   });
   await t.test("kills an inherited-pipe descendant before cleanup", async () => {
@@ -891,6 +997,7 @@ test("fails strict config on nonzero exit and timeout without leaking scratch", 
       await writeCodexExecutable(fixture.paths.codexBin, {
         strict: "late-descendant",
         markerPath,
+        strictDiagnostic: safeDiagnostic,
       });
       const result = await runUnchanged(fixture, { commandTimeoutMs: 40 });
       await assertRecordedProcessWasReaped(markerPath);
@@ -903,6 +1010,7 @@ test("fails strict config on nonzero exit and timeout without leaking scratch", 
       await writeCodexExecutable(fixture.paths.codexBin, {
         strict: "redirected-descendant",
         markerPath,
+        strictDiagnostic: safeDiagnostic,
       });
       const result = await runUnchanged(fixture);
       await assertRecordedProcessWasReaped(markerPath);

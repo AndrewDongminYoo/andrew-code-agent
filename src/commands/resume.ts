@@ -83,7 +83,7 @@ export async function resumeCommand(
     if (snapshot.repositoryRoot !== existing.repositoryRoot) {
       throw new Error("repository identity changed");
     }
-    dependencies.assertCleanGitSnapshot(snapshot);
+    await dependencies.assertCleanGitSnapshot(snapshot);
     if (
       (existing.terminalHead !== null &&
         !isGitObjectId(existing.terminalHead)) ||

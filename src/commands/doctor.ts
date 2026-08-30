@@ -75,6 +75,7 @@ const findingOrder = [
 
 type FindingCode = (typeof findingOrder)[number];
 type MutableFindings = Map<FindingCode, DiagnosticFinding>;
+type CodexVersionState = "compatible" | "wrong-version" | "unavailable";
 const severityOrder = { blocker: 0, warning: 1, ready: 2 } as const;
 const maxChildOutputBytes = 64 * 1024;
 const maxAuthenticationBytes = 64 * 1024;
@@ -219,7 +220,7 @@ async function runDoctorInternal(
 
     inspection = await classifyInstall(dependencies, findings);
     classifyDigest(candidate, inspection, findings);
-    const schemaCompatible =
+    const codexVersionState =
       !scratchReady || scratchRoot === undefined
         ? classifyUnavailableCodexVersion(findings)
         : await classifyCodexVersion(
@@ -249,7 +250,7 @@ async function runDoctorInternal(
     }
 
     if (
-      schemaCompatible &&
+      codexVersionState === "compatible" &&
       scratchRoot !== undefined &&
       inspection?.active !== null &&
       inspection !== undefined &&
@@ -262,12 +263,20 @@ async function runDoctorInternal(
         findings,
         hooks,
       );
+    } else if (codexVersionState === "wrong-version") {
+      setWarning(
+        findings,
+        "STRICT_CONFIG",
+        "Strict Codex configuration validation was not evaluated because the " +
+          "pinned Codex version was unavailable.",
+        `Install codex-cli ${REQUIRED_CODEX_VERSION} and retry.`,
+      );
     } else {
       setBlocker(
         findings,
         "STRICT_CONFIG",
         "Strict Codex configuration validation could not run.",
-        schemaCompatible
+        codexVersionState === "compatible"
           ? "Restore a valid active installation before retrying."
           : `Install codex-cli ${REQUIRED_CODEX_VERSION} and retry.`,
       );
@@ -615,7 +624,7 @@ async function classifyCodexVersion(
   scratchRoot: string,
   findings: MutableFindings,
   hooks: DoctorTestHooks,
-): Promise<boolean> {
+): Promise<CodexVersionState> {
   const expected = `codex-cli ${REQUIRED_CODEX_VERSION}`;
   try {
     const versionHome = join(scratchRoot, "version-codex-home");
@@ -637,15 +646,14 @@ async function classifyCodexVersion(
       versionHome,
       dependencies.commandTimeoutMs,
     );
-    if (
+    const safeVersionResult =
       result.exitCode === 0 &&
       !result.timedOut &&
       !result.outputExceeded &&
       !result.residualDescendants &&
       !result.groupCleanupFailed &&
-      result.stderr.length === 0 &&
-      result.stdout === `${expected}\n`
-    ) {
+      result.stderr.length === 0;
+    if (safeVersionResult && result.stdout === `${expected}\n`) {
       setReady(
         findings,
         "CODEX_VERSION",
@@ -656,7 +664,23 @@ async function classifyCodexVersion(
         "SCHEMA_COMPATIBILITY",
         "The Codex schema version is compatible.",
       );
-      return true;
+      return "compatible";
+    }
+    if (safeVersionResult && isCodexVersionReport(result.stdout)) {
+      setBlocker(
+        findings,
+        "CODEX_VERSION",
+        `Resolved Codex version does not match ${expected}.`,
+        `Install codex-cli ${REQUIRED_CODEX_VERSION} and retry.`,
+      );
+      setWarning(
+        findings,
+        "SCHEMA_COMPATIBILITY",
+        "Codex schema compatibility was not evaluated because the pinned " +
+          "Codex version was unavailable.",
+        `Install codex-cli ${REQUIRED_CODEX_VERSION} and retry.`,
+      );
+      return "wrong-version";
     }
   } catch {
     // The stable findings below intentionally hide child and exception details.
@@ -673,10 +697,16 @@ async function classifyCodexVersion(
     "Codex schema compatibility cannot be established.",
     `Install codex-cli ${REQUIRED_CODEX_VERSION} and retry.`,
   );
-  return false;
+  return "unavailable";
 }
 
-function classifyUnavailableCodexVersion(findings: MutableFindings): false {
+function isCodexVersionReport(value: string): boolean {
+  return /^codex-cli \d+\.\d+\.\d+\n$/.test(value);
+}
+
+function classifyUnavailableCodexVersion(
+  findings: MutableFindings,
+): CodexVersionState {
   const expected = `codex-cli ${REQUIRED_CODEX_VERSION}`;
   setBlocker(
     findings,
@@ -690,7 +720,7 @@ function classifyUnavailableCodexVersion(findings: MutableFindings): false {
     "Codex schema compatibility cannot be established.",
     `Install codex-cli ${REQUIRED_CODEX_VERSION} and retry.`,
   );
-  return false;
+  return "unavailable";
 }
 
 async function classifyAuthentication(
@@ -902,19 +932,30 @@ async function classifyStrictConfig(
       shadowHome,
       dependencies.commandTimeoutMs,
     );
-    if (
+    const boundedResult =
       !result.timedOut &&
       !result.outputExceeded &&
       !result.residualDescendants &&
-      !result.groupCleanupFailed &&
-      result.exitCode === 0
-    ) {
+      !result.groupCleanupFailed;
+    if (boundedResult && result.exitCode === 0) {
       setReady(
         findings,
         "STRICT_CONFIG",
         "Strict Codex configuration validation passed.",
       );
       return;
+    }
+    if (boundedResult && result.exitCode !== null) {
+      const diagnostic = parseStrictConfigDiagnostic(result.stderr);
+      if (diagnostic !== undefined) {
+        setBlocker(
+          findings,
+          "STRICT_CONFIG",
+          `Strict Codex configuration validation failed at ${diagnostic}.`,
+          "Resolve the managed portable configuration before retrying.",
+        );
+        return;
+      }
     }
   } catch {
     // The stable finding below intentionally hides config and child details.
@@ -925,6 +966,17 @@ async function classifyStrictConfig(
     "Strict Codex configuration validation failed.",
     "Resolve the managed portable configuration before retrying.",
   );
+}
+
+function parseStrictConfigDiagnostic(stderr: string): string | undefined {
+  const matches = [
+    ...stderr.matchAll(
+      /^config\.toml:([1-9]\d{0,5}):([1-9]\d{0,5}): duplicate key$/gm,
+    ),
+  ];
+  if (matches.length !== 1) return undefined;
+  const [, line, column] = matches[0]!;
+  return `config.toml:${line!}:${column!} (duplicate key)`;
 }
 
 async function materializeActiveInventory(

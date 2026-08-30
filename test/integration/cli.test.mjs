@@ -517,6 +517,24 @@ test("a readiness blocker names itself on stderr instead of one bare line", asyn
   assert.doesNotMatch(stderr, /OPTIONAL_ORACLE/);
 });
 
+test("readiness reports only the version blocker after skipped checks", async (t) => {
+  const { runModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const findings = [
+    { severity: "blocker", code: "CODEX_VERSION", message: "Resolved Codex version does not match codex-cli 0.148.0." },
+    { severity: "warning", code: "SCHEMA_COMPATIBILITY", message: "Codex schema compatibility was not evaluated because the pinned Codex version was unavailable." },
+    { severity: "warning", code: "STRICT_CONFIG", message: "Strict Codex configuration validation was not evaluated because the pinned Codex version was unavailable." },
+  ];
+  const harness = operationHarness(repositoryRoot, { doctorExit: 1, doctorFindings: findings });
+  const output = capture();
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies), 3);
+  assert.equal(
+    output.output().stderr,
+    "Candidate readiness failed: CODEX_VERSION.\n",
+  );
+});
+
 test("resume blames the path check, not thread lookup, when paths fail", async (t) => {
   const { resumeModule } = modules();
   const pathsModule = await import("../../dist/runtime/paths.js");
@@ -542,6 +560,49 @@ test("a preflight refusal names the check that refused", async (t) => {
   const output = capture();
   assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies), 3);
   assert.match(output.output().stderr, /GIT_WORKTREE_DIRTY/);
+});
+
+test("a summarized dirty preflight escapes and bounds affected paths", async (t) => {
+  const { runModule } = modules();
+  const repositoryRoot = await createRepository();
+  t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
+  const error = new gitModule.GitRuntimeError(
+    "GIT_WORKTREE_DIRTY",
+    "Git worktree is not clean.",
+  );
+  error.dirtyPathSummary = {
+    paths: ["line\nbreak.txt", `long-${"가".repeat(2_000)}.txt`],
+    omittedPathCount: 1,
+  };
+  const harness = operationHarness(repositoryRoot, {});
+  harness.dependencies.assertCleanGitSnapshot = () => {
+    throw error;
+  };
+  const output = capture();
+  assert.equal(await runModule.runCommand(repositoryRoot, "prompt", output, harness.dependencies), 3);
+  const { stderr } = output.output();
+  const [headline, paths] = stderr.trimEnd().split("\n");
+  assert.equal(headline, "Repository preflight failed: GIT_WORKTREE_DIRTY.");
+  assert.match(paths, /^Affected paths: line\\x0Abreak\.txt, long-/);
+  assert.match(paths, /\[truncated\]; 1 path\(s\) omitted\.$/);
+  assert.equal(Buffer.byteLength(paths, "utf8") <= 8 * 4_096, true);
+  assert.equal(stderr.includes(repositoryRoot), false);
+});
+
+test("a summarized dirty preflight bypasses an app-server phase fallback", () => {
+  const { runModule } = modules();
+  const error = new gitModule.GitRuntimeError(
+    "GIT_WORKTREE_DIRTY",
+    "Git worktree is not clean.",
+  );
+  error.dirtyPathSummary = {
+    paths: ["changed.txt"],
+    omittedPathCount: 0,
+  };
+  assert.equal(
+    runModule.diagnosticFor(error, "app-server"),
+    "Repository preflight failed: GIT_WORKTREE_DIRTY.\nAffected paths: changed.txt.",
+  );
 });
 
 test("resume reports a readiness blocker the same way run does", async (t) => {
