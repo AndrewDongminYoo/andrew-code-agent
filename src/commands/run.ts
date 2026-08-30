@@ -148,7 +148,7 @@ export async function runCommand(
   try {
     const paths = await dependencies.resolveRuntimePaths({ capabilities });
     const snapshot = await dependencies.readGitSnapshot(repository);
-    dependencies.assertCleanGitSnapshot(snapshot);
+    await dependencies.assertCleanGitSnapshot(snapshot);
     phase = "setup";
     await dependencies.initializeRuntimeState(paths);
     lock = await dependencies.acquireProcessLock(paths.stateRoot);

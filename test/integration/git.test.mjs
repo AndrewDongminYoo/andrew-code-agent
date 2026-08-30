@@ -231,7 +231,7 @@ test("captures a clean nested worktree exactly without mutation", async () => {
     });
     assert.equal(after, before);
     assert.equal(await requireGit().resolveRepositoryRoot(nested), repository);
-    assert.equal(requireGit().assertCleanGitSnapshot(snapshot), snapshot);
+    assert.equal(await requireGit().assertCleanGitSnapshot(snapshot), snapshot);
   });
 });
 
@@ -251,14 +251,22 @@ test("preserves line-oriented status while summarizing a filename with a newline
 
     assert.equal(snapshot.porcelainV2, expectedStatus);
     assert.equal(snapshot.porcelainV2.includes("\0"), false);
-    assert.deepEqual(snapshot.dirtyPathSummary, {
-      paths: [filename],
-      omittedPathCount: 0,
-    });
+    assert.equal("dirtyPathSummary" in snapshot, false);
+    await assert.rejects(
+      async () => await requireGit().assertCleanGitSnapshot(snapshot),
+      (error) => {
+        assert.equal(error.code, "GIT_WORKTREE_DIRTY");
+        assert.deepEqual(error.dirtyPathSummary, {
+          paths: [filename],
+          omittedPathCount: 0,
+        });
+        return true;
+      },
+    );
   });
 });
 
-test("rejects a dirty or clean disagreement between status encodings", async () => {
+test("fails closed when snapshot and diagnostic status observations disagree", async () => {
   await withRepository(async (repository) => {
     for (const { lineStatusOutput, nulStatusOutput } of [
       { lineStatusOutput: "", nulStatusOutput: "? untracked.txt\0" },
@@ -267,12 +275,46 @@ test("rejects a dirty or clean disagreement between status encodings", async () 
       await withGitStatusShim(
         { lineStatusOutput, nulStatusOutput },
         async () => {
-          await assert.rejects(requireGit().readGitSnapshot(repository), {
-            code: "GIT_STATUS_FAILED",
-          });
+          const snapshot = await requireGit().readGitSnapshot(repository);
+
+          assert.equal(snapshot.porcelainV2, lineStatusOutput);
+          assert.equal(snapshot.clean, lineStatusOutput.length === 0);
+          assert.equal("dirtyPathSummary" in snapshot, false);
+          await assert.rejects(
+            async () => await requireGit().assertCleanGitSnapshot(snapshot),
+            { code: "GIT_SNAPSHOT_RACE" },
+          );
         },
       );
     }
+  });
+});
+
+test("keeps a dirty snapshot separate from a later dirty-path diagnostic", async () => {
+  await withRepository(async (repository) => {
+    await withGitStatusShim(
+      {
+        lineStatusOutput: "? snapshot-only.txt\n",
+        nulStatusOutput: "? diagnostic-only.txt\0",
+      },
+      async () => {
+        const snapshot = await requireGit().readGitSnapshot(repository);
+
+        assert.equal(snapshot.porcelainV2, "? snapshot-only.txt\n");
+        assert.equal("dirtyPathSummary" in snapshot, false);
+        await assert.rejects(
+          async () => await requireGit().assertCleanGitSnapshot(snapshot),
+          (error) => {
+            assert.equal(error.code, "GIT_WORKTREE_DIRTY");
+            assert.deepEqual(error.dirtyPathSummary, {
+              paths: ["diagnostic-only.txt"],
+              omittedPathCount: 0,
+            });
+            return true;
+          },
+        );
+      },
+    );
   });
 });
 
@@ -298,7 +340,7 @@ test("reports tracked, staged, and untracked bytes and preserves an untracked ca
     ).stdout;
     await assert.rejects(
       async () =>
-        requireGit().assertCleanGitSnapshot(
+        await requireGit().assertCleanGitSnapshot(
           await requireGit().readGitSnapshot(repository),
         ),
       { code: "GIT_WORKTREE_DIRTY" },
@@ -422,15 +464,20 @@ test("retains a bounded summary from each accepted porcelain v2 record type", as
       { lineStatusOutput: "? shim-status\n", nulStatusOutput: status },
       async () => {
         const snapshot = await requireGit().readGitSnapshot(repository);
-        assert.deepEqual(snapshot.dirtyPathSummary, {
-          paths: ["tracked.txt", "renamed.txt", "conflicted.txt", "untracked.txt"],
-          omittedPathCount: 0,
-        });
+        assert.equal("dirtyPathSummary" in snapshot, false);
         await assert.rejects(
-          async () => requireGit().assertCleanGitSnapshot(snapshot),
+          async () => await requireGit().assertCleanGitSnapshot(snapshot),
           (error) => {
             assert.equal(error.code, "GIT_WORKTREE_DIRTY");
-            assert.deepEqual(error.dirtyPathSummary, snapshot.dirtyPathSummary);
+            assert.deepEqual(error.dirtyPathSummary, {
+              paths: [
+                "tracked.txt",
+                "renamed.txt",
+                "conflicted.txt",
+                "untracked.txt",
+              ],
+              omittedPathCount: 0,
+            });
             return true;
           },
         );
@@ -438,20 +485,19 @@ test("retains a bounded summary from each accepted porcelain v2 record type", as
   });
 });
 
-test("rejects malformed porcelain v2 without attaching a partial path summary", async () => {
+test("rejects malformed porcelain v2 diagnostics without exposing a partial summary", async () => {
   await withRepository(async (repository) => {
     const malformed = "? untracked-without-terminal-nul";
     await withGitStatusShim(
       { lineStatusOutput: "? shim-status\n", nulStatusOutput: malformed },
       async () => {
-        let snapshot;
+        const snapshot = await requireGit().readGitSnapshot(repository);
+
+        assert.equal("dirtyPathSummary" in snapshot, false);
         await assert.rejects(
-          async () => {
-            snapshot = await requireGit().readGitSnapshot(repository);
-          },
+          async () => await requireGit().assertCleanGitSnapshot(snapshot),
           { code: "GIT_STATUS_FAILED" },
         );
-        assert.equal(snapshot, undefined);
     });
   });
 });
@@ -466,8 +512,10 @@ test("rejects malformed porcelain metadata after a valid record", async () => {
     await withGitStatusShim(
       { lineStatusOutput: "? shim-status\n", nulStatusOutput: malformed },
       async () => {
+        const snapshot = await requireGit().readGitSnapshot(repository);
+
         await assert.rejects(
-          requireGit().readGitSnapshot(repository),
+          async () => await requireGit().assertCleanGitSnapshot(snapshot),
           { code: "GIT_STATUS_FAILED" },
         );
     });
@@ -482,10 +530,18 @@ test("bounds the dirty path summary before it reaches a caller", async () => {
       { lineStatusOutput: "? shim-status\n", nulStatusOutput: status },
       async () => {
         const snapshot = await requireGit().readGitSnapshot(repository);
-        assert.deepEqual(snapshot.dirtyPathSummary, {
-          paths: paths.slice(0, 8),
-          omittedPathCount: 1,
-        });
+        assert.equal("dirtyPathSummary" in snapshot, false);
+        await assert.rejects(
+          async () => await requireGit().assertCleanGitSnapshot(snapshot),
+          (error) => {
+            assert.equal(error.code, "GIT_WORKTREE_DIRTY");
+            assert.deepEqual(error.dirtyPathSummary, {
+              paths: paths.slice(0, 8),
+              omittedPathCount: 1,
+            });
+            return true;
+          },
+        );
     });
   });
 });

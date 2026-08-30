@@ -14,7 +14,6 @@ export interface GitSnapshot {
   readonly head: string;
   readonly porcelainV2: string;
   readonly clean: boolean;
-  readonly dirtyPathSummary?: DirtyPathSummary;
 }
 
 export type GitRuntimeErrorCode =
@@ -72,30 +71,13 @@ export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
   await assertSupportedHeadTree(repositoryRoot, firstHead);
   await assertSupportedIndexState(repositoryRoot);
   let porcelainV2: string;
-  let nulDelimitedPorcelainV2: string;
   try {
     porcelainV2 = await runGit(repositoryRoot, [
       "status",
       "--porcelain=v2",
       "--untracked-files=all",
     ]);
-    nulDelimitedPorcelainV2 = await runGit(repositoryRoot, [
-      "status",
-      "--porcelain=v2",
-      "-z",
-      "--untracked-files=all",
-    ]);
   } catch {
-    throw new GitRuntimeError(
-      "GIT_STATUS_FAILED",
-      "Unable to read Git worktree status.",
-    );
-  }
-  const dirtyPathSummary = parseDirtyPathSummary(nulDelimitedPorcelainV2);
-  if (
-    dirtyPathSummary === null ||
-    (porcelainV2.length === 0) !== (dirtyPathSummary === undefined)
-  ) {
     throw new GitRuntimeError(
       "GIT_STATUS_FAILED",
       "Unable to read Git worktree status.",
@@ -114,7 +96,6 @@ export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
     head: firstHead,
     porcelainV2,
     clean: porcelainV2.length === 0,
-    ...(dirtyPathSummary === undefined ? {} : { dirtyPathSummary }),
   };
 }
 
@@ -358,12 +339,48 @@ function isRepositoryRelativePath(value: string): boolean {
   );
 }
 
-export function assertCleanGitSnapshot(snapshot: GitSnapshot): GitSnapshot {
-  if (!snapshot.clean || snapshot.porcelainV2.length !== 0) {
+export async function assertCleanGitSnapshot(
+  snapshot: GitSnapshot,
+): Promise<GitSnapshot> {
+  if (snapshot.clean !== (snapshot.porcelainV2.length === 0)) {
+    throw new GitRuntimeError(
+      "GIT_SNAPSHOT_RACE",
+      "Git worktree status changed while the snapshot was checked.",
+    );
+  }
+
+  let nulDelimitedPorcelainV2: string;
+  try {
+    nulDelimitedPorcelainV2 = await runGit(snapshot.repositoryRoot, [
+      "status",
+      "--porcelain=v2",
+      "-z",
+      "--untracked-files=all",
+    ]);
+  } catch {
+    throw new GitRuntimeError(
+      "GIT_STATUS_FAILED",
+      "Unable to read Git worktree status.",
+    );
+  }
+  const dirtyPathSummary = parseDirtyPathSummary(nulDelimitedPorcelainV2);
+  if (dirtyPathSummary === null) {
+    throw new GitRuntimeError(
+      "GIT_STATUS_FAILED",
+      "Unable to read Git worktree status.",
+    );
+  }
+  if (snapshot.clean !== (dirtyPathSummary === undefined)) {
+    throw new GitRuntimeError(
+      "GIT_SNAPSHOT_RACE",
+      "Git worktree status changed while the snapshot was checked.",
+    );
+  }
+  if (dirtyPathSummary !== undefined) {
     throw new GitRuntimeError(
       "GIT_WORKTREE_DIRTY",
       "Git worktree is not clean.",
-      snapshot.dirtyPathSummary,
+      dirtyPathSummary,
     );
   }
   return snapshot;
