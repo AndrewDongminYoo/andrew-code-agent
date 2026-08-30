@@ -72,8 +72,14 @@ export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
   await assertSupportedHeadTree(repositoryRoot, firstHead);
   await assertSupportedIndexState(repositoryRoot);
   let porcelainV2: string;
+  let nulDelimitedPorcelainV2: string;
   try {
     porcelainV2 = await runGit(repositoryRoot, [
+      "status",
+      "--porcelain=v2",
+      "--untracked-files=all",
+    ]);
+    nulDelimitedPorcelainV2 = await runGit(repositoryRoot, [
       "status",
       "--porcelain=v2",
       "-z",
@@ -85,8 +91,11 @@ export async function readGitSnapshot(input: string): Promise<GitSnapshot> {
       "Unable to read Git worktree status.",
     );
   }
-  const dirtyPathSummary = parseDirtyPathSummary(porcelainV2);
-  if (dirtyPathSummary === null) {
+  const dirtyPathSummary = parseDirtyPathSummary(nulDelimitedPorcelainV2);
+  if (
+    dirtyPathSummary === null ||
+    (porcelainV2.length === 0) !== (dirtyPathSummary === undefined)
+  ) {
     throw new GitRuntimeError(
       "GIT_STATUS_FAILED",
       "Unable to read Git worktree status.",

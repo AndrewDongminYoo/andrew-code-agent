@@ -119,15 +119,16 @@ async function withGitListingShim(indexEntries, run) {
   }
 }
 
-async function withGitStatusShim(statusOutput, { requireNul }, run) {
+async function withGitStatusShim({ lineStatusOutput, nulStatusOutput }, run) {
   const shimDirectory = await mkdtemp(join(tmpdir(), "andrew-agent-git-shim-"));
   const shimPath = join(shimDirectory, "git");
   const realGit = (await execFile("which", ["git"], { encoding: "utf8" })).stdout.trim();
-  const statusBase64 = Buffer.from(statusOutput, "utf8").toString("base64");
+  const lineStatusBase64 = Buffer.from(lineStatusOutput, "utf8").toString("base64");
+  const nulStatusBase64 = Buffer.from(nulStatusOutput, "utf8").toString("base64");
   const originalPath = process.env.PATH;
   await writeFile(
     shimPath,
-    `#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst args = process.argv.slice(2);\nif (args[0] === "-C" && args[2] === "status") {\n  if (${JSON.stringify(requireNul)} && !args.includes("-z")) process.exit(64);\n  process.stdout.write(Buffer.from("${statusBase64}", "base64"), () => process.exit(0));\n} else {\n  const result = spawnSync("${realGit}", args, { stdio: "inherit" });\n  process.exit(result.status ?? 1);\n}\n`,
+    `#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst args = process.argv.slice(2);\nif (args[0] === "-C" && args[2] === "status") {\n  const output = args.includes("-z") ? "${nulStatusBase64}" : "${lineStatusBase64}";\n  process.stdout.write(Buffer.from(output, "base64"), () => process.exit(0));\n} else {\n  const result = spawnSync("${realGit}", args, { stdio: "inherit" });\n  process.exit(result.status ?? 1);\n}\n`,
   );
   await chmod(shimPath, 0o755);
   process.env.PATH = `${shimDirectory}:${originalPath}`;
@@ -231,6 +232,47 @@ test("captures a clean nested worktree exactly without mutation", async () => {
     assert.equal(after, before);
     assert.equal(await requireGit().resolveRepositoryRoot(nested), repository);
     assert.equal(requireGit().assertCleanGitSnapshot(snapshot), snapshot);
+  });
+});
+
+test("preserves line-oriented status while summarizing a filename with a newline", async () => {
+  await withRepository(async (repository) => {
+    const filename = "untracked\ncanary.txt";
+    await writeFile(join(repository, filename), "do not mutate\n");
+    const expectedStatus = (
+      await git(repository, [
+        "status",
+        "--porcelain=v2",
+        "--untracked-files=all",
+      ])
+    ).stdout;
+
+    const snapshot = await requireGit().readGitSnapshot(repository);
+
+    assert.equal(snapshot.porcelainV2, expectedStatus);
+    assert.equal(snapshot.porcelainV2.includes("\0"), false);
+    assert.deepEqual(snapshot.dirtyPathSummary, {
+      paths: [filename],
+      omittedPathCount: 0,
+    });
+  });
+});
+
+test("rejects a dirty or clean disagreement between status encodings", async () => {
+  await withRepository(async (repository) => {
+    for (const { lineStatusOutput, nulStatusOutput } of [
+      { lineStatusOutput: "", nulStatusOutput: "? untracked.txt\0" },
+      { lineStatusOutput: "? untracked.txt\n", nulStatusOutput: "" },
+    ]) {
+      await withGitStatusShim(
+        { lineStatusOutput, nulStatusOutput },
+        async () => {
+          await assert.rejects(requireGit().readGitSnapshot(repository), {
+            code: "GIT_STATUS_FAILED",
+          });
+        },
+      );
+    }
   });
 });
 
@@ -376,20 +418,22 @@ test("retains a bounded summary from each accepted porcelain v2 record type", as
       `u UU N... 100644 100644 100644 100644 ${hash} ${hash} ${hash} conflicted.txt\0`,
       "? untracked.txt\0",
     ].join("");
-    await withGitStatusShim(status, { requireNul: true }, async () => {
-      const snapshot = await requireGit().readGitSnapshot(repository);
-      assert.deepEqual(snapshot.dirtyPathSummary, {
-        paths: ["tracked.txt", "renamed.txt", "conflicted.txt", "untracked.txt"],
-        omittedPathCount: 0,
-      });
-      await assert.rejects(
-        async () => requireGit().assertCleanGitSnapshot(snapshot),
-        (error) => {
-          assert.equal(error.code, "GIT_WORKTREE_DIRTY");
-          assert.deepEqual(error.dirtyPathSummary, snapshot.dirtyPathSummary);
-          return true;
-        },
-      );
+    await withGitStatusShim(
+      { lineStatusOutput: "? shim-status\n", nulStatusOutput: status },
+      async () => {
+        const snapshot = await requireGit().readGitSnapshot(repository);
+        assert.deepEqual(snapshot.dirtyPathSummary, {
+          paths: ["tracked.txt", "renamed.txt", "conflicted.txt", "untracked.txt"],
+          omittedPathCount: 0,
+        });
+        await assert.rejects(
+          async () => requireGit().assertCleanGitSnapshot(snapshot),
+          (error) => {
+            assert.equal(error.code, "GIT_WORKTREE_DIRTY");
+            assert.deepEqual(error.dirtyPathSummary, snapshot.dirtyPathSummary);
+            return true;
+          },
+        );
     });
   });
 });
@@ -397,15 +441,17 @@ test("retains a bounded summary from each accepted porcelain v2 record type", as
 test("rejects malformed porcelain v2 without attaching a partial path summary", async () => {
   await withRepository(async (repository) => {
     const malformed = "? untracked-without-terminal-nul";
-    await withGitStatusShim(malformed, { requireNul: false }, async () => {
-      let snapshot;
-      await assert.rejects(
-        async () => {
-          snapshot = await requireGit().readGitSnapshot(repository);
-        },
-        { code: "GIT_STATUS_FAILED" },
-      );
-      assert.equal(snapshot, undefined);
+    await withGitStatusShim(
+      { lineStatusOutput: "? shim-status\n", nulStatusOutput: malformed },
+      async () => {
+        let snapshot;
+        await assert.rejects(
+          async () => {
+            snapshot = await requireGit().readGitSnapshot(repository);
+          },
+          { code: "GIT_STATUS_FAILED" },
+        );
+        assert.equal(snapshot, undefined);
     });
   });
 });
@@ -417,11 +463,13 @@ test("rejects malformed porcelain metadata after a valid record", async () => {
       "? earlier.txt\0",
       `1 ZZ N... 100644 100644 100644 ${hash} ${hash} later.txt\0`,
     ].join("");
-    await withGitStatusShim(malformed, { requireNul: false }, async () => {
-      await assert.rejects(
-        requireGit().readGitSnapshot(repository),
-        { code: "GIT_STATUS_FAILED" },
-      );
+    await withGitStatusShim(
+      { lineStatusOutput: "? shim-status\n", nulStatusOutput: malformed },
+      async () => {
+        await assert.rejects(
+          requireGit().readGitSnapshot(repository),
+          { code: "GIT_STATUS_FAILED" },
+        );
     });
   });
 });
@@ -430,12 +478,14 @@ test("bounds the dirty path summary before it reaches a caller", async () => {
   await withRepository(async (repository) => {
     const paths = Array.from({ length: 9 }, (_value, index) => `untracked-${index}.txt`);
     const status = paths.map((path) => `? ${path}\0`).join("");
-    await withGitStatusShim(status, { requireNul: true }, async () => {
-      const snapshot = await requireGit().readGitSnapshot(repository);
-      assert.deepEqual(snapshot.dirtyPathSummary, {
-        paths: paths.slice(0, 8),
-        omittedPathCount: 1,
-      });
+    await withGitStatusShim(
+      { lineStatusOutput: "? shim-status\n", nulStatusOutput: status },
+      async () => {
+        const snapshot = await requireGit().readGitSnapshot(repository);
+        assert.deepEqual(snapshot.dirtyPathSummary, {
+          paths: paths.slice(0, 8),
+          omittedPathCount: 1,
+        });
     });
   });
 });
@@ -612,7 +662,6 @@ test("ignores inherited Git repository redirection without mutating either repos
         await git(repositoryA, [
           "status",
           "--porcelain=v2",
-          "-z",
           "--untracked-files=all",
         ])
       ).stdout;
@@ -620,7 +669,6 @@ test("ignores inherited Git repository redirection without mutating either repos
         await git(repositoryB, [
           "status",
           "--porcelain=v2",
-          "-z",
           "--untracked-files=all",
         ])
       ).stdout;
@@ -653,7 +701,6 @@ test("ignores inherited Git repository redirection without mutating either repos
           await git(repositoryA, [
             "status",
             "--porcelain=v2",
-            "-z",
             "--untracked-files=all",
           ])
         ).stdout,
@@ -664,7 +711,6 @@ test("ignores inherited Git repository redirection without mutating either repos
           await git(repositoryB, [
             "status",
             "--porcelain=v2",
-            "-z",
             "--untracked-files=all",
           ])
         ).stdout,
