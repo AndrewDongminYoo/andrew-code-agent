@@ -5,8 +5,8 @@ Status: approved test-only scope for GitHub issue #23
 
 ## Goal
 
-Measure the real App Server behavior for a synthetic cache root outside the
-target repository and process temporary directory.
+Measure the real App Server behavior for a synthetic cache root outside the target
+repository and `/tmp` allowance.
 
 Do not change the production writable-root policy before the measurement
 returns evidence.
@@ -18,7 +18,10 @@ disposable managed home.
 
 The test starts a real managed turn through the product coordinator.
 
-The test creates only owner-controlled synthetic roots under `/Users/Shared`.
+The test creates owner-controlled synthetic `cache`, `home`, and `sibling` roots
+under `/Users/Shared`.
+
+The test creates an owner-controlled `temporary` root under `/tmp`.
 
 The test writes no real Flutter, Cargo, pnpm, Ruby, or Pub cache.
 
@@ -34,12 +37,14 @@ The test does not read, hash, log, or persist the authentication file.
 The helper attempts writes to five named locations.
 
 - `repository` is inside the disposable target repository.
-- `temporary` is inside the disposable process temporary fixture.
+- `temporary` is inside an owner-controlled `/tmp` root.
 - `cache` is an explicitly separate synthetic cache root.
 - `home` is a separate synthetic home root.
 - `sibling` is an undeclared sibling root.
 
 The current policy grants only the target repository as an explicit writable root.
+
+The temporary write exercises the `/tmp` allowance, not the `$TMPDIR` allowance.
 
 The current-policy run must write `repository` and `temporary`.
 
