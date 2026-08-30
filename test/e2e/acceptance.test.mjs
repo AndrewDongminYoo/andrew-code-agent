@@ -586,11 +586,15 @@ async function pathExists(path) {
 
 async function createSyntheticBoundaryRoots() {
   const createdRoot = await mkdtemp("/Users/Shared/andrew-agent-cache-boundary-");
+  let temporaryRoot;
   try {
     const root = await realpath(createdRoot);
     await chmod(root, 0o700);
+    temporaryRoot = await mkdtemp("/tmp/andrew-agent-cache-boundary-");
+    await chmod(temporaryRoot, 0o700);
     const roots = {
       root,
+      temporaryRoot,
       cache: join(root, "cache"),
       home: join(root, "home"),
       sibling: join(root, "sibling"),
@@ -603,6 +607,8 @@ async function createSyntheticBoundaryRoots() {
     return roots;
   } catch (error) {
     await rm(createdRoot, { recursive: true, force: true });
+    if (temporaryRoot !== undefined)
+      await rm(temporaryRoot, { recursive: true, force: true });
     throw error;
   }
 }
@@ -612,7 +618,7 @@ async function writeCacheBoundaryHelper(fixture, roots) {
   const receipt = join(fixture.target, ".managed-cache-boundary-receipt.json");
   const paths = {
     repository: join(fixture.target, ".managed-cache-boundary-repository"),
-    temporary: join(fixture.root, "temporary", "managed-cache-boundary"),
+    temporary: join(roots.temporaryRoot, "managed-cache-boundary"),
     cache: join(roots.cache, "managed-cache-boundary"),
     home: join(roots.home, "managed-cache-boundary"),
     sibling: join(roots.sibling, "managed-cache-boundary"),
@@ -951,12 +957,24 @@ test(
           JSON.stringify(measurement.persistedRecord).includes(roots.root),
           false,
         );
+        assert.equal(
+          JSON.stringify(measurement.persistedRecord).includes(roots.temporaryRoot),
+          false,
+        );
         assert.equal(measurement.stdout.includes(roots.root), false);
+        assert.equal(measurement.stdout.includes(roots.temporaryRoot), false);
         assert.equal(measurement.stderr.includes(roots.root), false);
+        assert.equal(measurement.stderr.includes(roots.temporaryRoot), false);
       } finally {
-        if (roots !== undefined)
-          await rm(roots.root, { recursive: true, force: true });
-        await rm(fixture.root, { recursive: true, force: true });
+        try {
+          if (roots !== undefined)
+            await Promise.all([
+              rm(roots.root, { recursive: true, force: true }),
+              rm(roots.temporaryRoot, { recursive: true, force: true }),
+            ]);
+        } finally {
+          await rm(fixture.root, { recursive: true, force: true });
+        }
       }
     }
   },
