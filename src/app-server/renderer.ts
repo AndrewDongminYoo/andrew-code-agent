@@ -24,7 +24,7 @@ const TRUNCATION_MARKER = " [truncated]";
 const MAX_RENDERED_PROTOCOL_PART = 128;
 const PROTOCOL_ID_DIGEST_LENGTH = 16;
 const PROTOCOL_ID_HASH_CHUNK_CODE_UNITS = 4096;
-const completedTextItemLines = new WeakMap<ItemState, readonly string[]>();
+const completedItemLines = new WeakMap<ItemState, readonly string[]>();
 
 function bounded(value: string, limit = MAX_RENDERED_VALUE): string {
   return boundedTerminalText(value, limit, TRUNCATION_MARKER);
@@ -129,8 +129,10 @@ function messageLines(lifecycle: string, text: string): readonly string[] {
 
 function renderItem(item: ItemState, settled: boolean): readonly string[] {
   const textItem = item.type === "agentMessage" || item.type === "plan";
-  if (textItem && item.phase === "completed") {
-    const cached = completedTextItemLines.get(item);
+  // Only a completed item is ever cached, and only the branches below put one
+  // there, so the phase check alone is the whole guard.
+  if (item.phase === "completed") {
+    const cached = completedItemLines.get(item);
     if (cached !== undefined) return cached;
   }
   const lifecycle = `${renderedItemId(item.id)} ${bounded(item.type, MAX_RENDERED_PROTOCOL_PART)} ${item.phase}`;
@@ -150,7 +152,7 @@ function renderItem(item: ItemState, settled: boolean): readonly string[] {
       ];
     const text = record(item.value)?.text;
     const lines = messageLines(lifecycle, typeof text === "string" ? text : "");
-    if (item.phase === "completed") completedTextItemLines.set(item, lines);
+    if (item.phase === "completed") completedItemLines.set(item, lines);
     return lines;
   }
   if (item.type === "reasoning")
@@ -159,13 +161,27 @@ function renderItem(item: ItemState, settled: boolean): readonly string[] {
     const command = valueText(item.value, "command") ?? "command";
     const cwd = valueText(item.value, "cwd") ?? "unknown cwd";
     const exitCode = record(item.value)?.exitCode;
-    const output = valueText(item.value, "output");
+    // Read the retained value, not `valueText`: that helper returns text the
+    // terminal escaping has already been applied to, in which a newline is the
+    // four characters of `\x0A` and there is nothing structural left to split.
+    const rawOutput = record(item.value)?.output;
+    const output = typeof rawOutput === "string" ? rawOutput : "";
     const lines = [
       bounded(
         `${lifecycle}: ${command} (${cwd}), exit ${typeof exitCode === "number" ? exitCode : "pending"}`,
       ),
     ];
-    if (output) lines.push(bounded(`Command output: ${output}`));
+    // A chunk's ordinal names the total, so a total that grows with every
+    // delta would rewrite each earlier line and defeat reportTurnState's
+    // write-once skip. The split therefore waits until the output stops
+    // changing; while it streams the value keeps its single bounded line.
+    if (output)
+      lines.push(
+        ...(item.phase === "completed"
+          ? messageLines("Command output", output)
+          : [bounded(`Command output: ${output}`)]),
+      );
+    if (item.phase === "completed") completedItemLines.set(item, lines);
     return lines;
   }
   if (item.type === "fileChange") {

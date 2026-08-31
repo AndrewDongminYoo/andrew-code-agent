@@ -362,6 +362,72 @@ test("streaming command output stays bounded well below the message bound", () =
   assert.ok(Buffer.byteLength(output, "utf8") <= 600, `command output line was ${Buffer.byteLength(output, "utf8")} bytes`);
 });
 
+// Command output is terminal output and is multi-line by nature. Rendering it
+// as one escaped line is what made a real run unreadable, so a completed
+// command splits it the way a completed message does. The split waits for
+// completion because a chunk's ordinal names the total, and a total that grows
+// per delta would change every earlier line and defeat the write-once skip.
+test("a completed command renders its output across structural lines", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["cmd-1", { id: "cmd-1", type: "commandExecution", phase: "completed", value: { command: "npm test", cwd: "/repo", exitCode: 0, output: "first line\nsecond line\nthird line" } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const outputLines = lines.filter((line) => line.startsWith("Command output"));
+  assert.ok(outputLines.length >= 3, `expected one line per structural line, got ${outputLines.length}`);
+  assert.doesNotMatch(outputLines.join("|"), /\\x0A/, "a real newline must not reach the terminal as its escape");
+  for (const part of ["first line", "second line", "third line"])
+    assert.ok(outputLines.some((line) => line.includes(part)), part);
+  for (const line of outputLines)
+    assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+});
+
+// The reducer appends the marker when it drops the tail. Chunking must carry it
+// through, or the operator reads a short output as a complete one.
+test("a completed command keeps the truncation marker the reducer appended", () => {
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["cmd-1", { id: "cmd-1", type: "commandExecution", phase: "completed", value: { command: "npm test", cwd: "/repo", exitCode: 0, output: `${"z".repeat(4000)} [truncated]` } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const outputLines = lines.filter((line) => line.startsWith("Command output"));
+  assert.ok(outputLines.some((line) => line.includes("[truncated]")), "the marker must survive chunking");
+  for (const line of outputLines)
+    assert.ok(Buffer.byteLength(line, "utf8") <= 512, line);
+});
+
+// Splitting on newlines must not let any other control through: the escaping
+// exists to stop a command's output from painting lines that look like ours.
+test("a completed command keeps every other control visible and escaped", () => {
+  const output = `head\n${"x".repeat(600)}\r\x1b[31m\x1b]8;;https://example.com\x07label\x1b]8;;\x07\u202e`;
+  const lines = renderer().renderTurnState({
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map([["cmd-1", { id: "cmd-1", type: "commandExecution", phase: "completed", value: { command: "npm test", cwd: "/repo", exitCode: 0, output } }]]),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  });
+  const rendered = lines.filter((line) => line.startsWith("Command output")).join("|");
+  assert.doesNotMatch(rendered, /\\x0A/);
+  for (const expected of [
+    "\\x0D",
+    "\\x1B[31m",
+    "\\x1B]8;;https://example.com\\x07label\\x1B]8;;\\x07",
+    "\\u{202E}",
+  ])
+    assert.ok(rendered.includes(expected), expected);
+});
+
 // reportTurnState skips a line it has already written, keyed on the whole
 // string, so two chunks of one message that happen to be identical would be
 // silently dropped and the answer corrupted.
