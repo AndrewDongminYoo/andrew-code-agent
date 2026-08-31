@@ -12,7 +12,7 @@ explicit answer for. The boundaries are listed in full under
 ## Requirements
 
 - macOS. The runtime refuses every other platform.
-- Node.js 24.19.0 and pnpm 11.22.0.
+- Node.js 24.20.0 and pnpm 11.22.0.
 - Codex `0.148.0` exactly. A different version is a Doctor blocker and fails
   before the App Server starts.
 - A Git worktree to act on, and a clean Git worktree to build the bundle from.
