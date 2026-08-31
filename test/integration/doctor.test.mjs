@@ -26,6 +26,7 @@ const doctorModule = await import("../../dist/commands/doctor.js").catch(
 const artifactModule = await import("../../dist/bundle/artifact.js");
 const installModule = await import("../../dist/bundle/install.js");
 const lockModule = await import("../../dist/runtime/lock.js");
+const constantsModule = await import("../../dist/constants.js");
 const sourceFixture = new URL("../fixtures/source-codex/clean/", import.meta.url);
 const authFileName = ["auth", ".json"].join("");
 
@@ -201,7 +202,7 @@ async function createFixture(options = {}) {
     paths,
     scratchParent,
     dependencies: {
-      productVersion: "0.1.0",
+      productVersion: constantsModule.PRODUCT_VERSION,
       platform: "darwin",
       platformVersion: "15.6.1",
       paths,
