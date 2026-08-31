@@ -135,7 +135,8 @@ function renderItem(item: ItemState, settled: boolean): readonly string[] {
     const cached = completedItemLines.get(item);
     if (cached !== undefined) return cached;
   }
-  const lifecycle = `${renderedItemId(item.id)} ${bounded(item.type, MAX_RENDERED_PROTOCOL_PART)} ${item.phase}`;
+  const itemId = renderedItemId(item.id);
+  const lifecycle = `${itemId} ${bounded(item.type, MAX_RENDERED_PROTOCOL_PART)} ${item.phase}`;
   // While a text item is still streaming its own value is a growing prefix of
   // the final one, and rendering it produced a near-identical line per delta.
   // `reasoning` below already renders a constant in flight; these do the same,
@@ -171,15 +172,20 @@ function renderItem(item: ItemState, settled: boolean): readonly string[] {
         `${lifecycle}: ${command} (${cwd}), exit ${typeof exitCode === "number" ? exitCode : "pending"}`,
       ),
     ];
+    // The item id carries because reportTurnState skips a line it has already
+    // written keyed on the whole string, and an output line named by its text
+    // alone is identical between two commands that printed the same thing: the
+    // second command's output was dropped entirely.
+    const outputLifecycle = `${itemId} Command output`;
     // A chunk's ordinal names the total, so a total that grows with every
-    // delta would rewrite each earlier line and defeat reportTurnState's
-    // write-once skip. The split therefore waits until the output stops
-    // changing; while it streams the value keeps its single bounded line.
+    // delta would rewrite each earlier line and defeat that same skip. The
+    // split therefore waits until the output stops changing; while it streams
+    // the value keeps its single bounded line.
     if (output)
       lines.push(
         ...(item.phase === "completed"
-          ? messageLines("Command output", output)
-          : [bounded(`Command output: ${output}`)]),
+          ? messageLines(outputLifecycle, output)
+          : [bounded(`${outputLifecycle}: ${output}`)]),
       );
     if (item.phase === "completed") completedItemLines.set(item, lines);
     return lines;
