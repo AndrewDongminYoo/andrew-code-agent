@@ -1338,8 +1338,11 @@ test("refuses a summary completion whose retained inventory is corrupted", () =>
 
 // Raising the message bound must not raise every other retained field with it:
 // a turn can carry many long metadata values, and the renderer shows only a
-// bounded line of each regardless.
-test("only message text takes the larger retained bound", () => {
+// bounded line of each regardless. Command output is the one exception, and it
+// is content rather than metadata: the renderer emits it across as many bounded
+// lines as it needs once the command completes, so retaining a field's worth of
+// it would discard what the operator asked to see.
+test("message text and command output take the larger retained bound", () => {
   const long = "x".repeat(5000);
   const state = stateWith([
     completed(item("agentMessage", "msg-1", { text: long })),
@@ -1353,15 +1356,30 @@ test("only message text takes the larger retained bound", () => {
   assert.ok(message.length <= 4096, `message kept ${message.length}`);
   const files = state.items.get("files-1").value.files[0];
   const command = state.items.get("cmd-1").value;
+  assert.ok(command.output.length > 512, `command output kept only ${command.output.length}`);
+  assert.ok(command.output.length <= 4096, `command output kept ${command.output.length}`);
   for (const [name, value] of [
     ["file path", files.path],
     ["file kind", files.kind],
     ["command", command.command],
     ["cwd", command.cwd],
-    ["output", command.output],
     ["subagent label", state.items.get("subagent-1").value.label],
     ["subagent activity kind", state.items.get("subagent-1").value.activityKind],
     ["warning", state.warnings[0]],
   ])
     assert.ok(value.length <= 512, `${name} kept ${value.length}`);
+});
+
+// The completed item and the streaming deltas reach the retained value through
+// two different branches. They have to agree on the bound, or a long command
+// would grow past a field's worth while running and shrink when it finished.
+test("streaming command output accumulates under the command-output bound", () => {
+  const state = stateWith([
+    started(item("commandExecution", "cmd-1", { command: "npm test", cwd: "/repo", exitCode: null, aggregatedOutput: "" })),
+    ...Array.from({ length: 10 }, () => ({ method: "item/commandExecution/outputDelta", params: { threadId: "thread-1", turnId: "turn-1", itemId: "cmd-1", delta: "y".repeat(600) } })),
+  ]);
+  const output = state.items.get("cmd-1").value.output;
+  assert.ok(output.length > 512, `streaming output kept only ${output.length}`);
+  assert.ok(output.length <= 4096, `streaming output kept ${output.length}`);
+  assert.ok(output.endsWith("[truncated]"), "an over-long stream must carry the truncation marker");
 });

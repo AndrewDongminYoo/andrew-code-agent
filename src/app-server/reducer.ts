@@ -38,6 +38,12 @@ const MAX_FIELD_LENGTH = 512;
 // Only a message is kept at the larger size, because it is the one value the
 // operator reads in full and 512 cut real summaries mid-sentence.
 const MAX_MESSAGE_LENGTH = 4096;
+// Command output is content, not metadata like `command` and `cwd` beside it.
+// The renderer emits it across as many bounded lines as it needs once the
+// command completes, so retaining only a field's worth would discard what the
+// operator asked to see. This is the one place that owns the retained size;
+// the renderer chunks whatever arrives and never restates the number.
+const MAX_COMMAND_OUTPUT_LENGTH = 4096;
 const MAX_ITEMS = 64;
 const MAX_OMITTED_ITEM_AUTHORITY = 64;
 const MAX_WARNINGS = 16;
@@ -359,7 +365,7 @@ function safeItem(item: unknown, phase: ItemState["phase"]): ItemState {
       exitCode: typeof raw.exitCode === "number" ? raw.exitCode : null,
       output:
         typeof raw.aggregatedOutput === "string"
-          ? bounded(raw.aggregatedOutput)
+          ? bounded(raw.aggregatedOutput, MAX_COMMAND_OUTPUT_LENGTH)
           : null,
     };
   } else if (type === "fileChange") {
@@ -648,7 +654,13 @@ export function reduceServerMessage(
       const previous = typeof value.output === "string" ? value.output : "";
       return {
         ...item,
-        value: { ...value, output: bounded(`${previous}${params.delta}`) },
+        value: {
+          ...value,
+          output: bounded(
+            `${previous}${params.delta}`,
+            MAX_COMMAND_OUTPUT_LENGTH,
+          ),
+        },
       };
     });
   }
