@@ -47,6 +47,7 @@ const findingOrder = [
   "HOOK_READINESS",
   "INTERPRETER_READINESS",
   "STRICT_CONFIG",
+  "SANDBOX_BOUNDARY",
   "OPTIONAL_ORACLE",
   "OPTIONAL_SHARED_MEMORY",
   "PROCESS_LOCK",
@@ -1235,5 +1236,25 @@ test("turns injected cleanup failure into the stable scratch blocker", async () 
       message: "Doctor scratch cleanup failed.",
       remediation: "Remove the doctor scratch directory before retrying.",
     });
+  });
+});
+
+test("names the managed write boundary before a turn starts, without a personal path", async () => {
+  await withFixture({}, async (fixture) => {
+    const boundary = finding(await runUnchanged(fixture), "SANDBOX_BOUNDARY");
+
+    // A statement of the contract, not a health check: there is nothing here
+    // that can fail, and a run that reaches doctor already satisfies it.
+    assert.equal(boundary.severity, "ready");
+
+    // The three facts measured in docs/notes/2026-09-02-sandbox-boundary-measurement.md.
+    assert.match(boundary.message, /repository/);
+    assert.match(boundary.message, /\/tmp/);
+    assert.match(boundary.message, /TMPDIR/);
+
+    // Issue #23 step 5: the boundary is named by class, never by this
+    // machine's spelling of it.
+    assert.doesNotMatch(boundary.message, /\/Users\//);
+    assert.doesNotMatch(boundary.message, /\/Volumes\//);
   });
 });
