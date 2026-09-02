@@ -11,7 +11,7 @@
 // are written immediately.
 
 import { appendFileSync } from "node:fs";
-import { appendFile, readFile } from "node:fs/promises";
+import { appendFile, cp, readFile } from "node:fs/promises";
 
 const { REQUIRED_CODEX_VERSION } = await import(
   new URL("../../dist/constants.js", import.meta.url).href
@@ -25,6 +25,26 @@ const [command] = args;
 
 if (command === "--version") {
   process.stdout.write(`codex-cli ${REQUIRED_CODEX_VERSION}\n`);
+  process.exit(0);
+}
+
+// Doctor regenerates the app-server contract and compares its digest against
+// REQUIRED_CODEX_CONTRACT_DIGEST, and the compiled CLI offers no way to inject
+// a different expectation. A stand-in for the pinned binary therefore has to
+// emit the pinned contract, which is exactly the committed trees.
+const generatorSources = {
+  "generate-ts": "../../src/generated/codex-app-server/",
+  "generate-json-schema": "../../schemas/codex-app-server/",
+};
+if (
+  command === "app-server" &&
+  args.length === 4 &&
+  args[2] === "--out" &&
+  Object.hasOwn(generatorSources, args[1])
+) {
+  await cp(new URL(generatorSources[args[1]], import.meta.url), args[3], {
+    recursive: true,
+  });
   process.exit(0);
 }
 

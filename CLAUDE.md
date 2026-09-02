@@ -175,6 +175,15 @@ Removing one silently widens the product contract:
   its mode is still constrained, to `0600` on top of the ordinary two.
 - Approvals fail closed on any unknown or malformed request, and the
   coordinator cleans up before releasing the lock.
+- A resolved Codex binary that reports the pinned version must also regenerate
+  the pinned contract. Doctor's `SCHEMA_COMPATIBILITY` runs the two generator
+  subcommands into its scratch root and compares the digest against
+  `REQUIRED_CODEX_CONTRACT_DIGEST`; a mismatch is a blocker, so a binary that
+  generates a different contract cannot reach the App Server even when it
+  reports the pinned version. This pins the generator's output, not the
+  protocol the server then speaks, and it says nothing about whether
+  hand-written code such as `src/app-server/approvals.ts` agrees with the
+  committed schemas.
 - A stale publication lock is not auto-recovered.
 
 ## Generated contract
