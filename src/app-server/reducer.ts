@@ -28,6 +28,13 @@ export interface TurnState {
   readonly omittedWarnings: number;
   readonly terminalInventoryDigest: string | null;
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
+  // The last measurement the App Server reported for this thread, or null
+  // when it reported none. `contextWindow` is null when the server did not
+  // name one, which leaves the total usable and the ratio undefined.
+  readonly tokenUsage: {
+    readonly totalTokens: number;
+    readonly contextWindow: number | null;
+  } | null;
 }
 
 // UTF-16 code units, unlike the renderer's escaped-byte bound. Every retained
@@ -562,7 +569,16 @@ export function createTurnState(threadId: string, turnId: string): TurnState {
     omittedWarnings: 0,
     terminalInventoryDigest: null,
     terminalStatus: "running",
+    tokenUsage: null,
   };
+}
+
+function tokenCount(value: unknown, minimum = 0): number | null {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= minimum
+    ? value
+    : null;
 }
 
 export function reduceServerMessage(
@@ -731,6 +747,39 @@ export function reduceServerMessage(
     requireIdentity(state, params);
     if (state.terminalStatus !== "running") return state;
     return { ...state, diff: bounded(params.diff) };
+  }
+  if (message.method === "thread/tokenUsage/updated") {
+    // The one branch that never throws. Every other known method rejects a
+    // malformed frame, and that rejection reaches processNotification's catch,
+    // which calls failClosed() and interrupts the turn — the failure recorded
+    // in docs/notes/2026-08-26-issue-24-instrumented-runs.md. This value is
+    // informational, so anything unreadable leaves the last snapshot in place
+    // rather than costing the operator the run.
+    if (
+      params === null ||
+      params.threadId !== state.threadId ||
+      params.turnId !== state.turnId ||
+      !isRecord(params.tokenUsage)
+    )
+      return state;
+    const usage = params.tokenUsage;
+    // `last`, not `total`. Every upstream completion re-sends the whole
+    // conversation, and `total` sums one breakdown per completion, so it
+    // climbs by the conversation's size each time and passes the window on a
+    // long turn: a real turn measured 26987, 54888, 84746 and 114924 against
+    // a 258400 window while it never held more than about 30000. `last` is
+    // the completion that is actually in the model's context.
+    const totalTokens = tokenCount(
+      isRecord(usage.last) ? usage.last.totalTokens : undefined,
+    );
+    if (totalTokens === null) return state;
+    return {
+      ...state,
+      tokenUsage: {
+        totalTokens,
+        contextWindow: tokenCount(usage.modelContextWindow, 1),
+      },
+    };
   }
   if (message.method === "warning") {
     if (!params || typeof params.message !== "string")

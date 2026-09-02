@@ -43,6 +43,7 @@ const makeRecord = (threadId, repositoryRoot, overrides = {}) => ({
   finalGitStatus: null,
   requestedCapabilities: [],
   oracleRootDigest: null,
+  tokenUsage: null,
   ...overrides,
 });
 
@@ -266,6 +267,7 @@ test("the capability grant round-trips, migrates from schema 1, and refuses a co
     const legacy = makeRecord("legacy", repositoryRoot);
     delete legacy.requestedCapabilities;
     delete legacy.oracleRootDigest;
+    delete legacy.tokenUsage;
     await writeFile(join(stateRoot, "threads", "legacy.json"), JSON.stringify(legacy), { mode: 0o600 });
     const migrated = await threads.readThreadRecord(stateRoot, "legacy");
     assert.deepEqual(migrated.requestedCapabilities, []);
@@ -286,5 +288,80 @@ test("the capability grant round-trips, migrates from schema 1, and refuses a co
       await writeFile(join(stateRoot, "threads", `${name}.json`), JSON.stringify(makeRecord(name, repositoryRoot, override)), { mode: 0o600 });
       await assert.rejects(threads.readThreadRecord(stateRoot, name), { code: "THREAD_CORRUPT" }, JSON.stringify(override));
     }
+  });
+});
+
+test("the token usage snapshot round-trips, migrates from every earlier schema, and refuses a corrupt one", async () => {
+  await withStore(async ({ stateRoot, repositoryRoot }) => {
+    const threads = requireThreads();
+
+    // The measurement survives a write and a read in another process's shape.
+    const measured = makeRecord("measured", repositoryRoot, { tokenUsage: { totalTokens: 204000, contextWindow: 272000 } });
+    await threads.writeThreadRecord(stateRoot, measured);
+    assert.deepEqual((await threads.readThreadRecord(stateRoot, "measured")).tokenUsage, { totalTokens: 204000, contextWindow: 272000 });
+
+    // A window the server never reported is a value, not corruption.
+    const windowless = makeRecord("windowless", repositoryRoot, { tokenUsage: { totalTokens: 1300, contextWindow: null } });
+    await threads.writeThreadRecord(stateRoot, windowless);
+    assert.deepEqual((await threads.readThreadRecord(stateRoot, "windowless")).tokenUsage, { totalTokens: 1300, contextWindow: null });
+
+    // Records written before this field reads as no measurement rather than
+    // as corruption, from both earlier schemas.
+    const schema2 = makeRecord("schema-2", repositoryRoot);
+    delete schema2.tokenUsage;
+    await writeFile(join(stateRoot, "threads", "schema-2.json"), JSON.stringify(schema2), { mode: 0o600 });
+    assert.equal((await threads.readThreadRecord(stateRoot, "schema-2")).tokenUsage, null);
+    const schema1 = makeRecord("schema-1", repositoryRoot);
+    delete schema1.requestedCapabilities;
+    delete schema1.oracleRootDigest;
+    delete schema1.tokenUsage;
+    await writeFile(join(stateRoot, "threads", "schema-1.json"), JSON.stringify(schema1), { mode: 0o600 });
+    const migrated = await threads.readThreadRecord(stateRoot, "schema-1");
+    assert.deepEqual(migrated.requestedCapabilities, []);
+    assert.equal(migrated.tokenUsage, null);
+
+    // Each field is refused on its own terms rather than tolerated.
+    const corrupt = [
+      { tokenUsage: 204000 },
+      { tokenUsage: [] },
+      { tokenUsage: {} },
+      { tokenUsage: { totalTokens: 204000 } },
+      { tokenUsage: { totalTokens: 204000, contextWindow: 272000, ratio: 0.75 } },
+      { tokenUsage: { totalTokens: -1, contextWindow: null } },
+      { tokenUsage: { totalTokens: 1.5, contextWindow: null } },
+      { tokenUsage: { totalTokens: "204000", contextWindow: null } },
+      { tokenUsage: { totalTokens: 204000, contextWindow: 0 } },
+      { tokenUsage: { totalTokens: 204000, contextWindow: -272000 } },
+    ];
+    for (const [index, override] of corrupt.entries()) {
+      const name = `token-corrupt-${index}`;
+      await writeFile(join(stateRoot, "threads", `${name}.json`), JSON.stringify(makeRecord(name, repositoryRoot, override)), { mode: 0o600 });
+      await assert.rejects(threads.readThreadRecord(stateRoot, name), { code: "THREAD_CORRUPT" }, JSON.stringify(override));
+    }
+  });
+});
+
+test("a record whose repository is gone does not block the lookup for a live one", async () => {
+  await withStore(async ({ root, stateRoot, repositoryRoot }) => {
+    const threads = requireThreads();
+    const departed = join(root, "departed");
+    await mkdir(departed);
+    await threads.writeThreadRecord(stateRoot, makeRecord("departed", departed));
+    await threads.writeThreadRecord(stateRoot, makeRecord("live", repositoryRoot));
+    await rm(departed, { recursive: true });
+
+    // A repository that moved or was deleted says nothing about the records
+    // of the repositories still here, and every stored record names some
+    // repository, so one departure must not take the whole store with it.
+    assert.equal((await threads.findLatestThreadRecord(stateRoot, repositoryRoot)).threadId, "live");
+
+    // The record itself is intact, so reading it by ID reports it rather than
+    // corruption. Its repository's absence surfaces where the repository is
+    // actually used, which is the Git preflight.
+    assert.equal((await threads.readThreadRecord(stateRoot, "departed")).repositoryRoot, departed);
+
+    // The departed repository is still not the live one, so asking for it
+    // under the live root is a mismatch rather than a match or a corruption.
+    await assert.rejects(threads.readThreadRecord(stateRoot, "departed", repositoryRoot), { code: "THREAD_REPOSITORY_MISMATCH" });
   });
 });

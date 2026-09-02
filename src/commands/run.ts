@@ -15,7 +15,7 @@ import {
   startNewThread,
   type CoordinatorDependencies,
 } from "../app-server/coordinator.js";
-import { renderTurnState } from "../app-server/renderer.js";
+import { formatTokenUsage, renderTurnState } from "../app-server/renderer.js";
 import { boundedTerminalText } from "../app-server/terminal.js";
 import { ArtifactError, buildBundle } from "../bundle/artifact.js";
 import { RenderError, type CapabilityInputs } from "../bundle/render.js";
@@ -342,6 +342,10 @@ export async function renderFinalRecord(
     output,
     `Final Git status: ${bounded(record.finalGitStatus ?? "unavailable")}`,
   );
+  // Absent rather than "unavailable": a run the App Server never measured has
+  // no pressure to report, and a placeholder would read as one.
+  const usage = formatTokenUsage(record.tokenUsage);
+  if (usage !== null) await writeLine(output, usage);
 }
 
 export async function renderLocalRecord(
