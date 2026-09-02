@@ -331,8 +331,11 @@ behind a fallback.
   status or diff exceeds that fails rather than truncating silently.
 - **Protocol lines are bounded at 16 MiB** of UTF-8 wire bytes.
 - **A turn's final item list is not a complete inventory.** `codex-cli
-0.152.1` completes every turn with a summary item view, so the terminal
-  status is authoritative but the item list that arrives with it is not.
+0.152.1` completes a turn with an item view that is not the full inventory,
+  so the terminal status is authoritative but the item list that arrives with
+  it is not. Which view arrives depends on how the turn ended: a completed
+  turn was measured as `summary` and an interrupted one as `notLoaded`, both
+  against 0.148.0, and the reducer accepts either.
   What the agent reports is what it observed while the turn streamed.
 - **A stale lock is not reclaimed automatically.**
 - **Piping output to a reader that closes early misreports the outcome.**

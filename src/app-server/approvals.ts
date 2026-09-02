@@ -472,6 +472,12 @@ function validPermissions(value: unknown): boolean {
 function validCommandParams(params: RecordValue): boolean {
   if (
     !hasOnlyKeys(params, [
+      // Added by codex 0.152.1, which declares it required: it separates a
+      // command from input written into an already-running terminal. Absent
+      // stays valid, because the field's own documentation says older servers
+      // default it to `command`, and this list is an allowlist rather than an
+      // exact set.
+      "kind",
       "threadId",
       "turnId",
       "itemId",
@@ -498,6 +504,15 @@ function validCommandParams(params: RecordValue): boolean {
     !requiredString(params, "itemId") ||
     !Number.isSafeInteger(params.startedAtMs) ||
     !nullableString(params.environmentId)
+  )
+    return false;
+  // An unrecognised kind is a shape this build does not understand, and the
+  // approval path answers those by refusing rather than by guessing which of
+  // the two it resembles.
+  if (
+    params.kind !== undefined &&
+    params.kind !== "command" &&
+    params.kind !== "writeStdin"
   )
     return false;
   if (
@@ -610,6 +625,11 @@ function validParams(method: KnownMethod, params: RecordValue): boolean {
     !validJson(params._meta)
   )
     return false;
+  // Only `form` and `url` are answered. codex 0.152.1 adds `openaiForm` to
+  // this union, alongside the `openai/form` 0.148.0 already carried, and
+  // neither is accepted. That is the posture rather than an oversight: a mode
+  // this build cannot render is answered by refusing, not by being treated as
+  // whichever of the two it most resembles.
   if (params.mode === "form")
     return (
       hasOnlyKeys(params, [
@@ -960,6 +980,7 @@ function hasCompletePromptContext(
     return false;
   const params = request.params;
   for (const key of [
+    "kind",
     "command",
     "cwd",
     "grantRoot",
@@ -1038,6 +1059,7 @@ function prompt(
   const context: string[] = [];
   const params = request.params;
   for (const key of [
+    "kind",
     "command",
     "cwd",
     "grantRoot",
