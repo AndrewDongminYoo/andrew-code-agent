@@ -389,6 +389,15 @@ codex=~/.codex/packages/standalone/releases/0.152.1-aarch64-apple-darwin/bin/cod
 "$codex" app-server generate-json-schema --out schemas/codex-app-server
 ```
 
+Regenerating changes the trees, so it also changes
+`REQUIRED_CODEX_CONTRACT_DIGEST` in `src/constants.ts`. Doctor compares that
+digest against a tree it regenerates from the resolved binary, which is how it
+tells the pinned binary apart from a rebuilt one that reports the same version
+while emitting a different contract. Update the constant in the same commit;
+`pnpm test:unit` recomputes it from the committed trees and reports the
+computed digest as the actual value when they disagree, and running
+`andrew-agent doctor` against the pinned binary is the end-to-end check.
+
 Do not edit or format files under either generated tree by hand. The contract
 test regenerates both trees in a temporary directory and compares their
 complete relative path, mode, and byte inventories.

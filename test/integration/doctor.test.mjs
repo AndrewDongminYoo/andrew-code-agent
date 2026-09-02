@@ -29,6 +29,21 @@ const lockModule = await import("../../dist/runtime/lock.js");
 const constantsModule = await import("../../dist/constants.js");
 const sourceFixture = new URL("../fixtures/source-codex/clean/", import.meta.url);
 const authFileName = ["auth", ".json"].join("");
+const contractModule = await import("../../dist/app-server/contract-digest.js");
+
+// The fake generator's entire output. The real generator writes about 7 MiB
+// that no shell fixture can reproduce, so the fixture digests these bytes and
+// injects the result as the expected digest; doctor then compares what the fake
+// wrote against what the fixture computed, exactly as it does in production
+// against REQUIRED_CODEX_CONTRACT_DIGEST.
+const fakeContract = {
+  generated: { "v2/Thread.ts": "export interface Thread {}\n" },
+  schemas: { "v2/Thread.json": '{"title":"Thread"}\n' },
+};
+const driftedContract = {
+  generated: { "v2/Thread.ts": "export interface Thread { kind: string }\n" },
+  schemas: fakeContract.schemas,
+};
 
 const findingOrder = [
   "PRODUCT_VERSION",
@@ -181,6 +196,10 @@ async function createFixture(options = {}) {
 
   const codexBin = join(binRoot, "codex");
   await writeCodexExecutable(codexBin, options.codex ?? {});
+  const expectedContractDigest = await materializeFakeTrees(
+    join(root, "expected-contract"),
+    fakeContract,
+  );
   const paths = { sourceRoot, stateRoot, codexHome: join(stateRoot, "codex-home"), codexBin };
   const buildInput = {
     sourceRoot,
@@ -213,7 +232,37 @@ async function createFixture(options = {}) {
       scratchParent,
       commandTimeoutMs: 500,
     },
+    expectedContractDigest,
   };
+}
+
+// PATH inside the probe holds only Node's own directory, so every external
+// command needs an absolute path; redirection and printf are shell builtins.
+function writeFakeTree(files) {
+  return Object.entries(files)
+    .map(([path, contents]) => {
+      assert.equal(contents.includes("'"), false, "fake contract bytes must not need sh quoting");
+      const directory = dirname(path);
+      const parent = directory === "." ? "" : `/bin/mkdir -p "$4/${directory}"\n`;
+      return `${parent}printf '%s' '${contents}' > "$4/${path}"`;
+    })
+    .join("\n");
+}
+
+// Materializes the same bytes the fake writes, so the fixture can pin the
+// digest doctor must reproduce without duplicating the shell script's logic.
+async function materializeFakeTrees(root, files) {
+  for (const [tree, entries] of Object.entries(files)) {
+    for (const [path, contents] of Object.entries(entries)) {
+      const absolute = join(root, tree, path);
+      await mkdir(dirname(absolute), { recursive: true });
+      await writeFile(absolute, contents);
+    }
+  }
+  return contractModule.codexContractDigest({
+    generated: join(root, "generated"),
+    schemas: join(root, "schemas"),
+  });
 }
 
 async function writeCodexExecutable(path, options = {}) {
@@ -246,6 +295,19 @@ printf '%s\\n' ${JSON.stringify(version)}`
 printf '%s\\n' "$!" > ${JSON.stringify(markerPath)}
 printf '%s\\n' ${JSON.stringify(version)}`
             : `printf '%s\\n' ${JSON.stringify(version)}`;
+  const contract = options.contract ?? "success";
+  const contractFiles = contract === "drift" ? driftedContract : fakeContract;
+  const contractBody =
+    contract === "failure"
+      ? "exit 41"
+      : `/bin/mkdir -p "$4"
+if [ "$2" = "generate-ts" ]; then
+${writeFakeTree(contractFiles.generated)}
+fi
+if [ "$2" = "generate-json-schema" ]; then
+${writeFakeTree(contractFiles.schemas)}
+fi
+exit 0`;
   const strictBody =
     strict === "timeout"
       ? "trap '' TERM\nwhile :; do :; done"
@@ -274,6 +336,9 @@ fi
 if [ "$1" = "app-server" ] && [ "$2" = "--strict-config" ] && [ "$3" = "--listen" ] && [ "$4" = "stdio://" ] && [ "$#" = "4" ]; then
 ${strictDiagnostic}
 ${strictBody}
+fi
+if [ "$1" = "app-server" ] && [ "$3" = "--out" ] && [ "$#" = "4" ]; then
+${contractBody}
 fi
 exit 24
 `,
@@ -338,10 +403,12 @@ async function runUnchanged(fixture, overrides = {}, hooks) {
     ...fixture.dependencies,
     ...overrides,
   };
-  const result =
-    hooks === undefined
-      ? await requireDoctor().runDoctor(dependencies)
-      : await requireDoctor().__runDoctorForTests(dependencies, hooks);
+  // The digest override is a test hook rather than a dependency, so every
+  // invocation goes through the hook-bearing entry point.
+  const result = await requireDoctor().__runDoctorForTests(dependencies, {
+    contractDigest: fixture.expectedContractDigest,
+    ...hooks,
+  });
   assert.deepEqual(await snapshotTree(fixture.paths.sourceRoot), sourceBefore);
   assert.deepEqual(await snapshotTree(fixture.paths.stateRoot), stateBefore);
   assert.deepEqual(await snapshotTree(fixture.scratchParent), scratchBefore);
@@ -601,9 +668,13 @@ test("classifies missing and drifted active installations", async (t) => {
 test("uses exact Codex version and schema compatibility", async () => {
   await withFixture({ codex: { version: "codex-cli 0.149.0", strict: "failure" } }, async (fixture) => {
     let strictSpawns = 0;
+    let contractSpawns = 0;
     const result = await runUnchanged(fixture, {}, {
       beforeStrictSpawn() {
         strictSpawns += 1;
+      },
+      beforeContractSpawn() {
+        contractSpawns += 1;
       },
     });
     assert.equal(result.exitCode, 1);
@@ -632,6 +703,88 @@ test("uses exact Codex version and schema compatibility", async () => {
       remediation: "Install codex-cli 0.152.1 and retry.",
     });
     assert.equal(strictSpawns, 0);
+    assert.equal(contractSpawns, 0);
+  });
+});
+
+test("derives schema compatibility from the generated contract", async (t) => {
+  await t.test("accepts a binary that regenerates the pinned contract", async () => {
+    await withFixture({}, async (fixture) => {
+      const result = await runUnchanged(fixture);
+      assert.deepEqual(finding(result, "SCHEMA_COMPATIBILITY"), {
+        severity: "ready",
+        code: "SCHEMA_COMPATIBILITY",
+        message: "The generated Codex app-server contract matches the pinned one.",
+      });
+    });
+  });
+
+  // The defect this finding exists for: a binary reporting the pinned version
+  // while emitting a contract the typed callers were not built against.
+  await t.test("blocks a pinned version whose contract drifted", async () => {
+    await withFixture({ codex: { contract: "drift" } }, async (fixture) => {
+      const result = await runUnchanged(fixture);
+      assert.equal(result.exitCode, 1);
+      assert.equal(finding(result, "CODEX_VERSION").severity, "ready");
+      assert.deepEqual(finding(result, "SCHEMA_COMPATIBILITY"), {
+        severity: "blocker",
+        code: "SCHEMA_COMPATIBILITY",
+        message: "The resolved Codex binary generates a different app-server contract than the pinned one.",
+        remediation: "Reinstall codex-cli 0.152.1 from a trusted source and retry.",
+      });
+    });
+  });
+
+  // A binary that failed the contract check must not be run again by the
+  // checks downstream of a compatible version.
+  await t.test("stops the strict-config probe after a contract mismatch", async () => {
+    await withFixture({ codex: { contract: "drift" } }, async (fixture) => {
+      let strictSpawns = 0;
+      const result = await runUnchanged(fixture, {}, {
+        beforeStrictSpawn() {
+          strictSpawns += 1;
+        },
+      });
+      assert.equal(strictSpawns, 0);
+      assert.deepEqual(finding(result, "STRICT_CONFIG"), {
+        severity: "warning",
+        code: "STRICT_CONFIG",
+        message: "Strict Codex configuration validation was not evaluated because the resolved Codex binary failed the contract check.",
+        remediation: "Reinstall codex-cli 0.152.1 from a trusted source and retry.",
+      });
+    });
+  });
+
+  await t.test("blocks when the contract cannot be generated", async () => {
+    await withFixture({ codex: { contract: "failure" } }, async (fixture) => {
+      const result = await runUnchanged(fixture);
+      assert.equal(result.exitCode, 1);
+      assert.equal(finding(result, "CODEX_VERSION").severity, "ready");
+      assert.deepEqual(finding(result, "SCHEMA_COMPATIBILITY"), {
+        severity: "blocker",
+        code: "SCHEMA_COMPATIBILITY",
+        message: "Codex schema compatibility cannot be established.",
+        remediation: "Reinstall codex-cli 0.152.1 from a trusted source and retry.",
+      });
+    });
+  });
+
+  // The scratch root is removed before the run returns, so the home has to be
+  // inspected while the hook holds it.
+  await t.test("generates into a fresh owner-only scratch home", async () => {
+    await withFixture({}, async (fixture) => {
+      let observations = 0;
+      await runUnchanged(fixture, {}, {
+        async beforeContractSpawn(codexHome) {
+          observations += 1;
+          assert.notEqual(codexHome, fixture.paths.codexHome);
+          const metadata = await lstat(codexHome);
+          assert.equal(metadata.isDirectory(), true);
+          assert.equal(metadata.mode & 0o777, 0o700);
+        },
+      });
+      assert.equal(observations, 1);
+    });
   });
 });
 
