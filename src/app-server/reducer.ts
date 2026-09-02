@@ -755,15 +755,22 @@ export function reduceServerMessage(
     // in docs/notes/2026-08-26-issue-24-instrumented-runs.md. This value is
     // informational, so anything unreadable leaves the last snapshot in place
     // rather than costing the operator the run.
-    const usage =
-      params !== null && isRecord(params.tokenUsage) ? params.tokenUsage : null;
     if (
-      usage === null ||
-      (typeof params?.turnId === "string" && params.turnId !== state.turnId)
+      params === null ||
+      params.threadId !== state.threadId ||
+      params.turnId !== state.turnId ||
+      !isRecord(params.tokenUsage)
     )
       return state;
+    const usage = params.tokenUsage;
+    // `last`, not `total`. Every upstream completion re-sends the whole
+    // conversation, and `total` sums one breakdown per completion, so it
+    // climbs by the conversation's size each time and passes the window on a
+    // long turn: a real turn measured 26987, 54888, 84746 and 114924 against
+    // a 258400 window while it never held more than about 30000. `last` is
+    // the completion that is actually in the model's context.
     const totalTokens = tokenCount(
-      isRecord(usage.total) ? usage.total.totalTokens : undefined,
+      isRecord(usage.last) ? usage.last.totalTokens : undefined,
     );
     if (totalTokens === null) return state;
     return {

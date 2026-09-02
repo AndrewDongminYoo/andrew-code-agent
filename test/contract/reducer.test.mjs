@@ -1388,29 +1388,43 @@ function tokenUsageNotification(tokenUsage, identity = {}) {
   return { method: "thread/tokenUsage/updated", params: { threadId: "thread-1", turnId: "turn-1", ...identity, tokenUsage } };
 }
 
-test("keeps the last token usage snapshot and never rejects a malformed one", () => {
+const breakdown = (totalTokens) => ({ totalTokens, inputTokens: totalTokens, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 });
+
+test("measures context occupancy from the last completion, not the thread total", () => {
   const api = reducer();
   const base = api.createTurnState("thread-1", "turn-1");
   assert.equal(base.tokenUsage, null);
 
-  const measured = api.reduceServerMessage(base, tokenUsageNotification({ total: { totalTokens: 1200, inputTokens: 1000, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 200, reasoningOutputTokens: 0 }, last: { totalTokens: 40, inputTokens: 30, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 0 }, modelContextWindow: 272000 }));
-  assert.deepEqual(measured.tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
+  // `total` accumulates one entry per upstream completion, and every
+  // completion re-sends the whole conversation, so it climbs by the
+  // conversation's size each time and passes the window on a long turn. A
+  // real turn measured 26987, 54888, 84746, 114924 against a 258400 window
+  // while it never held more than about 30000. `last` is the completion that
+  // is actually in the model's context.
+  const measured = api.reduceServerMessage(base, tokenUsageNotification({ total: breakdown(114924), last: breakdown(30178), modelContextWindow: 258400 }));
+  assert.deepEqual(measured.tokenUsage, { totalTokens: 30178, contextWindow: 258400 });
 
   // A window the server does not report still yields a usable total.
-  const windowless = api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 1300 }, modelContextWindow: null }));
+  const windowless = api.reduceServerMessage(measured, tokenUsageNotification({ last: breakdown(1300), modelContextWindow: null }));
   assert.deepEqual(windowless.tokenUsage, { totalTokens: 1300, contextWindow: null });
 
   // Every malformed shape keeps the last snapshot rather than throwing. A
   // known method that throws reaches the coordinator's failClosed path and
   // interrupts the turn, which is far worse than a stale usage line.
-  for (const malformed of [null, {}, { total: null }, { total: {} }, { total: { totalTokens: -1 } }, { total: { totalTokens: 1.5 } }, { total: { totalTokens: "many" } }, { total: { totalTokens: Number.MAX_SAFE_INTEGER + 2 } }])
-    assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification(malformed)).tokenUsage, { totalTokens: 1200, contextWindow: 272000 }, JSON.stringify(malformed));
-  assert.deepEqual(api.reduceServerMessage(measured, { method: "thread/tokenUsage/updated" }).tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
+  for (const malformed of [null, {}, { last: null }, { last: {} }, { total: breakdown(500) }, { last: { totalTokens: -1 } }, { last: { totalTokens: 1.5 } }, { last: { totalTokens: "many" } }, { last: { totalTokens: Number.MAX_SAFE_INTEGER + 2 } }])
+    assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification(malformed)).tokenUsage, { totalTokens: 30178, contextWindow: 258400 }, JSON.stringify(malformed));
+  assert.deepEqual(api.reduceServerMessage(measured, { method: "thread/tokenUsage/updated" }).tokenUsage, { totalTokens: 30178, contextWindow: 258400 });
 
   // An unusable window is dropped on its own terms, and the total survives.
-  assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 1300 }, modelContextWindow: 0 })).tokenUsage, { totalTokens: 1300, contextWindow: null });
+  assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ last: breakdown(1300), modelContextWindow: 0 })).tokenUsage, { totalTokens: 1300, contextWindow: null });
 
-  // Another thread's frame and another turn's frame are both ignored.
-  assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 9999 }, modelContextWindow: 272000 }, { threadId: "thread-2" })).tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
-  assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 9999 }, modelContextWindow: 272000 }, { turnId: "turn-2" })).tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
+  // The frame must name this thread and this turn as strings. A missing or
+  // non-string identifier is a protocol violation, and this is the first
+  // branch where accepting one would write state.
+  for (const identity of [{ threadId: "thread-2" }, { turnId: "turn-2" }, { threadId: 1 }, { turnId: 1 }])
+    assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ last: breakdown(9999), modelContextWindow: 258400 }, identity)).tokenUsage, { totalTokens: 30178, contextWindow: 258400 }, JSON.stringify(identity));
+  // A frame that names no turn at all is the case the earlier guard missed:
+  // it read a non-string turnId as "no mismatch" and attributed the frame to
+  // whichever turn was running.
+  assert.deepEqual(api.reduceServerMessage(measured, { method: "thread/tokenUsage/updated", params: { threadId: "thread-1", tokenUsage: { last: breakdown(9999), modelContextWindow: 258400 } } }).tokenUsage, { totalTokens: 30178, contextWindow: 258400 });
 });

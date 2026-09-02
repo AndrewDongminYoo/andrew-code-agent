@@ -336,6 +336,7 @@ async function finalizeWithoutTurn(
     readonly threadId: string;
     readonly repositoryRoot: string;
     readonly startingHead: string;
+    readonly priorTokenUsage: ThreadRecord["tokenUsage"];
   },
   dependencies: CoordinatorDependencies,
   lifecycle: ClientLifecycle,
@@ -359,7 +360,7 @@ async function finalizeWithoutTurn(
     requestedCapabilities: dependencies.releaseIdentity.requestedCapabilities,
     oracleRootDigest: dependencies.releaseIdentity.oracleRootDigest,
     finalGitStatus: finalSnapshot.porcelainV2,
-    tokenUsage: null,
+    tokenUsage: identity.priorTokenUsage,
   };
   await dependencies.threadStore.writeThreadRecord(
     dependencies.stateRoot,
@@ -375,6 +376,7 @@ function runningRecord(
   startingHead: string,
   turnId: string,
   release: ReleaseIdentity,
+  priorTokenUsage: ThreadRecord["tokenUsage"],
 ): ThreadRecord {
   return {
     threadId,
@@ -389,7 +391,7 @@ function runningRecord(
     requestedCapabilities: release.requestedCapabilities,
     oracleRootDigest: release.oracleRootDigest,
     finalGitStatus: null,
-    tokenUsage: null,
+    tokenUsage: priorTokenUsage,
   };
 }
 
@@ -399,6 +401,7 @@ async function runTurn(
     readonly threadId: string;
     readonly repositoryRoot: string;
     readonly startingHead: string;
+    readonly priorTokenUsage: ThreadRecord["tokenUsage"];
   },
   dependencies: CoordinatorDependencies,
   lifecycle: ClientLifecycle,
@@ -624,6 +627,7 @@ async function runTurn(
       identity.startingHead,
       turnId,
       dependencies.releaseIdentity,
+      identity.priorTokenUsage,
     );
     if (!settled)
       await dependencies.threadStore.writeThreadRecord(
@@ -669,7 +673,10 @@ async function runTurn(
       terminalHead: finalSnapshot.head,
       terminalStatus,
       finalGitStatus: finalSnapshot.porcelainV2,
-      tokenUsage: state?.tokenUsage ?? null,
+      // The turn's own measurement when it reported one, and otherwise the
+      // figure the thread already had. A turn that reported nothing has not
+      // disproved the last one.
+      tokenUsage: state?.tokenUsage ?? identity.priorTokenUsage,
     };
     await dependencies.threadStore.writeThreadRecord(
       dependencies.stateRoot,
@@ -762,7 +769,12 @@ export async function startNewThread(
     delegatesClientLifecycle = true;
     return await runTurn(
       prompt,
-      { threadId, repositoryRoot, startingHead: snapshot.head },
+      {
+        threadId,
+        repositoryRoot,
+        startingHead: snapshot.head,
+        priorTokenUsage: null,
+      },
       dependencies,
       lifecycle,
       interruptLatch,
@@ -819,7 +831,12 @@ export async function resumeThread(
       if ((interruptLatch?.count() ?? 0) < 2) throw error;
       return await finalizeWithoutTurn(
         "interrupted",
-        { threadId, repositoryRoot, startingHead: snapshot.head },
+        {
+          threadId,
+          repositoryRoot,
+          startingHead: snapshot.head,
+          priorTokenUsage: record.tokenUsage,
+        },
         dependencies,
         lifecycle,
       );
@@ -830,7 +847,12 @@ export async function resumeThread(
     delegatesClientLifecycle = true;
     return await runTurn(
       prompt,
-      { threadId, repositoryRoot, startingHead: snapshot.head },
+      {
+        threadId,
+        repositoryRoot,
+        startingHead: snapshot.head,
+        priorTokenUsage: record.tokenUsage,
+      },
       dependencies,
       lifecycle,
       interruptLatch!,

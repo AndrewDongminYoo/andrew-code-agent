@@ -2304,7 +2304,7 @@ test("carries the last token usage measurement into the persisted terminal recor
       params: {
         threadId: client.threadId,
         turnId: client.turnId,
-        tokenUsage: { total: { totalTokens: 204000 }, last: { totalTokens: 40 }, modelContextWindow: 272000 },
+        tokenUsage: { total: { totalTokens: 618000 }, last: { totalTokens: 204000 }, modelContextWindow: 272000 },
       },
     });
     client.emitNotification(
@@ -2322,4 +2322,46 @@ test("carries the last token usage measurement into the persisted terminal recor
   assert.equal(fixture.writes[0].tokenUsage, null);
   assert.deepEqual(result.tokenUsage, { totalTokens: 204000, contextWindow: 272000 });
   assert.deepEqual(fixture.writes.at(-1).tokenUsage, { totalTokens: 204000, contextWindow: 272000 });
+});
+
+test("a resume carries the stored measurement until the turn reports a new one", async () => {
+  const prior = { totalTokens: 30178, contextWindow: 258400 };
+
+  // An interrupt before threadResume returns finalizes without a turn, and
+  // that record is the whole thread's record. Writing null there discards the
+  // only measurement the thread has, which is exactly the number a resumed
+  // thread is long enough to need.
+  const forced = harness({ record: existingRecord({ tokenUsage: prior }) });
+  forced.client.threadResume = async function (params) {
+    this.calls.push(["threadResume", params]);
+    queueMicrotask(() => {
+      forced.interrupt();
+      forced.interrupt();
+    });
+    return await new Promise((_, reject) => {
+      this.rejectPendingResume = reject;
+    });
+  };
+  forced.client.onClose = async () => {
+    forced.client.rejectPendingResume?.(Object.assign(new Error("closed"), { code: "APP_SERVER_CLOSED" }));
+  };
+  const interrupted = await coordinator().resumeThread("thread-1", "continue", forced.dependencies);
+  assert.equal(interrupted.terminalStatus, "interrupted");
+  assert.deepEqual(interrupted.tokenUsage, prior);
+  assert.deepEqual(forced.writes.at(-1).tokenUsage, prior);
+
+  // The running record is written before the turn reports anything, so it
+  // carries the stored value too rather than a hole a kill would make
+  // permanent.
+  const resumed = harness({ record: existingRecord({ tokenUsage: prior }) });
+  resumed.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "thread/tokenUsage/updated",
+      params: { threadId: client.threadId, turnId: client.turnId, tokenUsage: { last: { totalTokens: 41000 }, modelContextWindow: 258400 } },
+    });
+    client.emitNotification(terminalNotification(client.threadId, client.turnId, "completed"));
+  };
+  const completed = await coordinator().resumeThread("thread-1", "continue", resumed.dependencies);
+  assert.deepEqual(resumed.writes.find((record) => record.terminalStatus === "running").tokenUsage, prior);
+  assert.deepEqual(completed.tokenUsage, { totalTokens: 41000, contextWindow: 258400 });
 });
