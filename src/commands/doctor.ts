@@ -137,6 +137,23 @@ async function runDoctorInternal(
 
   classifyProduct(dependencies, findings);
   classifyPlatform(dependencies, findings);
+  // Unconditional, like the two above it, and deliberately outside the fallible
+  // region below: a statement of the sandbox contract cannot fail, so it must
+  // not be able to reach ensureAllFindings unset and be reported as a
+  // diagnostic that "could not be completed". No path reaches that today —
+  // every diagnostic below catches its own failure — but the placement is what
+  // makes the guarantee, not the absence of a caller. The three facts are
+  // measured in docs/notes/2026-09-02-sandbox-boundary-measurement.md, and the
+  // boundary is named by class because a finding is terminal output and #23
+  // step 5 keeps personal paths out of it. Changing the policy in
+  // coordinator.ts means changing this sentence.
+  setReady(
+    findings,
+    "SANDBOX_BOUNDARY",
+    "A managed turn may write inside the target repository and /tmp, and " +
+      "nowhere else; network access is off, and TMPDIR is unset in the " +
+      "managed child, so a toolchain that honours it falls back to /tmp.",
+  );
 
   try {
     scratchRoot = await createScratchRoot(
@@ -282,22 +299,6 @@ async function runDoctorInternal(
           : `Install codex-cli ${REQUIRED_CODEX_VERSION} and retry.`,
       );
     }
-
-    // A statement of the contract rather than a check: nothing here can fail,
-    // and it is here so the boundary is named before a turn hits it instead of
-    // being inferred from an error afterwards. The three facts are measured in
-    // docs/notes/2026-09-02-sandbox-boundary-measurement.md, and the sandbox
-    // refuses with EPERM where an ordinary permission failure gives EACCES.
-    // The boundary is named by class; no root is spelled out, because a
-    // diagnostic is terminal output and #23 step 5 keeps personal paths out of
-    // it. Changing the policy in coordinator.ts means changing this sentence.
-    setReady(
-      findings,
-      "SANDBOX_BOUNDARY",
-      "A managed turn may write inside the target repository and /tmp, and " +
-        "nowhere else; network access is off, and TMPDIR is unset in the " +
-        "managed child, so a toolchain that honours it falls back to /tmp.",
-    );
 
     setWarning(
       findings,
