@@ -81,7 +81,8 @@ const findingOrder = [
 
 type FindingCode = (typeof findingOrder)[number];
 type MutableFindings = Map<FindingCode, DiagnosticFinding>;
-type CodexVersionState = "compatible" | "wrong-version" | "unavailable";
+type CodexVersionState =
+  "compatible" | "contract-mismatch" | "wrong-version" | "unavailable";
 const severityOrder = { blocker: 0, warning: 1, ready: 2 } as const;
 const maxChildOutputBytes = 64 * 1024;
 const maxAuthenticationBytes = 64 * 1024;
@@ -295,6 +296,15 @@ async function runDoctorInternal(
         inspection.active,
         findings,
         hooks,
+      );
+    } else if (codexVersionState === "contract-mismatch") {
+      setWarning(
+        findings,
+        "STRICT_CONFIG",
+        "Strict Codex configuration validation was not evaluated because the " +
+          "resolved Codex binary failed the contract check.",
+        `Reinstall codex-cli ${REQUIRED_CODEX_VERSION} from a trusted source ` +
+          "and retry.",
       );
     } else if (codexVersionState === "wrong-version") {
       setWarning(
@@ -679,8 +689,14 @@ async function classifyCodexVersion(
         "CODEX_VERSION",
         "The resolved Codex version is supported.",
       );
-      await classifyCodexContract(dependencies, scratchRoot, findings, hooks);
-      return "compatible";
+      return (await classifyCodexContract(
+        dependencies,
+        scratchRoot,
+        findings,
+        hooks,
+      ))
+        ? "compatible"
+        : "contract-mismatch";
     }
     if (safeVersionResult && isCodexVersionReport(result.stdout)) {
       setBlocker(
@@ -728,13 +744,15 @@ function isCodexVersionReport(value: string): boolean {
  *
  * Only reached once the version probe matched exactly, so a binary without the
  * generator subcommands is already blocked by `CODEX_VERSION`. Never throws.
+ * Returns whether the contract matched, so a binary that failed this gate is
+ * not run again by the checks downstream of a compatible version.
  */
 async function classifyCodexContract(
   dependencies: DoctorDependencies,
   scratchRoot: string,
   findings: MutableFindings,
   hooks: DoctorTestHooks,
-): Promise<void> {
+): Promise<boolean> {
   const expected = hooks.contractDigest ?? REQUIRED_CODEX_CONTRACT_DIGEST;
   try {
     const contractHome = await createIsolatedCodexHome(
@@ -766,7 +784,7 @@ async function classifyCodexContract(
         "SCHEMA_COMPATIBILITY",
         "The generated Codex app-server contract matches the pinned one.",
       );
-      return;
+      return true;
     }
     setBlocker(
       findings,
@@ -776,7 +794,7 @@ async function classifyCodexContract(
       `Reinstall codex-cli ${REQUIRED_CODEX_VERSION} from a trusted source ` +
         "and retry.",
     );
-    return;
+    return false;
   } catch {
     // The stable finding below intentionally hides child and exception details.
   }
@@ -787,6 +805,7 @@ async function classifyCodexContract(
     `Reinstall codex-cli ${REQUIRED_CODEX_VERSION} from a trusted source and ` +
       "retry.",
   );
+  return false;
 }
 
 /** Owner-only scratch `CODEX_HOME` for one probe, rejected if it is not one. */

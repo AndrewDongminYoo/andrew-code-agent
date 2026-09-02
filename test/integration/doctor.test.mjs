@@ -735,6 +735,26 @@ test("derives schema compatibility from the generated contract", async (t) => {
     });
   });
 
+  // A binary that failed the contract check must not be run again by the
+  // checks downstream of a compatible version.
+  await t.test("stops the strict-config probe after a contract mismatch", async () => {
+    await withFixture({ codex: { contract: "drift" } }, async (fixture) => {
+      let strictSpawns = 0;
+      const result = await runUnchanged(fixture, {}, {
+        beforeStrictSpawn() {
+          strictSpawns += 1;
+        },
+      });
+      assert.equal(strictSpawns, 0);
+      assert.deepEqual(finding(result, "STRICT_CONFIG"), {
+        severity: "warning",
+        code: "STRICT_CONFIG",
+        message: "Strict Codex configuration validation was not evaluated because the resolved Codex binary failed the contract check.",
+        remediation: "Reinstall codex-cli 0.152.1 from a trusted source and retry.",
+      });
+    });
+  });
+
   await t.test("blocks when the contract cannot be generated", async () => {
     await withFixture({ codex: { contract: "failure" } }, async (fixture) => {
       const result = await runUnchanged(fixture);
