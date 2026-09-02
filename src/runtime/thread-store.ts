@@ -355,17 +355,14 @@ async function readRecord(path: string): Promise<ThreadRecord> {
     );
   }
   try {
-    const record = validateRecord(JSON.parse(bytes.toString("utf8")));
-    let repositoryRoot: string;
-    try {
-      repositoryRoot = await canonicalRepository(record.repositoryRoot);
-    } catch {
-      throw new ThreadStoreError(
-        "THREAD_CORRUPT",
-        "Thread record repository root is invalid.",
-      );
-    }
-    return { ...record, repositoryRoot };
+    // The stored root is already canonical, because writeThreadRecord
+    // canonicalizes before it writes. Resolving it again here would only add
+    // a failure mode the record does not have: a repository that has since
+    // moved or been deleted would read as a corrupt record, and because the
+    // scan reads every record before it filters, one departed repository
+    // took every other repository's lookup down with it. Callers that need a
+    // live repository resolve their own side and compare.
+    return validateRecord(JSON.parse(bytes.toString("utf8")));
   } catch (error) {
     if (error instanceof ThreadStoreError) throw error;
     throw new ThreadStoreError(

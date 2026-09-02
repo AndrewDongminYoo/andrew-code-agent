@@ -340,3 +340,28 @@ test("the token usage snapshot round-trips, migrates from every earlier schema, 
     }
   });
 });
+
+test("a record whose repository is gone does not block the lookup for a live one", async () => {
+  await withStore(async ({ root, stateRoot, repositoryRoot }) => {
+    const threads = requireThreads();
+    const departed = join(root, "departed");
+    await mkdir(departed);
+    await threads.writeThreadRecord(stateRoot, makeRecord("departed", departed));
+    await threads.writeThreadRecord(stateRoot, makeRecord("live", repositoryRoot));
+    await rm(departed, { recursive: true });
+
+    // A repository that moved or was deleted says nothing about the records
+    // of the repositories still here, and every stored record names some
+    // repository, so one departure must not take the whole store with it.
+    assert.equal((await threads.findLatestThreadRecord(stateRoot, repositoryRoot)).threadId, "live");
+
+    // The record itself is intact, so reading it by ID reports it rather than
+    // corruption. Its repository's absence surfaces where the repository is
+    // actually used, which is the Git preflight.
+    assert.equal((await threads.readThreadRecord(stateRoot, "departed")).repositoryRoot, departed);
+
+    // The departed repository is still not the live one, so asking for it
+    // under the live root is a mismatch rather than a match or a corruption.
+    await assert.rejects(threads.readThreadRecord(stateRoot, "departed", repositoryRoot), { code: "THREAD_REPOSITORY_MISMATCH" });
+  });
+});
