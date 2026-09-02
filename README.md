@@ -205,8 +205,11 @@ including everything under `$HOME` and any shared SDK root.
 The policy also names the process temporary directory, but that grants nothing
 here: the App Server child is started with an environment built from
 `CODEX_HOME`, `PATH` and, with the capability on, `LLM_WIKI_ROOT`, so `TMPDIR`
-reaches it unset. A toolchain that honours `TMPDIR` falls back to `/tmp` inside
-a managed turn while using the per-user directory outside one.
+reaches it unset. A tool that reads `TMPDIR` therefore falls back to `/tmp` and
+stays inside the boundary. **A tool that resolves the Darwin per-user temporary
+directory does not**: `confstr` answers from the system rather than the
+environment, so it still returns a path under `/var/folders`, which is outside
+both writable roots and is refused like any other outside path.
 
 That keeps a turn's blast radius equal to the thing under version control. It
 also means **a command that populates a cache outside the repository has
@@ -218,10 +221,8 @@ This boundary is measured rather than inferred.
 `docs/notes/2026-09-02-sandbox-boundary-measurement.md` records a managed run in
 which a write inside the repository and a write to `/tmp` both succeeded while a
 write to a sibling directory outside both was refused, corroborated by the Codex
-session record as well as the command's own output. The refusal arrives as
-`Operation not permitted`, where an ordinary filesystem permission failure gives
-`Permission denied`, so the two are distinguishable in a transcript. `doctor`
-states the boundary before a turn starts, as the `SANDBOX_BOUNDARY` finding.
+session record as well as the command's own output. `doctor` states the boundary
+before a turn starts, as the `SANDBOX_BOUNDARY` finding.
 
 No specific toolchain is named here because none has been observed failing this
 way, and the measurement deliberately touched no real cache. It shows what

@@ -42,11 +42,12 @@ is the command's own stdout rather than the agent's account of it, and the
 Codex session record for the same turn. The repository write is present on
 disk afterwards and the cache directory is empty.
 
-**The denial is `Operation not permitted`, not `Permission denied`.** The
-control run in step 1 produced the second, so the two failures are
-distinguishable in a transcript: `EPERM` here is the sandbox refusing, and
-`EACCES` would be an ordinary filesystem permission. Any future diagnostic can
-key on that difference rather than guessing.
+**The denial arrived as `Operation not permitted`, and the step 1 control
+produced `Permission denied`.** That is what the two runs showed, and it is as
+far as it goes. `EPERM` does not identify a sandbox refusal: an ordinary write
+to a file carrying the `uchg` flag produces the same text with no sandbox
+anywhere, and so does a write refused on ownership grounds. So a diagnostic
+must not key on the error text to decide that the sandbox was the cause.
 
 ## An undocumented consequence: the managed turn has no `TMPDIR`
 
@@ -57,9 +58,15 @@ per-user directory that `TMPDIR` names in an ordinary shell.
 the child unset.
 
 So `excludeTmpdirEnvVar: false` grants nothing in this product as it stands,
-and the only temporary location a managed turn actually has is `/tmp`. A
-toolchain that honours `TMPDIR` will fall back to `/tmp` inside a managed run
-while using the per-user directory outside one.
+and the only temporary location a managed turn actually has is `/tmp`.
+
+**That does not make every temporary write safe, and the difference cuts the
+wrong way.** A tool that reads `TMPDIR` falls back to `/tmp` and stays inside
+the boundary. A tool that asks the system instead does not: with `TMPDIR`
+unset, `getconf DARWIN_USER_TEMP_DIR` still answers `/var/folders/.../T/`,
+because `confstr` resolves it without the environment. That path is neither
+the repository nor `/tmp`, so a macOS-native toolchain that resolves its
+temporary directory that way is refused while a POSIX-style one succeeds.
 
 ## What this does and does not establish
 

@@ -151,8 +151,10 @@ async function runDoctorInternal(
     findings,
     "SANDBOX_BOUNDARY",
     "A managed turn may write inside the target repository and /tmp, and " +
-      "nowhere else; network access is off, and TMPDIR is unset in the " +
-      "managed child, so a toolchain that honours it falls back to /tmp.",
+      "nowhere else; network access is off. TMPDIR is unset in the managed " +
+      "child, so a tool that reads it falls back to /tmp, while one that " +
+      "resolves the Darwin per-user temporary directory is refused like any " +
+      "other path outside the boundary.",
   );
 
   try {
