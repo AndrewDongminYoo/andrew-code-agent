@@ -199,9 +199,14 @@ not clean, and it re-reads HEAD after the turn to report exactly what changed.
 ### The turn may only write inside the repository
 
 Every turn runs under a `workspaceWrite` sandbox whose writable roots are the
-target repository, the process temporary directory, and `/tmp`. Network access
-is off. Everything else is denied, including everything under `$HOME` and any
-shared SDK root.
+target repository and `/tmp`. Network access is off. Everything else is denied,
+including everything under `$HOME` and any shared SDK root.
+
+The policy also names the process temporary directory, but that grants nothing
+here: the App Server child is started with an environment built from
+`CODEX_HOME`, `PATH` and, with the capability on, `LLM_WIKI_ROOT`, so `TMPDIR`
+reaches it unset. A toolchain that honours `TMPDIR` falls back to `/tmp` inside
+a managed turn while using the per-user directory outside one.
 
 That keeps a turn's blast radius equal to the thing under version control. It
 also means **a command that populates a cache outside the repository has
@@ -209,10 +214,21 @@ nowhere to write**, so a toolchain whose mutable state lives outside the
 workspace may not work inside a turn. A repository whose dependency tree is
 already installed can hide that entirely.
 
+This boundary is measured rather than inferred.
+`docs/notes/2026-09-02-sandbox-boundary-measurement.md` records a managed run in
+which a write inside the repository and a write to `/tmp` both succeeded while a
+write to a sibling directory outside both was refused, corroborated by the Codex
+session record as well as the command's own output. The refusal arrives as
+`Operation not permitted`, where an ordinary filesystem permission failure gives
+`Permission denied`, so the two are distinguishable in a transcript. `doctor`
+states the boundary before a turn starts, as the `SANDBOX_BOUNDARY` finding.
+
 No specific toolchain is named here because none has been observed failing this
-way. `docs/notes/2026-08-25-writable-root-boundary.md` records which caches on
-one machine sit outside the boundary, and why an earlier claim that this
-stopped a real run was withdrawn.
+way, and the measurement deliberately touched no real cache. It shows what
+happens to such a write, not that any toolchain needs one.
+`docs/notes/2026-08-25-writable-root-boundary.md` records which caches on one
+machine sit outside the boundary, and why an earlier claim that this stopped a
+real run was withdrawn.
 
 ## Runtime locations
 
