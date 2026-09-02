@@ -7,6 +7,10 @@ evidence. This note holds the measurement. It selects no policy.
 Measured 2026-09-02 against the pinned `codex 0.148.0`, bundle source at
 `c0b59b5`, product at `b7a3cf7`.
 
+Re-run unchanged later the same day against `codex 0.152.1`, while raising the
+pin, with the same three results and the same empty cache directory afterwards.
+The boundary is therefore not specific to the version it was first measured on.
+
 ## The fixture, and why it is not in the scratchpad
 
 Three writes, one per boundary, from a script committed in a synthetic target

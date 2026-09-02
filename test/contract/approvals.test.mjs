@@ -1220,3 +1220,36 @@ test("fails closed without evaluating hostile direct JSON properties", async () 
   );
   assert.equal(acceptedResult.kind, "response");
 });
+
+// codex-cli 0.152.1 adds a required `kind` to the command approval params,
+// distinguishing a command from input written to an already-running terminal.
+// The validator's key allowlist did not carry it, so every command approval
+// the newly pinned server sends would have been classified malformed and
+// auto-declined — the fail-closed path, reached on well-formed traffic.
+test("accepts the approval kind the newly pinned binary sends, and names it in the prompt", async () => {
+  const [command] = await requests();
+
+  for (const kind of ["command", "writeStdin"]) {
+    const request = structuredClone(command);
+    request.params.kind = kind;
+    const out = output();
+    const result = await approvals().answerApproval(request, input("1\n"), out.stream, 100);
+    assert.equal(result.kind, "response", kind);
+    assert.deepEqual(result.response, { decision: "accept" }, kind);
+    // The human gate is the safety mechanism, so it has to say which of the
+    // two the operator is approving.
+    assert.match(out.text(), new RegExp(`kind: ${kind}`), kind);
+  }
+
+  // An unrecognised kind is a shape this build does not understand, and the
+  // posture for that is refusal rather than a guess.
+  const unknown = structuredClone(command);
+  unknown.params.kind = "somethingElse";
+  assert.equal((await approvals().answerApproval(unknown, input("1\n"), output().stream, 100)).kind, "failClosed");
+
+  // Absent stays valid: the field's own documentation says older servers
+  // default it to `command`, and the allowlist is a subset check.
+  const absent = structuredClone(command);
+  delete absent.params.kind;
+  assert.equal((await approvals().answerApproval(absent, input("1\n"), output().stream, 100)).kind, "response");
+});
