@@ -65,10 +65,10 @@ async function createRepositoryWithGitlink() {
 }
 
 function terminalRecord(repositoryRoot, terminalStatus = "completed", grant = {}) {
-  // readThreadRecord always yields these two, migrating a pre-schema-2 record
-  // to the empty grant, so a fake that omitted them would not be a record the
-  // product can produce.
-  return { threadId: "thread-1", repositoryRoot, startingHead: "a".repeat(40), terminalHead: "b".repeat(40), bundleDigest: "c".repeat(64), productVersion: "0.1.0", codexVersion: "0.148.0", turnId: "turn-1", terminalStatus, finalGitStatus: "1 .M N... tracked.txt", requestedCapabilities: grant.requestedCapabilities ?? [], oracleRootDigest: grant.oracleRootDigest ?? null };
+  // readThreadRecord always yields the grant and the measurement, migrating an
+  // earlier record to the empty grant and no measurement, so a fake that
+  // omitted them would not be a record the product can produce.
+  return { threadId: "thread-1", repositoryRoot, startingHead: "a".repeat(40), terminalHead: "b".repeat(40), bundleDigest: "c".repeat(64), productVersion: "0.1.0", codexVersion: "0.148.0", turnId: "turn-1", terminalStatus, finalGitStatus: "1 .M N... tracked.txt", requestedCapabilities: grant.requestedCapabilities ?? [], oracleRootDigest: grant.oracleRootDigest ?? null, tokenUsage: grant.tokenUsage ?? null };
 }
 
 function operationHarness(repositoryRoot, overrides = {}) {
@@ -1578,4 +1578,18 @@ test("doctor evaluates the capability the environment offers and survives one it
   assert.equal(broken.code, 0);
   assert.deepEqual(inputs.map((input) => [input.requestedCapabilities, input.capabilityInputs]), [[[], {}]]);
   assert.equal(broken.stderr, "");
+});
+
+test("renders context usage only when the record carries a measurement", async () => {
+  const { runModule } = modules();
+  const render = async (tokenUsage) => {
+    const output = capture();
+    await runModule.renderLocalRecord({ ...terminalRecord("/repo"), tokenUsage }, output.stdout);
+    return output.output().stdout;
+  };
+  assert.match(await render({ totalTokens: 204000, contextWindow: 272000 }), /^Context usage: 204000 of 272000 tokens \(75%\)$/m);
+  assert.match(await render({ totalTokens: 1300, contextWindow: null }), /^Context usage: 1300 tokens$/m);
+  // A record from a run the App Server never measured, including one written
+  // before this field existed, reports no usage line rather than a placeholder.
+  assert.doesNotMatch(await render(null), /Context usage/);
 });

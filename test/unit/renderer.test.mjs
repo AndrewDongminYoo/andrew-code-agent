@@ -611,3 +611,28 @@ test("a terminal turn shows the text of a message that never completed", () => {
   assert.doesNotMatch(running, /생성 중이던 답변입니다/);
   assert.match(running, /Message updated/);
 });
+
+test("reports context pressure only when the server measured it", () => {
+  const base = {
+    threadId: "thread-1",
+    turnId: "turn-1",
+    items: new Map(),
+    observedCommands: [],
+    diff: null,
+    warnings: [],
+    terminalStatus: "completed",
+  };
+  const linesFor = (tokenUsage) => renderer().renderTurnState({ ...base, tokenUsage }).join("\n");
+
+  // The ratio is what the operator acts on, so it is rendered rather than
+  // left to be divided by hand.
+  assert.match(linesFor({ totalTokens: 204000, contextWindow: 272000 }), /Context usage: 204000 of 272000 tokens \(75%\)/);
+  // A window the server never reported cannot produce a ratio, and the total
+  // is still worth printing.
+  assert.match(linesFor({ totalTokens: 1300, contextWindow: null }), /Context usage: 1300 tokens/);
+  assert.doesNotMatch(linesFor({ totalTokens: 1300, contextWindow: null }), /%/);
+  // A state carrying no measurement, including one built before this field
+  // existed, prints no usage line at all.
+  assert.doesNotMatch(linesFor(null), /Context usage/);
+  assert.doesNotMatch(renderer().renderTurnState(base).join("\n"), /Context usage/);
+});

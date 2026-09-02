@@ -2295,3 +2295,31 @@ test("exhausted terminal reports persist the interrupted record before failing",
   assert.equal(terminalAttempts, 2);
   assert.equal(fixture.writes.at(-1).terminalStatus, "interrupted");
 });
+
+test("carries the last token usage measurement into the persisted terminal record", async () => {
+  const fixture = harness({ record: null });
+  fixture.client.onTurnStart = async (client) => {
+    client.emitNotification({
+      method: "thread/tokenUsage/updated",
+      params: {
+        threadId: client.threadId,
+        turnId: client.turnId,
+        tokenUsage: { total: { totalTokens: 204000 }, last: { totalTokens: 40 }, modelContextWindow: 272000 },
+      },
+    });
+    client.emitNotification(
+      terminalNotification(client.threadId, client.turnId, "completed"),
+    );
+  };
+
+  const result = await coordinator().startNewThread(
+    { repositoryRoot: "/input", prompt: "ship it", bundleDigest: "bundle-new" },
+    fixture.dependencies,
+  );
+
+  // The record written before the turn starts cannot know a measurement, and
+  // the terminal one carries what the App Server last reported.
+  assert.equal(fixture.writes[0].tokenUsage, null);
+  assert.deepEqual(result.tokenUsage, { totalTokens: 204000, contextWindow: 272000 });
+  assert.deepEqual(fixture.writes.at(-1).tokenUsage, { totalTokens: 204000, contextWindow: 272000 });
+});

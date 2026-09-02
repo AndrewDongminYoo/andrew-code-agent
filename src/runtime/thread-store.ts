@@ -33,6 +33,12 @@ export interface ThreadRecord {
   // wikis, so the root is bound too, as a digest rather than the path.
   readonly requestedCapabilities: readonly RequestedCapability[];
   readonly oracleRootDigest: string | null;
+  // The last measurement the App Server reported during the turn, or null
+  // when it reported none and for every record written before the turn ran.
+  readonly tokenUsage: {
+    readonly totalTokens: number;
+    readonly contextWindow: number | null;
+  } | null;
 }
 
 export type ThreadStoreErrorCode =
@@ -69,8 +75,11 @@ const recordKeys = [
 // there is no version field — so a record written before it is migrated in
 // memory to the empty grant and rewritten in the current shape.
 const capabilityKeys = ["requestedCapabilities", "oracleRootDigest"] as const;
-const legacyRecordKeys = recordKeys;
-const currentRecordKeys = [...recordKeys, ...capabilityKeys] as const;
+// Schema 3 adds the token usage measurement on the same terms.
+const tokenUsageKeys = ["tokenUsage"] as const;
+const schema1Keys = recordKeys;
+const schema2Keys = [...recordKeys, ...capabilityKeys] as const;
+const currentRecordKeys = [...schema2Keys, ...tokenUsageKeys] as const;
 const oracleRootDigestPattern = /^[0-9a-f]{64}$/;
 const terminalStatuses = new Set([
   "not-started",
@@ -373,12 +382,15 @@ function validateRecord(value: unknown): ThreadRecord {
       "Thread record has an invalid schema.",
     );
   }
-  if (hasOnlyKeys(value, legacyRecordKeys)) {
+  if (hasOnlyKeys(value, schema1Keys)) {
     return validateRecord({
       ...value,
       requestedCapabilities: [],
       oracleRootDigest: null,
     });
+  }
+  if (hasOnlyKeys(value, schema2Keys)) {
+    return validateRecord({ ...value, tokenUsage: null });
   }
   if (!hasOnlyKeys(value, currentRecordKeys)) {
     throw new ThreadStoreError(
@@ -400,7 +412,8 @@ function validateRecord(value: unknown): ThreadRecord {
     !terminalStatuses.has(value.terminalStatus) ||
     !nullableString(value.finalGitStatus) ||
     !isCapabilityList(value.requestedCapabilities) ||
-    !isOracleRootDigest(value.oracleRootDigest)
+    !isOracleRootDigest(value.oracleRootDigest) ||
+    !isTokenUsage(value.tokenUsage)
   ) {
     throw new ThreadStoreError(
       "THREAD_CORRUPT",
@@ -432,6 +445,22 @@ function isOracleRootDigest(value: unknown): value is string | null {
   return (
     value === null ||
     (typeof value === "string" && oracleRootDigestPattern.test(value))
+  );
+}
+
+function isTokenUsage(value: unknown): boolean {
+  if (value === null) return true;
+  if (!isObject(value) || !hasOnlyKeys(value, ["totalTokens", "contextWindow"]))
+    return false;
+  return (
+    isTokenCount(value.totalTokens) &&
+    (value.contextWindow === null || isTokenCount(value.contextWindow, 1))
+  );
+}
+
+function isTokenCount(value: unknown, minimum = 0): boolean {
+  return (
+    typeof value === "number" && Number.isSafeInteger(value) && value >= minimum
   );
 }
 

@@ -28,6 +28,13 @@ export interface TurnState {
   readonly omittedWarnings: number;
   readonly terminalInventoryDigest: string | null;
   readonly terminalStatus: "running" | "completed" | "failed" | "interrupted";
+  // The last measurement the App Server reported for this thread, or null
+  // when it reported none. `contextWindow` is null when the server did not
+  // name one, which leaves the total usable and the ratio undefined.
+  readonly tokenUsage: {
+    readonly totalTokens: number;
+    readonly contextWindow: number | null;
+  } | null;
 }
 
 // UTF-16 code units, unlike the renderer's escaped-byte bound. Every retained
@@ -562,7 +569,16 @@ export function createTurnState(threadId: string, turnId: string): TurnState {
     omittedWarnings: 0,
     terminalInventoryDigest: null,
     terminalStatus: "running",
+    tokenUsage: null,
   };
+}
+
+function tokenCount(value: unknown, minimum = 0): number | null {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= minimum
+    ? value
+    : null;
 }
 
 export function reduceServerMessage(
@@ -731,6 +747,32 @@ export function reduceServerMessage(
     requireIdentity(state, params);
     if (state.terminalStatus !== "running") return state;
     return { ...state, diff: bounded(params.diff) };
+  }
+  if (message.method === "thread/tokenUsage/updated") {
+    // The one branch that never throws. Every other known method rejects a
+    // malformed frame, and that rejection reaches processNotification's catch,
+    // which calls failClosed() and interrupts the turn — the failure recorded
+    // in docs/notes/2026-08-26-issue-24-instrumented-runs.md. This value is
+    // informational, so anything unreadable leaves the last snapshot in place
+    // rather than costing the operator the run.
+    const usage =
+      params !== null && isRecord(params.tokenUsage) ? params.tokenUsage : null;
+    if (
+      usage === null ||
+      (typeof params?.turnId === "string" && params.turnId !== state.turnId)
+    )
+      return state;
+    const totalTokens = tokenCount(
+      isRecord(usage.total) ? usage.total.totalTokens : undefined,
+    );
+    if (totalTokens === null) return state;
+    return {
+      ...state,
+      tokenUsage: {
+        totalTokens,
+        contextWindow: tokenCount(usage.modelContextWindow, 1),
+      },
+    };
   }
   if (message.method === "warning") {
     if (!params || typeof params.message !== "string")

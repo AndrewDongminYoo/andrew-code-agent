@@ -359,6 +359,7 @@ async function finalizeWithoutTurn(
     requestedCapabilities: dependencies.releaseIdentity.requestedCapabilities,
     oracleRootDigest: dependencies.releaseIdentity.oracleRootDigest,
     finalGitStatus: finalSnapshot.porcelainV2,
+    tokenUsage: null,
   };
   await dependencies.threadStore.writeThreadRecord(
     dependencies.stateRoot,
@@ -388,6 +389,7 @@ function runningRecord(
     requestedCapabilities: release.requestedCapabilities,
     oracleRootDigest: release.oracleRootDigest,
     finalGitStatus: null,
+    tokenUsage: null,
   };
 }
 
@@ -667,6 +669,7 @@ async function runTurn(
       terminalHead: finalSnapshot.head,
       terminalStatus,
       finalGitStatus: finalSnapshot.porcelainV2,
+      tokenUsage: state?.tokenUsage ?? null,
     };
     await dependencies.threadStore.writeThreadRecord(
       dependencies.stateRoot,
@@ -749,6 +752,7 @@ export async function startNewThread(
       requestedCapabilities: dependencies.releaseIdentity.requestedCapabilities,
       oracleRootDigest: dependencies.releaseIdentity.oracleRootDigest,
       finalGitStatus: null,
+      tokenUsage: null,
     };
     await dependencies.threadStore.writeThreadRecord(
       dependencies.stateRoot,

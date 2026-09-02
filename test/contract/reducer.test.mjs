@@ -1383,3 +1383,34 @@ test("streaming command output accumulates under the command-output bound", () =
   assert.ok(output.length <= 4096, `streaming output kept ${output.length}`);
   assert.ok(output.endsWith("[truncated]"), "an over-long stream must carry the truncation marker");
 });
+
+function tokenUsageNotification(tokenUsage, identity = {}) {
+  return { method: "thread/tokenUsage/updated", params: { threadId: "thread-1", turnId: "turn-1", ...identity, tokenUsage } };
+}
+
+test("keeps the last token usage snapshot and never rejects a malformed one", () => {
+  const api = reducer();
+  const base = api.createTurnState("thread-1", "turn-1");
+  assert.equal(base.tokenUsage, null);
+
+  const measured = api.reduceServerMessage(base, tokenUsageNotification({ total: { totalTokens: 1200, inputTokens: 1000, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 200, reasoningOutputTokens: 0 }, last: { totalTokens: 40, inputTokens: 30, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 10, reasoningOutputTokens: 0 }, modelContextWindow: 272000 }));
+  assert.deepEqual(measured.tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
+
+  // A window the server does not report still yields a usable total.
+  const windowless = api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 1300 }, modelContextWindow: null }));
+  assert.deepEqual(windowless.tokenUsage, { totalTokens: 1300, contextWindow: null });
+
+  // Every malformed shape keeps the last snapshot rather than throwing. A
+  // known method that throws reaches the coordinator's failClosed path and
+  // interrupts the turn, which is far worse than a stale usage line.
+  for (const malformed of [null, {}, { total: null }, { total: {} }, { total: { totalTokens: -1 } }, { total: { totalTokens: 1.5 } }, { total: { totalTokens: "many" } }, { total: { totalTokens: Number.MAX_SAFE_INTEGER + 2 } }])
+    assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification(malformed)).tokenUsage, { totalTokens: 1200, contextWindow: 272000 }, JSON.stringify(malformed));
+  assert.deepEqual(api.reduceServerMessage(measured, { method: "thread/tokenUsage/updated" }).tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
+
+  // An unusable window is dropped on its own terms, and the total survives.
+  assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 1300 }, modelContextWindow: 0 })).tokenUsage, { totalTokens: 1300, contextWindow: null });
+
+  // Another thread's frame and another turn's frame are both ignored.
+  assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 9999 }, modelContextWindow: 272000 }, { threadId: "thread-2" })).tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
+  assert.deepEqual(api.reduceServerMessage(measured, tokenUsageNotification({ total: { totalTokens: 9999 }, modelContextWindow: 272000 }, { turnId: "turn-2" })).tokenUsage, { totalTokens: 1200, contextWindow: 272000 });
+});

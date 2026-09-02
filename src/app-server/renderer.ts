@@ -229,6 +229,28 @@ function renderItem(item: ItemState, settled: boolean): readonly string[] {
   ];
 }
 
+// The one place that formats a measurement, because the live turn output and
+// the persisted record both report it and a second template would drift.
+// Only integers ever reach the line, so it needs no escaping and no bound.
+// Anything else renders nothing rather than being printed unescaped.
+export function formatTokenUsage(usage: unknown): string | null {
+  const source = record(usage);
+  const total = tokenCount(source?.totalTokens);
+  if (total === null) return null;
+  const window = tokenCount(source?.contextWindow, 1);
+  return window === null
+    ? `Context usage: ${total} tokens`
+    : `Context usage: ${total} of ${window} tokens (${Math.floor((total / window) * 100)}%)`;
+}
+
+function tokenCount(value: unknown, minimum = 0): number | null {
+  return typeof value === "number" &&
+    Number.isSafeInteger(value) &&
+    value >= minimum
+    ? value
+    : null;
+}
+
 export function renderTurnState(state: TurnState): readonly string[] {
   const lines = [
     `Thread: ${bounded(state.threadId, 504)}`,
@@ -266,6 +288,10 @@ export function renderTurnState(state: TurnState): readonly string[] {
     omissions.omittedWarnings > 0
   )
     lines.push(`${omissions.omittedWarnings} warning(s) omitted`);
+  const usage = formatTokenUsage(
+    (state as TurnState & { readonly tokenUsage?: unknown }).tokenUsage,
+  );
+  if (usage !== null) lines.push(usage);
   lines.push(bounded(`Terminal status: ${state.terminalStatus}`));
   return lines;
 }
