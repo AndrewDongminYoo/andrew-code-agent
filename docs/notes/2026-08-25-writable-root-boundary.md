@@ -6,6 +6,14 @@ deliverable; the boundary described here was blamed for that and did not cause
 it. What survives is the boundary itself, read from the code, and a measurement
 of which caches sit outside it.
 
+**Superseded in two places, 2026-09-02.** This note counts the process
+temporary directory as a writable root alongside `/tmp`; it is not one, because
+the App Server child is started without `TMPDIR`. And it says no denied write
+has ever been observed, which a synthetic measurement has since disproved. Both
+are recorded in `2026-09-02-sandbox-boundary-measurement.md`, and `README.md`
+owns the current statement of the boundary. This note is a dated record and is
+not edited toward the present; read the two claims below in that light.
+
 ## What happens
 
 `src/app-server/coordinator.ts:603` starts every turn under:

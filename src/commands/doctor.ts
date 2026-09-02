@@ -66,6 +66,7 @@ const findingOrder = [
   "HOOK_READINESS",
   "INTERPRETER_READINESS",
   "STRICT_CONFIG",
+  "SANDBOX_BOUNDARY",
   "OPTIONAL_ORACLE",
   "OPTIONAL_SHARED_MEMORY",
   "PROCESS_LOCK",
@@ -136,6 +137,25 @@ async function runDoctorInternal(
 
   classifyProduct(dependencies, findings);
   classifyPlatform(dependencies, findings);
+  // Unconditional, like the two above it, and deliberately outside the fallible
+  // region below: a statement of the sandbox contract cannot fail, so it must
+  // not be able to reach ensureAllFindings unset and be reported as a
+  // diagnostic that "could not be completed". No path reaches that today —
+  // every diagnostic below catches its own failure — but the placement is what
+  // makes the guarantee, not the absence of a caller. The three facts are
+  // measured in docs/notes/2026-09-02-sandbox-boundary-measurement.md, and the
+  // boundary is named by class because a finding is terminal output and #23
+  // step 5 keeps personal paths out of it. Changing the policy in
+  // coordinator.ts means changing this sentence.
+  setReady(
+    findings,
+    "SANDBOX_BOUNDARY",
+    "A managed turn may write inside the target repository and /tmp, and " +
+      "nowhere else; network access is off. TMPDIR is unset in the managed " +
+      "child, so a tool that reads it falls back to /tmp, while one that " +
+      "resolves the Darwin per-user temporary directory is refused like any " +
+      "other path outside the boundary.",
+  );
 
   try {
     scratchRoot = await createScratchRoot(

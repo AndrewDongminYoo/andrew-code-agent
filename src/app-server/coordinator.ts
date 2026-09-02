@@ -605,6 +605,14 @@ async function runTurn(
         threadId: identity.threadId,
         input: [{ type: "text", text: prompt, text_elements: [] }],
         cwd: identity.repositoryRoot,
+        // Three documents state this policy in prose and all three have to
+        // change with it: doctor's SANDBOX_BOUNDARY finding, README, and the
+        // dated note docs/notes/2026-08-25-writable-root-boundary.md, which
+        // carries a superseded copy behind a forward pointer. What it grants was
+        // measured, not inferred — see
+        // docs/notes/2026-09-02-sandbox-boundary-measurement.md, which also
+        // records that excludeTmpdirEnvVar grants nothing because the child is
+        // started without TMPDIR.
         sandboxPolicy: {
           type: "workspaceWrite",
           writableRoots: [identity.repositoryRoot],
