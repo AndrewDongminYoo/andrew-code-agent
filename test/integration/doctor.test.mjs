@@ -217,7 +217,7 @@ async function createFixture(options = {}) {
 }
 
 async function writeCodexExecutable(path, options = {}) {
-  const version = options.version ?? "codex-cli 0.148.0";
+  const version = options.version ?? "codex-cli 0.152.1";
   const strict = options.strict ?? "success";
   const markerPath = options.markerPath;
   const strictDiagnostic =
@@ -610,8 +610,8 @@ test("uses exact Codex version and schema compatibility", async () => {
     assert.deepEqual(finding(result, "CODEX_VERSION"), {
       severity: "blocker",
       code: "CODEX_VERSION",
-      message: "Resolved Codex version does not match codex-cli 0.148.0.",
-      remediation: "Install codex-cli 0.148.0 and retry.",
+      message: "Resolved Codex version does not match codex-cli 0.152.1.",
+      remediation: "Install codex-cli 0.152.1 and retry.",
     });
     assert.deepEqual(
       result.findings
@@ -623,13 +623,13 @@ test("uses exact Codex version and schema compatibility", async () => {
       severity: "warning",
       code: "SCHEMA_COMPATIBILITY",
       message: "Codex schema compatibility was not evaluated because the pinned Codex version was unavailable.",
-      remediation: "Install codex-cli 0.148.0 and retry.",
+      remediation: "Install codex-cli 0.152.1 and retry.",
     });
     assert.deepEqual(finding(result, "STRICT_CONFIG"), {
       severity: "warning",
       code: "STRICT_CONFIG",
       message: "Strict Codex configuration validation was not evaluated because the pinned Codex version was unavailable.",
-      remediation: "Install codex-cli 0.148.0 and retry.",
+      remediation: "Install codex-cli 0.152.1 and retry.",
     });
     assert.equal(strictSpawns, 0);
   });

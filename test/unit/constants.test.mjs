@@ -9,5 +9,5 @@ test("exports the pinned standalone-agent metadata", () => {
   assert.equal(constants.PRODUCT_VERSION, "0.2.0");
   assert.equal(constants.REQUIRED_NODE_VERSION, "24.20.0");
   assert.equal(constants.REQUIRED_PNPM_VERSION, "11.22.0");
-  assert.equal(constants.REQUIRED_CODEX_VERSION, "0.148.0");
+  assert.equal(constants.REQUIRED_CODEX_VERSION, "0.152.1");
 });

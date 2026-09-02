@@ -522,7 +522,7 @@ test("readiness reports only the version blocker after skipped checks", async (t
   const repositoryRoot = await createRepository();
   t.after(() => rm(repositoryRoot, { recursive: true, force: true }));
   const findings = [
-    { severity: "blocker", code: "CODEX_VERSION", message: "Resolved Codex version does not match codex-cli 0.148.0." },
+    { severity: "blocker", code: "CODEX_VERSION", message: "Resolved Codex version does not match codex-cli 0.152.1." },
     { severity: "warning", code: "SCHEMA_COMPATIBILITY", message: "Codex schema compatibility was not evaluated because the pinned Codex version was unavailable." },
     { severity: "warning", code: "STRICT_CONFIG", message: "Strict Codex configuration validation was not evaluated because the pinned Codex version was unavailable." },
   ];
@@ -915,7 +915,7 @@ import { appendFile, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 const args = process.argv.slice(2);
-if (args[0] === "--version") { process.stdout.write("codex-cli 0.148.0\\n"); process.exit(0); }
+if (args[0] === "--version") { process.stdout.write("codex-cli 0.152.1\\n"); process.exit(0); }
 await mkdir(process.env.CODEX_HOME, { recursive: true });
 const marker = join(process.env.CODEX_HOME, "fake-server.log");
 await writeFile(join(process.env.CODEX_HOME, "fake-server.pid"), String(process.pid));

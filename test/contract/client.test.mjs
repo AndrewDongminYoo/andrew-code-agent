@@ -63,7 +63,7 @@ async function inventory(root) {
 async function withFakeCodex(
   scenario,
   run,
-  { version = "codex-cli 0.148.0" } = {},
+  { version = "codex-cli 0.152.1" } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "andrew-agent-codex-"));
   const codexHome = join(root, "home");
