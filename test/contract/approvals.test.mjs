@@ -17,6 +17,16 @@ async function requests() {
     .map((line) => JSON.parse(line));
 }
 
+// Captured from the pinned binary rather than written from the generated
+// types, which are known to omit fields the binary sends. See
+// docs/notes/2026-09-03-approval-frame-capture.md.
+async function observed() {
+  return (await readFile("test/fixtures/protocol/approval-requests.observed.jsonl", "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+}
+
 function input(line, tty = true) {
   const stream = Readable.from(line === null ? [] : Array.isArray(line) ? line : [line]);
   Object.defineProperty(stream, "isTTY", { value: tty });
@@ -1252,4 +1262,32 @@ test("accepts the approval kind the newly pinned binary sends, and names it in t
   const absent = structuredClone(command);
   delete absent.params.kind;
   assert.equal((await approvals().answerApproval(absent, input("1\n"), output().stream, 100)).kind, "response");
+});
+
+// The hand-written frames were written at 0.148.0 and never refreshed when the
+// pin moved, which is why the deterministic layer saw nothing when 0.152.1
+// began sending `kind`. This case answers a frame the pinned binary actually
+// sent; docs/notes/2026-09-03-approval-frame-capture.md records the capture.
+test("answers a command approval captured from the pinned binary", async () => {
+  const [command] = await observed();
+  const sink = output();
+  const accepted = await approvals().answerApproval(command, input("1\n"), sink.stream, 100);
+  assert.deepEqual(accepted.response, { decision: "accept" });
+  // Three things only the observed frame carries: the request kind, a numeric
+  // request id, and a reason in the operator's language, which must survive
+  // escaping and per-code-point byte accounting without being mangled.
+  assert.match(sink.text(), /^kind: command$/m);
+  assert.match(sink.text(), /^Request: 0$/m);
+  assert.match(sink.text(), /샌드박스에서 example\.com DNS/);
+  // The server proposed an execpolicy amendment and advertised
+  // acceptWithExecpolicyAmendment in availableDecisions; `choices()` builds
+  // extra options only from proposedNetworkPolicyAmendments, which this frame
+  // does not carry, so the operator is offered neither. Pinning the exact four
+  // keeps that visible and fixes the numbering any decision assertion needs.
+  // Anchored on `Selection: ` so a fifth option cannot be appended past the
+  // match: without that tail the regex is a prefix and pins nothing.
+  assert.match(
+    sink.text(),
+    /1\. Accept\n2\. Accept for session\n3\. Decline\n4\. Cancel\nSelection: $/,
+  );
 });

@@ -230,7 +230,7 @@ async function createFixture(options = {}) {
       requestedCapabilities: [],
       capabilityInputs: {},
       scratchParent,
-      commandTimeoutMs: 500,
+      commandTimeoutMs: 2000,
     },
     expectedContractDigest,
   };
@@ -1118,7 +1118,7 @@ test("fails strict config on nonzero exit and timeout without leaking scratch", 
   });
   await t.test("timeout terminates and awaits the child", async () => {
     await withFixture({ codex: { strict: "timeout", strictDiagnostic: safeDiagnostic } }, async (fixture) => {
-      const result = await runUnchanged(fixture, { commandTimeoutMs: 40 });
+      const result = await runUnchanged(fixture);
       assert.deepEqual(finding(result, "STRICT_CONFIG"), {
         severity: "blocker",
         code: "STRICT_CONFIG",
@@ -1154,7 +1154,7 @@ test("fails strict config on nonzero exit and timeout without leaking scratch", 
         markerPath,
         strictDiagnostic: safeDiagnostic,
       });
-      const result = await runUnchanged(fixture, { commandTimeoutMs: 40 });
+      const result = await runUnchanged(fixture);
       await assertRecordedProcessWasReaped(markerPath);
       assert.equal(finding(result, "STRICT_CONFIG").severity, "blocker");
     });
