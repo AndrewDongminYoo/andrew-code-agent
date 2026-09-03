@@ -111,6 +111,7 @@ const manifest = () => ({
       capability: "oracle",
     },
   ],
+  mcpServers: [],
   forbiddenLiterals: ["/Users/dongminyu", "/Volumes/dongminyu"],
   forbiddenPathSegments: [
     ["auth", "json"].join("."),

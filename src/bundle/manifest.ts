@@ -45,6 +45,19 @@ export interface RequirementDefinition {
   readonly capability?: CapabilityName;
 }
 
+export interface McpServerDefinition {
+  readonly name: string;
+  readonly command: string;
+  readonly args: readonly string[];
+  readonly env: Readonly<Record<string, string>>;
+  readonly envVars: readonly string[];
+  readonly enabledTools: readonly string[];
+  readonly defaultToolsApprovalMode?: "approve" | "prompt";
+  readonly startupTimeoutSec?: number;
+  readonly toolTimeoutSec?: number;
+  readonly capability?: CapabilityName;
+}
+
 export interface BundleManifest {
   readonly schemaVersion: 1;
   readonly configSource: string;
@@ -55,6 +68,7 @@ export interface BundleManifest {
   readonly hooks: readonly HookSelection[];
   readonly capabilities: readonly CapabilityDefinition[];
   readonly requirements: readonly RequirementDefinition[];
+  readonly mcpServers: readonly McpServerDefinition[];
   readonly forbiddenLiterals: readonly string[];
   readonly forbiddenPathSegments: readonly string[];
   readonly forbiddenPatternIds: readonly string[];
@@ -79,6 +93,8 @@ export type ManifestErrorCode =
   | "DUPLICATE_ALLOWED_TOKEN"
   | "INVALID_REQUIREMENT"
   | "DUPLICATE_REQUIREMENT"
+  | "INVALID_MCP_SERVER"
+  | "DUPLICATE_MCP_SERVER"
   | "INVALID_PATTERN_ID"
   | "DUPLICATE_PATTERN_ID"
   | "INVALID_INSTRUCTION_SECTION"
@@ -119,6 +135,7 @@ export function parseBundleManifest(source: string): BundleManifest {
     "hooks",
     "capabilities",
     "requirements",
+    "mcp_servers",
     "forbidden",
   ]);
 
@@ -140,6 +157,9 @@ export function parseBundleManifest(source: string): BundleManifest {
   const requirements = readRequirements(
     readRequiredArray(root, "requirements", "manifest"),
   );
+  const mcpServers = hasOwn(root, "mcp_servers")
+    ? readMcpServers(readRequiredArray(root, "mcp_servers", "manifest"))
+    : [];
   const forbidden = readForbidden(readRequired(root, "forbidden", "manifest"));
 
   const declaredCapabilities = new Set(
@@ -192,6 +212,7 @@ export function parseBundleManifest(source: string): BundleManifest {
       compareCodeUnits(left.name, right.name),
     ),
     requirements,
+    mcpServers,
     forbiddenLiterals: forbidden.literals,
     forbiddenPathSegments: forbidden.pathSegments,
     forbiddenPatternIds: forbidden.patternIds,
@@ -475,6 +496,119 @@ function readRequirements(
   return requirements.sort((left, right) =>
     compareCodeUnits(left.name, right.name),
   );
+}
+
+const MCP_SERVER_NAME = /^[a-z][a-z0-9_-]{0,63}$/u;
+const MCP_SERVER_KEYS = [
+  "name",
+  "command",
+  "args",
+  "env",
+  "env_vars",
+  "enabled_tools",
+  "default_tools_approval_mode",
+  "startup_timeout_sec",
+  "tool_timeout_sec",
+  "capability",
+] as const;
+
+function readMcpServers(
+  values: readonly unknown[],
+): readonly McpServerDefinition[] {
+  const names = new Set<string>();
+  const servers = values.map((value, index) => {
+    const location = `mcp_servers[${index}]`;
+    const table = readTable(value, location);
+    assertKeys(table, location, [...MCP_SERVER_KEYS]);
+    const name = readString(table, "name", location);
+    if (!MCP_SERVER_NAME.test(name)) {
+      throw new ManifestError(
+        "INVALID_MCP_SERVER",
+        `${location}.name must match ${MCP_SERVER_NAME}.`,
+      );
+    }
+    if (names.has(name)) {
+      throw new ManifestError(
+        "DUPLICATE_MCP_SERVER",
+        `MCP server ${name} is declared more than once.`,
+      );
+    }
+    names.add(name);
+    const command = readString(table, "command", location);
+    if (!command.startsWith("/")) {
+      throw new ManifestError(
+        "INVALID_MCP_SERVER",
+        `${location}.command must be an absolute POSIX path.`,
+      );
+    }
+    const args = hasOwn(table, "args")
+      ? readStringArray(table, "args", location)
+      : [];
+    const env = hasOwn(table, "env")
+      ? readStringMap(table, "env", location)
+      : {};
+    const envVars = hasOwn(table, "env_vars")
+      ? readStringArray(table, "env_vars", location)
+      : [];
+    const enabledTools = hasOwn(table, "enabled_tools")
+      ? readStringArray(table, "enabled_tools", location)
+      : [];
+    const definition: {
+      -readonly [K in keyof McpServerDefinition]: McpServerDefinition[K];
+    } = { name, command, args, env, envVars, enabledTools };
+    if (hasOwn(table, "default_tools_approval_mode")) {
+      const mode = readString(table, "default_tools_approval_mode", location);
+      if (mode !== "approve" && mode !== "prompt") {
+        throw new ManifestError(
+          "INVALID_MCP_SERVER",
+          `${location}.default_tools_approval_mode must be approve or prompt.`,
+        );
+      }
+      definition.defaultToolsApprovalMode = mode;
+    }
+    for (const [key, field] of [
+      ["startup_timeout_sec", "startupTimeoutSec"],
+      ["tool_timeout_sec", "toolTimeoutSec"],
+    ] as const) {
+      if (!hasOwn(table, key)) continue;
+      const seconds = table[key];
+      if (
+        typeof seconds !== "number" ||
+        !Number.isInteger(seconds) ||
+        seconds < 1 ||
+        seconds > 3600
+      ) {
+        throw new ManifestError(
+          "INVALID_MCP_SERVER",
+          `${location}.${key} must be an integer between 1 and 3600.`,
+        );
+      }
+      definition[field] = seconds;
+    }
+    const capability = readOptionalCapability(table, location);
+    if (capability !== undefined) definition.capability = capability;
+    return definition;
+  });
+  return servers.sort((left, right) => compareCodeUnits(left.name, right.name));
+}
+
+function readStringMap(
+  table: Record<string, unknown>,
+  key: string,
+  location: string,
+): Readonly<Record<string, string>> {
+  const value = readTable(table[key], `${location}.${key}`);
+  const result: Record<string, string> = {};
+  for (const [name, entry] of Object.entries(value)) {
+    if (!/^[A-Z][A-Z0-9_]*$/u.test(name) || typeof entry !== "string") {
+      throw new ManifestError(
+        "INVALID_MCP_SERVER",
+        `${location}.${key}.${name}: uppercase name and string value required.`,
+      );
+    }
+    result[name] = entry;
+  }
+  return result;
 }
 
 function readExecutable(value: string, index: number): string {
