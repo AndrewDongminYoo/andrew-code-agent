@@ -80,12 +80,57 @@ per-code-point byte accounting does not false-trip a bound.
 
 The server proposed an execpolicy amendment, supplied its nine-token payload,
 and advertised `acceptWithExecpolicyAmendment` among the decisions it would
-accept. **The product offers none of it.** `choices()` builds extra options
-only from `proposedNetworkPolicyAmendments`, which this frame does not carry,
-so the operator sees Accept, Accept for session, Decline, Cancel and has no way
-to reach the amendment the server prepared. The contract test pins those four
-choices so the gap stays visible. Closing it is out of scope here, and nothing
-is broken today, because declining is a safe answer.
+accept. The product offered none of it: `validCommandParams` validated
+`proposedExecpolicyAmendment` and nothing read it, while `choices()` built
+extra options only from `proposedNetworkPolicyAmendments`, which this frame
+does not carry. The prompt did not render the field either, so the amendment
+was invisible as well as unreachable.
+
+Filed as issue #53 and closed in the same branch. `choices()` now offers the
+amendment when the field is present and non-empty, and the prompt renders the
+argv it would grant. `availableDecisions` is still not consulted, because it is
+undeclared by the schema this build is pinned to and was measured advisory
+rather than binding.
+
+**The grant is not request-scoped, and a first draft said it was.** The
+generated params type documents `proposedExecpolicyAmendment` as allowing
+similar commands _without prompting_, so accepting it changes policy for later
+commands. `acceptedForSession: false` does not constrain that: nothing outside
+`approvals.ts` reads the flag, and the coordinator forwards `response` alone.
+The label now states the scope, because the prompt is the only place the
+operator learns it.
+
+The network amendment beside it has the same undisclosed forward scope — its
+own doc says "for future requests" — and its label is unchanged here. Its
+label already runs to 97 bytes against a 96-byte budget with a 64-byte host, so
+appending a scope clause would make a long-host request refuse rather than
+prompt. Worth fixing, not by appending.
+
+Displaying the argv took two corrections, both of the same shape: the operator
+would have authorized something other than what was shown.
+
+The first draft sliced the tokens to `MAX_APPROVAL_LIST_ITEMS`, displaying
+`curl -sS --max-time 20 -D - -o /dev/null` while the response carried that plus
+`https://example.com`. `bounded()` marks a byte truncation; a token slice drops
+the tail in silence. The second joined the tokens on a space, which erases the
+argument boundaries: `["bash", "-c", "echo safe"]` and
+`["bash", "-c", "echo", "safe"]` rendered identically, and `["rm", "", "-rf"]`
+rendered as `rm  -rf` with the empty argument invisible. Both were measured,
+not reasoned about, and the second was caught by review rather than by me.
+
+The line now carries `JSON.stringify` of the argv. A third correction followed,
+also caught by review: claiming the byte bound behaved "like the `command`
+line" was false. Every other displayed field is gated by
+`hasCompletePromptContext`, which refuses the whole request when a field would
+not render whole — a 300-byte `command` declines with no prompt at all — and
+`proposedExecpolicyAmendment` was not in that gate. Measured before the fix: a
+300-byte argv rendered cut and granted in full. It is gated now, so an
+amendment too long to display is refused rather than truncated, which also
+bounds an array that had no count limit.
+
+The contract test asserts the exact rendered string, that two argvs differing
+only in token boundaries render differently, and that an over-long argv is
+declined without a prompt.
 
 That advertised set is advisory rather than binding, measured on 2026-08-26
 when the server honoured a `decline` it had not advertised.
