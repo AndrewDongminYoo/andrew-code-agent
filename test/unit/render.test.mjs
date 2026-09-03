@@ -596,6 +596,79 @@ test("rejects config scalar-table collisions while allowing exact-key overrides"
   });
 });
 
+const ORACLE_ARGV = [
+  "-c",
+  'cd "$LLM_WIKI_ROOT" && exec pnpm exec tsx mcp-server/src/start-local.ts',
+];
+
+const oracleMcpServer = () => ({
+  name: "oracle",
+  command: "/bin/sh",
+  args: ORACLE_ARGV,
+  env: { LLM_WIKI_MCP_MODE: "managed" },
+  envVars: ["LLM_WIKI_ROOT", "PATH"],
+  enabledTools: ["search_precedent", "read_precedent", "read_evidence"],
+  defaultToolsApprovalMode: "approve",
+  startupTimeoutSec: 240,
+  toolTimeoutSec: 60,
+  capability: "oracle",
+});
+
+test("renders a gated MCP server only when enabled", async () => {
+  await withSourceRepository(async (repository) => {
+    const gated = manifest();
+    gated.mcpServers = [oracleMcpServer()];
+    const disabled = await renderBundle(repository, gated, {});
+    assert.equal(
+      parse(renderedText(disabled, "config.toml")).mcp_servers,
+      undefined,
+    );
+
+    const enabled = await renderBundle(repository, gated, {
+      oracle: { llmWikiRoot: repository },
+    });
+    const config = parse(renderedText(enabled, "config.toml"));
+    assert.deepEqual(config.mcp_servers, {
+      oracle: {
+        command: "/bin/sh",
+        args: ORACLE_ARGV,
+        env: { LLM_WIKI_MCP_MODE: "managed" },
+        env_vars: ["LLM_WIKI_ROOT", "PATH"],
+        enabled_tools: ["search_precedent", "read_precedent", "read_evidence"],
+        default_tools_approval_mode: "approve",
+        startup_timeout_sec: 240,
+        tool_timeout_sec: 60,
+      },
+    });
+    assert.doesNotMatch(
+      renderedText(enabled, "config.toml"),
+      new RegExp(repository.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    );
+  });
+});
+
+test("renders an ungated MCP server with arrays intact", async () => {
+  await withSourceRepository(async (repository) => {
+    const base = manifest();
+    base.mcpServers = [
+      {
+        name: "probe",
+        command: "/bin/sh",
+        args: [],
+        env: {},
+        envVars: [],
+        enabledTools: [],
+      },
+    ];
+    const config = parse(
+      renderedText(await renderBundle(repository, base, {}), "config.toml"),
+    );
+    assert.deepEqual(config.mcp_servers, {
+      probe: { command: "/bin/sh", args: [] },
+    });
+  });
+});
+
 // Codex rewrites its own config owner-only on every session, so the bundle
 // installs it that way rather than widening it back to 0644 on each run.
 test("the rendered config is owner-only and the rendered hooks file is not", async () => {
