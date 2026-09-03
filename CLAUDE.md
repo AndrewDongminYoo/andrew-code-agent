@@ -133,9 +133,14 @@ path:
 1. **Persistence** (`src/runtime/thread-store.ts`) writes the thread record
    that `resume` and `status` read back in a later process.
 
-`prepareCandidate` always passes `requestedCapabilities: []`, so the `oracle`
-and `shared-memory` gating in `render.ts` is unreachable from the CLI in v0.1;
-only `live-manifest.test.mjs` exercises a requested capability.
+Capabilities reach the bundle from the command line. `--capability` is
+repeatable, `SUPPORTED_CAPABILITIES` in `src/constants.ts` admits `oracle` and
+nothing else, and `cli.ts` refuses the run with `ORACLE_ROOT_UNSET` when
+`ANDREW_AGENT_ORACLE_ROOT` is empty. `render.ts` then separates two cases that are
+easy to conflate: input supplied for a capability the manifest does not declare
+is refused with `CAPABILITY_INPUT_INVALID`, while a capability the manifest
+declares but the run did not request is enabled-off, and its tagged files and
+hooks are filtered out of the bundle.
 
 `resume` and `status` reuse the helpers exported from `run.ts`
 (`prepareCandidate`, `coordinatorDependencies`, `appServerInput`,
