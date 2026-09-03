@@ -103,8 +103,12 @@ against the original) got two commits, neither touching
    repository, and the probe clone's edit exists only to get a candidate
    bundle far enough to spawn the MCP child.
 
-Command (environment built explicitly, matching the pattern
-`test/e2e/acceptance.test.mjs` uses internally):
+Command (`HOME`, `ANDREW_AGENT_CODEX_SOURCE`, `ANDREW_AGENT_STATE_ROOT`, and
+`ANDREW_AGENT_CODEX_BIN` built the same way `environmentFor` in
+`test/e2e/acceptance.test.mjs` builds them; `PATH` differs from that harness,
+which inherits the outer process's own `PATH` — this measurement instead
+passed a fully explicit, hand-narrowed `PATH` so every input to the run stayed
+named rather than ambient):
 
 ```bash
 env -i \
@@ -157,11 +161,34 @@ That is the complete sorted `env` output: five keys, nothing else. Of the
 five names the brief asked about:
 
 - `PATH` — **present**, but not the literal PATH this measurement passed to
-  the CLI. It reads
-  `<managed arg0 wrapper dir>:<codex release dir>/codex-path:<node bin
-dir>:/usr/bin:/bin:/usr/sbin:/sbin` — the trailing three segments match
-  what was passed in, and two Codex-managed directories are prepended. Codex
-  builds this value; it does not pass the parent's `PATH` through unchanged.
+  the CLI: two Codex-managed directories are prepended, and the CLI's own
+  `PATH` follows unchanged. Shown literally below (it contains no secret; the
+  two segments naming a `/Users/dongminyu` path are each held to a
+  placeholder instead, since they are not the fact under measurement):
+
+  Segments joined by `:` in the actual value; one per line here to fit the
+  80-column limit:
+
+  ```log
+  PATH=
+    /private/tmp/mcp-probe/state/codex-home/tmp/arg0/codex-arg0cDGUrM
+    <codex release's codex-path dir>
+    <node bin dir>
+    /usr/bin
+    /bin
+    /usr/sbin
+    /sbin
+  ```
+
+  The first segment is a per-run, managed `arg0` wrapper directory under the
+  run's own state root. The second is the pinned Codex release's own
+  `codex-path` directory. Those two are what Codex prepends. All five
+  segments this measurement passed to the CLI as `PATH` — the node bin
+  directory, then `/usr/bin`, `/bin`, `/usr/sbin`, `/sbin` — follow
+  afterward, unchanged and in order. Codex does not pass the parent's `PATH`
+  through as-is; it builds a new value that keeps the caller's `PATH`
+  entries as a suffix.
+
 - `HOME` — **absent**.
 - `CODEX_HOME` — **absent**.
 - `LLM_WIKI_ROOT` — **absent** (the `oracle` capability was not requested for
@@ -189,6 +216,57 @@ value through the server's own `env` or `env_vars` config, which is what Step
 **`MCP_CWD_DEFAULT`** is the target repository root passed as `run`'s
 `<repository>` argument — measured here as `/private/tmp/mcp-probe/target-repo`,
 not `codex-home` and not any state or scratch directory.
+
+## Does the child's PATH contain pnpm's directory?
+
+`buildChildPath()` in `src/app-server/client.ts` builds the App Server's own
+`PATH` from `dirname(process.execPath)`, then every absolute entry of the CLI
+process's own `PATH`, then `/usr/bin` and `/bin` — so in a normal operator
+invocation, whatever directory holds `pnpm` on the operator's real `PATH`
+would be forwarded. The Step 4 run above cannot answer this: its CLI `PATH`
+was hand-narrowed to `<node bin dir>:/usr/bin:/bin:/usr/sbin:/sbin`, which
+excludes pnpm's directory by construction, not by measurement.
+
+`command -v pnpm` reports `/opt/homebrew/bin/pnpm`. Checked `uptime` again
+(load average 5.15, under the threshold) and re-ran Step 4 once more, adding
+only `/opt/homebrew/bin` to the CLI's `PATH`:
+
+```bash
+env -i \
+  HOME=/tmp/mcp-probe/env-home \
+  ANDREW_AGENT_CODEX_SOURCE=/tmp/mcp-probe/source \
+  ANDREW_AGENT_STATE_ROOT=/tmp/mcp-probe/state \
+  ANDREW_AGENT_CODEX_BIN=<pinned codex path> \
+  PATH=<node bin dir>:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin \
+  TMPDIR=/private/tmp/mcp-probe/scratch-parent \
+  node dist/cli.js run /tmp/mcp-probe/target-repo \
+  "Reply with the single word ACKNOWLEDGED and change nothing."
+```
+
+`/tmp/mcp-probe/child.txt` afterward, `PATH` shown literally with the same
+`/Users/dongminyu` segments held to a placeholder as above (segments joined
+by `:` in the actual value; one per line here to fit the 80-column limit):
+
+```log
+PATH=
+  /private/tmp/mcp-probe/state/codex-home/tmp/arg0/codex-arg0WU0elY
+  <codex release's codex-path dir>
+  <node bin dir>
+  /opt/homebrew/bin
+  /usr/bin
+  /bin
+  /usr/sbin
+  /sbin
+```
+
+All six segments passed to the CLI reach the child unchanged and in order,
+with the same two Codex-managed directories prepended as the first run.
+`/opt/homebrew/bin` is present.
+
+**`MCP_PATH_CONTAINS_PNPM_DIR = true`**, whenever that directory is on the
+`PATH` of the process that starts the App Server — which `buildChildPath()`
+guarantees for a normal operator invocation, since it forwards every absolute
+entry of that `PATH` unfiltered.
 
 ## What this does not establish
 
