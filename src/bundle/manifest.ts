@@ -165,9 +165,12 @@ export function parseBundleManifest(source: string): BundleManifest {
   const declaredCapabilities = new Set(
     capabilities.map((capability) => capability.name),
   );
-  for (const capability of [...files, ...hooks, ...requirements].flatMap(
-    (entry) => entry.capability ?? [],
-  )) {
+  for (const capability of [
+    ...files,
+    ...hooks,
+    ...requirements,
+    ...mcpServers,
+  ].flatMap((entry) => entry.capability ?? [])) {
     if (!declaredCapabilities.has(capability)) {
       throw new ManifestError(
         "UNDECLARED_CAPABILITY",
@@ -481,7 +484,9 @@ function readRequirements(
     names.add(name);
     const executable = readExecutable(
       readString(table, "executable", `requirements[${index}]`),
-      index,
+      "INVALID_REQUIREMENT",
+      `requirements[${index}]`,
+      "executable",
     );
     const arguments_ = readStringArray(
       table,
@@ -534,13 +539,12 @@ function readMcpServers(
       );
     }
     names.add(name);
-    const command = readString(table, "command", location);
-    if (!command.startsWith("/")) {
-      throw new ManifestError(
-        "INVALID_MCP_SERVER",
-        `${location}.command must be an absolute POSIX path.`,
-      );
-    }
+    const command = readExecutable(
+      readString(table, "command", location),
+      "INVALID_MCP_SERVER",
+      location,
+      "command",
+    );
     const args = hasOwn(table, "args")
       ? readStringArray(table, "args", location)
       : [];
@@ -611,7 +615,12 @@ function readStringMap(
   return result;
 }
 
-function readExecutable(value: string, index: number): string {
+function readExecutable(
+  value: string,
+  code: "INVALID_REQUIREMENT" | "INVALID_MCP_SERVER",
+  location: string,
+  field: string,
+): string {
   if (
     !value.startsWith("/") ||
     value === "/" ||
@@ -627,8 +636,8 @@ function readExecutable(value: string, index: number): string {
       )
   ) {
     throw new ManifestError(
-      "INVALID_REQUIREMENT",
-      `requirements[${index}].executable must be an absolute POSIX path.`,
+      code,
+      `${location}.${field} must be an absolute POSIX path.`,
     );
   }
   return value;

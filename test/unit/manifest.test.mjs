@@ -305,6 +305,29 @@ test("rejects a bad command, name, key, or approval mode", async () => {
   );
 });
 
+test("rejects an MCP server capability that is not declared", async () => {
+  const valid = await fixture("valid");
+  assertManifestError(
+    valid.replace(
+      'tool_timeout_sec = 60\ncapability = "oracle"',
+      'tool_timeout_sec = 60\ncapability = "shared-memory"',
+    ),
+    "UNDECLARED_CAPABILITY",
+  );
+});
+
+test("rejects a non-canonical MCP server command path", async () => {
+  const valid = await fixture("valid");
+  assertManifestError(
+    valid.replace('command = "/bin/sh"', 'command = "/bin/../sh"'),
+    "INVALID_MCP_SERVER",
+  );
+  assertManifestError(
+    valid.replace('command = "/bin/sh"', 'command = "/bin/s*"'),
+    "INVALID_MCP_SERVER",
+  );
+});
+
 test("a manifest without mcp_servers parses to an empty list", async () => {
   const manifest = parse(
     (await fixture("valid")).replace(
