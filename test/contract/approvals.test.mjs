@@ -1279,15 +1279,73 @@ test("answers a command approval captured from the pinned binary", async () => {
   assert.match(sink.text(), /^kind: command$/m);
   assert.match(sink.text(), /^Request: 0$/m);
   assert.match(sink.text(), /샌드박스에서 example\.com DNS/);
-  // The server proposed an execpolicy amendment and advertised
-  // acceptWithExecpolicyAmendment in availableDecisions; `choices()` builds
-  // extra options only from proposedNetworkPolicyAmendments, which this frame
-  // does not carry, so the operator is offered neither. Pinning the exact four
-  // keeps that visible and fixes the numbering any decision assertion needs.
-  // Anchored on `Selection: ` so a fifth option cannot be appended past the
-  // match: without that tail the regex is a prefix and pins nothing.
+  // The server proposes an execpolicy amendment and supplies its argv, so the
+  // operator is offered it at 4 (issue #53; the frame carries no network
+  // amendment). The label states the scope, because the generated params type
+  // documents the amendment as allowing similar commands without prompting and
+  // the prompt is the only place the operator learns that. Anchored on
+  // `Selection: ` so a sixth option cannot be appended past the match: without
+  // that tail the regex is a prefix and pins nothing.
   assert.match(
     sink.text(),
+    /1\. Accept\n2\. Accept for session\n3\. Decline\n4\. Apply supplied execpolicy amendment \(allows similar commands without prompting\)\n5\. Cancel\nSelection: $/,
+  );
+  // Displayed and granted must be the same argv, boundaries included. A
+  // token-sliced display drops the tail silently; a space-joined one erases
+  // the boundaries, so two different argvs render identically.
+  assert.match(
+    sink.text(),
+    new RegExp(
+      `^execpolicy amendment: ${JSON.stringify(command.params.proposedExecpolicyAmendment).replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`,
+      "m",
+    ),
+  );
+  for (const [left, right] of [
+    [["bash", "-c", "echo safe"], ["bash", "-c", "echo", "safe"]],
+  ]) {
+    const render = async (argv) => {
+      const frame = structuredClone(command);
+      frame.params.proposedExecpolicyAmendment = argv;
+      const pane = output();
+      await approvals().answerApproval(frame, input("4\n"), pane.stream, 100);
+      return pane.text().split("\n").find((line) => line.startsWith("execpolicy amendment:"));
+    };
+    assert.notEqual(await render(left), await render(right));
+  }
+  const amended = await approvals().answerApproval(command, input("4\n"), output().stream, 100);
+  assert.deepEqual(amended.response, {
+    decision: {
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: command.params.proposedExecpolicyAmendment,
+      },
+    },
+  });
+  assert.equal(amended.acceptedForSession, false);
+  // An argv too long to render is refused before any prompt, exactly as an
+  // over-long `command` is. Without this the operator would be shown a cut
+  // display and grant the whole array; the observed argv is 79 bytes, so the
+  // display bound is unreachable in the case above and only this one covers it.
+  for (const argv of [
+    ["bash", "-c", `curl ${"x".repeat(300)}`],
+    Array.from({ length: 2000 }, () => "tok"),
+  ]) {
+    const oversized = structuredClone(command);
+    oversized.params.proposedExecpolicyAmendment = argv;
+    const pane = output();
+    const refused = await approvals().answerApproval(oversized, input("4\n"), pane.stream, 100);
+    assert.deepEqual(refused.response, { decision: "decline" });
+    assert.equal(pane.calls(), 0);
+  }
+
+  // The option appears only when the server proposes one: without it the
+  // operator sees the same four choices as before, and Cancel is back at 4.
+  const withoutAmendment = structuredClone(command);
+  withoutAmendment.params.proposedExecpolicyAmendment = null;
+  const plain = output();
+  await approvals().answerApproval(withoutAmendment, input("4\n"), plain.stream, 100);
+  assert.match(
+    plain.text(),
     /1\. Accept\n2\. Accept for session\n3\. Decline\n4\. Cancel\nSelection: $/,
   );
+  assert.doesNotMatch(plain.text(), /execpolicy amendment:/);
 });

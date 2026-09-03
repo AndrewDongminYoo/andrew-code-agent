@@ -892,6 +892,35 @@ function choices(request: ValidRequest): readonly Choice[] {
         },
       });
     }
+    // The server can also propose a narrower exec policy, and supplies the argv
+    // to grant. Offered whenever the field is present and non-empty;
+    // `availableDecisions` is deliberately not consulted, because it is
+    // undeclared by the schema this build is pinned to and was measured
+    // advisory rather than binding.
+    //
+    // The label names the scope because the scope is not this request: the
+    // generated params type documents the field as allowing similar commands
+    // WITHOUT prompting, so accepting it changes policy for later commands.
+    // `acceptedForSession` does not constrain that and cannot — nothing outside
+    // this file reads it, and the coordinator forwards `response` alone. The
+    // prompt is the only place the operator learns what they are granting.
+    const execpolicyAmendment = request.params.proposedExecpolicyAmendment;
+    if (Array.isArray(execpolicyAmendment) && execpolicyAmendment.length > 0) {
+      values.push({
+        id: String(values.length + 1),
+        label:
+          "Apply supplied execpolicy amendment (allows similar commands without prompting)",
+        decision: "acceptWithExecpolicyAmendment",
+        acceptedForSession: false,
+        response: {
+          decision: {
+            acceptWithExecpolicyAmendment: {
+              execpolicy_amendment: execpolicyAmendment,
+            },
+          },
+        },
+      });
+    }
   }
   values.push({
     id: String(values.length + 1),
@@ -1018,6 +1047,21 @@ function hasCompletePromptContext(
     )
   )
     return false;
+  // The amendment is granted in full while the prompt shows it bounded, so
+  // without this the operator would authorize argv bytes the display had cut.
+  // Every other displayed field is gated here rather than trusted to
+  // `bounded()`, and refusing is what makes the truncation unreachable: a
+  // `command` too long to render already declines without prompting, and this
+  // makes the amendment behave the same way. It also bounds the array's size,
+  // which is otherwise unbounded, since an argv with too many tokens cannot
+  // fit the display budget either.
+  if (
+    Array.isArray(params.proposedExecpolicyAmendment) &&
+    !fitsDisplayed(
+      JSON.stringify(params.proposedExecpolicyAmendment.map(String)),
+    )
+  )
+    return false;
   const permissions = isRecord(params.permissions) ? params.permissions : null;
   const fileSystem =
     permissions && isRecord(permissions.fileSystem)
@@ -1071,6 +1115,25 @@ function prompt(
   ] as const)
     if (typeof params[key] === "string")
       context.push(`${key}: ${bounded(params[key])}`);
+  // Without this the operator would be offered the amendment choice above with
+  // no sight of the argv it grants. Two ways to display it wrongly, both of
+  // which authorize something other than what was shown, and both rejected:
+  // slicing the tokens drops the tail silently, and joining them on a space
+  // erases the argument boundaries, so ["bash", "-c", "echo safe"] renders
+  // identically to ["bash", "-c", "echo", "safe"] and an empty argument
+  // vanishes. JSON keeps every boundary, quotes whitespace, and shows an empty
+  // argument as "". An amendment too long to render is refused by
+  // `hasCompletePromptContext` before this runs, exactly as an over-long
+  // `command` is, so the bound here never silently cuts a granted argv.
+  if (
+    Array.isArray(params.proposedExecpolicyAmendment) &&
+    params.proposedExecpolicyAmendment.length > 0
+  )
+    context.push(
+      `execpolicy amendment: ${bounded(
+        JSON.stringify(params.proposedExecpolicyAmendment.map(String)),
+      )}`,
+    );
   if (isRecord(params.networkApprovalContext))
     context.push(
       `network: ${bounded(String(params.networkApprovalContext.protocol))}://${bounded(String(params.networkApprovalContext.host))}`,
