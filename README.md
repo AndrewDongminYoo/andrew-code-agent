@@ -61,6 +61,48 @@ that must never appear in a rendered file.
 Anything not named in that manifest is not carried into the managed home.
 Sessions, logs, caches, and authentication material stay where they are.
 
+### mcp_servers
+
+An optional `[[mcp_servers]]` array in `agent-bundle.toml` declares stdio MCP
+servers to write into the managed `config.toml`. Each entry accepts:
+
+- `name` (required) — matches `^[a-z][a-z0-9_-]{0,63}$`.
+- `command` (required) — an absolute POSIX path, validated the same way as
+  `requirements[].executable`: no `.` or `..` segments, no backslashes, no
+  glob characters, and no control characters.
+- `args` (optional array of strings, default `[]`) — always rendered.
+- `env` (optional table of `NAME = "value"` pairs; names must match
+  `^[A-Z][A-Z0-9_]*$`) — rendered as `[mcp_servers.<name>.env]` only when
+  non-empty.
+- `env_vars` (optional array of strings; forwarded variable names) — omitted
+  from the rendered table when empty.
+- `enabled_tools` (optional array of strings) — omitted from the rendered
+  table when empty.
+- `default_tools_approval_mode` (optional) — `approve` or `prompt`.
+- `startup_timeout_sec` and `tool_timeout_sec` (optional integers, `1`
+  through `3600`).
+- `capability` (optional) — must name a capability declared in
+  `[[capabilities]]`; the entry is rendered only when that capability is
+  enabled for the run.
+
+An invalid entry fails with `INVALID_MCP_SERVER`, a repeated `name` fails
+with `DUPLICATE_MCP_SERVER`, a `capability` that no `[[capabilities]]` entry
+declares fails with `UNDECLARED_CAPABILITY`, and any key outside this list
+fails with `UNKNOWN_KEY`.
+
+The runtime Oracle root never appears in the rendered config; a server
+reaches it through `env_vars` forwarding or through a shell that reads
+`$LLM_WIKI_ROOT`.
+
+```toml
+[[mcp_servers]]
+name = "wiki"
+command = "/bin/sh"
+args = ["-c", "exec wiki-mcp --root \"$LLM_WIKI_ROOT\""]
+env_vars = ["LLM_WIKI_ROOT"]
+capability = "oracle"
+```
+
 ## First run
 
 Select a bundle source first. The source root must be a Git worktree root
