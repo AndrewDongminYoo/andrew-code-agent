@@ -875,6 +875,10 @@ function choices(request: ValidRequest): readonly Choice[] {
       (request.params.proposedNetworkPolicyAmendments as unknown[]) ?? []
     ).slice(0, MAX_APPROVAL_LIST_ITEMS)) {
       const value = amendment as RecordValue;
+      // Selecting this changes policy for later requests, not only this one:
+      // the generated params type documents the field as amendments "for
+      // future requests". The label has no room to say so beside a host, so
+      // the context block states it next to each amendment (see `prompt`).
       values.push({
         id: String(values.length + 1),
         label: `Apply supplied network policy for ${boundedBytes(value.host as string, 64)}`,
@@ -1154,8 +1158,15 @@ function prompt(
       MAX_APPROVAL_LIST_ITEMS,
     )) {
       const value = amendment as RecordValue;
+      // The scope is disclosed here and not in the choice label. The label
+      // must keep the host, because the host is what tells two amendments
+      // apart, and `Apply supplied network policy for ` plus a host already
+      // meets MAX_CHOICE_LABEL_BYTES; a clause there would turn hosts that
+      // prompt today into declines. This line has the prompt budget instead,
+      // and a line that does not fit refuses the whole prompt below rather
+      // than dropping the clause, so the disclosure is never silently cut.
       context.push(
-        `network amendment: ${String(value.action)} ${String(value.host)}`,
+        `network amendment (applies to future requests): ${String(value.action)} ${String(value.host)}`,
       );
     }
   const requestedPermissions = isRecord(params.permissions)

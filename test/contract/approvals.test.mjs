@@ -386,6 +386,44 @@ test("shows every generated command, network amendment, and filesystem entry dec
   assert.match(permissionSink.text(), /fileSystem entry: deny .*\/repo\/blocked\/\*\*/);
 });
 
+test("discloses beside each network amendment that the grant outlives the request", async () => {
+  const [command] = await requests();
+  command.params.proposedNetworkPolicyAmendments = [
+    { host: "a.example.com", action: "allow" },
+    { host: "b.example.com", action: "deny" },
+  ];
+  const sink = output();
+  const chosen = await approvals().answerApproval(command, input("5\n"), sink.stream, 100);
+  assert.deepEqual(chosen.response, { decision: { applyNetworkPolicyAmendment: { network_policy_amendment: { host: "b.example.com", action: "deny" } } } });
+  const text = sink.text();
+  const scope = "network amendment (applies to future requests): ";
+  assert.ok(text.includes(`${scope}allow a.example.com`), "allow entry carries the scope");
+  assert.ok(text.includes(`${scope}deny b.example.com`), "deny entry carries the scope");
+  assert.ok(text.indexOf(scope) < text.indexOf("1. Accept"), "scope is shown before the choices");
+  // The label keeps the host: with two amendments the host is the only thing
+  // that tells choice 4 from choice 5.
+  assert.match(text, /4\. Apply supplied network policy for a\.example\.com\n5\. Apply supplied network policy for b\.example\.com\n/);
+
+  // Moving the scope out of the label keeps the label budget where it was:
+  // a 62-byte host fills MAX_CHOICE_LABEL_BYTES exactly and still prompts,
+  // one more byte still declines without a prompt.
+  const limit = structuredClone(command);
+  const host = `${"h".repeat(50)}.example.com`;
+  assert.equal(Buffer.byteLength(host, "utf8"), 62);
+  limit.params.proposedNetworkPolicyAmendments = [{ host, action: "allow" }];
+  const limitSink = output();
+  const atLimit = await approvals().answerApproval(limit, input("4\n"), limitSink.stream, 100);
+  assert.equal(limitSink.calls(), 1);
+  assert.deepEqual(atLimit.response, { decision: { applyNetworkPolicyAmendment: { network_policy_amendment: { host, action: "allow" } } } });
+  assert.ok(limitSink.text().includes(`${scope}allow ${host}`));
+  const over = structuredClone(command);
+  over.params.proposedNetworkPolicyAmendments = [{ host: `h${host}`, action: "allow" }];
+  const overSink = output();
+  const declined = await approvals().answerApproval(over, input("4\n"), overSink.stream, 100);
+  assert.equal(overSink.calls(), 0);
+  assert.deepEqual(declined.response, { decision: "decline" });
+});
+
 test("visibly escapes terminal controls before approval prompt bounds", async () => {
   const [, , fixturePermission] = await requests();
   const permission = structuredClone(fixturePermission);

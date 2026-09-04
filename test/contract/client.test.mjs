@@ -94,7 +94,6 @@ const initializeResult = { userAgent: "codex-test", codexHome: home, platformFam
 let initialized = false;
 let queued = [];
 let serverRequested = false;
-if (scenario === "handshake-timeout") setInterval(() => {}, 1000);
 const lines = createInterface({ input: process.stdin, crlfDelay: Infinity });
 for await (const line of lines) {
   const message = JSON.parse(line);
@@ -102,7 +101,7 @@ for await (const line of lines) {
   if (message.method === "initialize") {
     if (scenario === "malformed-jsonl") { process.stdout.write("{not-json}\\n"); continue; }
     if (scenario === "malformed-envelope") { send({ id: message.id, result: initializeResult, error: { code: -1, message: "bad" } }); continue; }
-    if (scenario !== "handshake-timeout") send({ id: message.id, result: initializeResult });
+    send({ id: message.id, result: initializeResult });
     continue;
   }
   if (message.method === "initialized") {
@@ -118,7 +117,6 @@ for await (const line of lines) {
   if (scenario === "request") send({ method: "item/tool/requestUserInput", id: "server-1", params: { threadId: "t", turnId: "u", itemId: "i", questions: [] } });
   if (scenario === "respond" && message.method === undefined && message.id === "server-1") { send({ method: "response/observed", params: message }); continue; }
   if (scenario === "respond" && !serverRequested) { serverRequested = true; send({ method: "item/tool/requestUserInput", id: "server-1", params: { threadId: "t", turnId: "u", itemId: "i", questions: [] } }); }
-  if (scenario === "request-timeout") continue;
   if (scenario === "remote-error") { send({ id: message.id, error: { code: -32000, message: "sensitive upstream detail" } }); continue; }
   if (scenario === "out-of-order") {
     queued.push(message);
@@ -152,8 +150,13 @@ function startInput(binary, codexHome, overrides = {}) {
     codexBinary: binary,
     codexHome,
     productVersion: "0.1.0",
-    handshakeTimeoutMs: 300,
-    requestTimeoutMs: 300,
+    // A hang bound, not a mechanism under test: no scenario in this file lets
+    // either budget fire, and the timeout paths are covered in
+    // test/integration/transport.test.mjs with their own short budgets. The
+    // value therefore only needs to stay above the fake's slowest reply
+    // under load; 300 ms lost that race once inside `pnpm check` (#56).
+    handshakeTimeoutMs: 2_000,
+    requestTimeoutMs: 2_000,
     ...overrides,
   };
 }
