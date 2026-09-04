@@ -201,6 +201,8 @@ test(
       await writeFile(
         join(home, "config.toml"),
         [
+          "[mcp_servers]",
+          "",
           "[mcp_servers.oracle]",
           'command = "/bin/sh"',
           'args = ["-c", "exec cat"]',

@@ -30,8 +30,10 @@ plan is phase 1 of the sequence recorded on issue #25 on 2026-09-03.
 
 - A rendered file must never contain the runtime Oracle root literal;
   `validatePortableFiles` scans for it (`src/bundle/render.ts:144-157`).
-  MCP entries therefore refer to the root only through `${LLM_WIKI_ROOT}` or
-  through an environment variable forwarded by name.
+  MCP entries therefore refer to the root only through a shell command that
+  reads `$LLM_WIKI_ROOT` at spawn time or through an environment variable
+  forwarded by name; nothing expands `${...}` tokens inside the generated
+  `config.toml`.
 - A `${TOKEN}` belonging to a disabled capability must not survive into any
   rendered file (`assertDisabledCapabilityTokens`, `render.ts:619-642`).
   Capability filtering must happen before `createGeneratedConfig` serializes.

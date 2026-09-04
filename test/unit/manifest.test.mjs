@@ -86,7 +86,7 @@ test("decodes a valid manifest into a stable sorted file contract", async () => 
         'cd "$LLM_WIKI_ROOT" && exec pnpm exec tsx mcp-server/src/start-local.ts',
       ],
       env: { LLM_WIKI_MCP_MODE: "managed" },
-      envVars: ["LLM_WIKI_ROOT", "PATH"],
+      envVars: ["LLM_WIKI_ROOT"],
       enabledTools: ["search_precedent", "read_precedent", "read_evidence"],
       defaultToolsApprovalMode: "approve",
       startupTimeoutSec: 240,
@@ -303,6 +303,8 @@ test("rejects a bad command, name, key, or approval mode", async () => {
     ),
     "INVALID_MCP_SERVER",
   );
+  assertManifestError(valid.replace('LLM_WIKI_MCP_MODE = "managed"', 'llm_wiki_mcp_mode = "managed"'), "INVALID_MCP_SERVER");
+  assertManifestError(valid.replace('LLM_WIKI_MCP_MODE = "managed"', "LLM_WIKI_MCP_MODE = 1"), "INVALID_MCP_SERVER");
 });
 
 test("rejects an MCP server capability that is not declared", async () => {

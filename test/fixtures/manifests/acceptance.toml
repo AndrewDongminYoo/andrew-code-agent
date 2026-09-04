@@ -60,6 +60,7 @@ required_script = "hooks/safety.sh"
 source_command = 'bash "$HOME/.codex/hooks/safety.sh"'
 timeout = 5
 
+# Gated on oracle, which no e2e case enables: this entry exercises the parser only.
 [[mcp_servers]]
 name = "oracle"
 command = "/bin/sh"
@@ -68,7 +69,7 @@ args = [
   "cd \"$LLM_WIKI_ROOT\" && exec pnpm exec tsx mcp-server/src/start-local.ts",
 ]
 env = { LLM_WIKI_MCP_MODE = "managed" }
-env_vars = ["LLM_WIKI_ROOT", "PATH"]
+env_vars = ["LLM_WIKI_ROOT"]
 enabled_tools = ["search_precedent", "read_precedent", "read_evidence"]
 default_tools_approval_mode = "approve"
 startup_timeout_sec = 240
