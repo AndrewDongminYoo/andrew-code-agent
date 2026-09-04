@@ -330,6 +330,34 @@ test("rejects a non-canonical MCP server command path", async () => {
   );
 });
 
+test("rejects config_keys and config_overrides entries reserved for mcp_servers", async () => {
+  const valid = await fixture("valid");
+  assertManifestError(
+    valid.replace(
+      'config_keys = ["model", "features.hooks"]',
+      'config_keys = ["model", "mcp_servers.probe.command"]',
+    ),
+    "RESERVED_CONFIG_KEY",
+  );
+  assertManifestError(
+    valid.replace(
+      'approval_policy = "on-request"',
+      '"mcp_servers.probe.command" = "/bin/sh"\napproval_policy = "on-request"',
+    ),
+    "RESERVED_CONFIG_KEY",
+  );
+});
+
+test("accepts a config_overrides key that merely starts with mcp_servers", async () => {
+  const manifest = parse(
+    (await fixture("valid")).replace(
+      'approval_policy = "on-request"',
+      'mcp_servers_extra = true\napproval_policy = "on-request"',
+    ),
+  );
+  assert.equal(manifest.configOverrides.mcp_servers_extra, true);
+});
+
 test("a manifest without mcp_servers parses to an empty list", async () => {
   const manifest = parse(
     (await fixture("valid")).replace(

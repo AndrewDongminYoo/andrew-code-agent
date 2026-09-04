@@ -5,6 +5,11 @@ repository does not control: the environment and working directory the pinned
 Codex binary hands an MCP child. This note measures that fact before the
 manifest shape is locked. It changes no product code.
 
+This run predates a later fix: projecting `mcp_servers.probe.command` (or any
+`mcp_servers.*` path) through `config_keys`, as Step 4 does below, is now
+refused with `ManifestErrorCode` `RESERVED_CONFIG_KEY`, so the manifest edit
+this note made would no longer parse.
+
 Measured 2026-09-04 against the pinned
 `~/.codex/packages/standalone/releases/0.152.1-aarch64-apple-darwin/bin/codex`
 (`codex-cli 0.152.1`), product at `9b3d4c7`, the operator's real bundle source

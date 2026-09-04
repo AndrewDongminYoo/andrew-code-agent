@@ -669,6 +669,13 @@ function createGeneratedConfig(
       `./agents/${agent}.toml`,
     );
   }
+  if (Object.hasOwn(projected, "mcp_servers")) {
+    throw new RenderError(
+      "CONFIG_INVALID",
+      "mcp_servers may only come from the manifest's [[mcp_servers]] " +
+        "section.",
+    );
+  }
   for (const server of servers) {
     const table: ConfigTable = { command: server.command, args: server.args };
     if (Object.keys(server.env).length > 0) table.env = { ...server.env };

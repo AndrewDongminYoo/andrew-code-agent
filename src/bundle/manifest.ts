@@ -99,7 +99,8 @@ export type ManifestErrorCode =
   | "DUPLICATE_PATTERN_ID"
   | "INVALID_INSTRUCTION_SECTION"
   | "DUPLICATE_INSTRUCTION_SECTION"
-  | "UNDECLARED_TOKEN";
+  | "UNDECLARED_TOKEN"
+  | "RESERVED_CONFIG_KEY";
 
 export class ManifestError extends Error {
   readonly code: ManifestErrorCode;
@@ -145,6 +146,9 @@ export function parseBundleManifest(source: string): BundleManifest {
     "config_source",
   );
   const configKeys = readStringArray(root, "config_keys", "manifest");
+  for (const key of configKeys) {
+    assertConfigKeyNotReserved(key, `config_keys entry "${key}"`);
+  }
   const configOverrides = readConfigOverrides(
     readRequired(root, "config_overrides", "manifest"),
   );
@@ -233,12 +237,29 @@ function readSchemaVersion(table: Record<string, unknown>): 1 {
   return 1;
 }
 
+// MCP servers are declared only through [[mcp_servers]], which is gated by
+// each entry's own `capability`. Letting config_keys or config_overrides
+// project a mcp_servers.* scalar would bypass that gate: the scalar has no
+// capability of its own, so it survives even when the matching declared
+// server is filtered out for a disabled capability.
+function assertConfigKeyNotReserved(key: string, context: string): void {
+  const [firstSegment] = key.split(".");
+  if (firstSegment === "mcp_servers") {
+    throw new ManifestError(
+      "RESERVED_CONFIG_KEY",
+      `${context} may not name mcp_servers.*; MCP servers are declared ` +
+        "only through [[mcp_servers]].",
+    );
+  }
+}
+
 function readConfigOverrides(
   value: unknown,
 ): Readonly<Record<string, ManifestScalar>> {
   const table = readTable(value, "config_overrides");
   const overrides: Record<string, ManifestScalar> = {};
   for (const [key, entry] of Object.entries(table)) {
+    assertConfigKeyNotReserved(key, `config_overrides key "${key}"`);
     if (
       typeof entry !== "string" &&
       typeof entry !== "boolean" &&

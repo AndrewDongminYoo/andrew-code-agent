@@ -717,6 +717,31 @@ test("escapes U+007F (DEL) in a rendered TOML string so strict parsers accept it
   });
 });
 
+test("rejects a config_overrides projection of mcp_servers.*", async () => {
+  await withSourceRepository(async (repository) => {
+    const base = manifest();
+    base.configOverrides["mcp_servers.probe.command"] = "/bin/sh";
+    base.mcpServers = [];
+    await assert.rejects(renderBundle(repository, base, {}), (error) =>
+      assertRenderError(error, "CONFIG_INVALID"),
+    );
+  });
+});
+
+test("rejects a projected mcp_servers.* scalar even when the matching declared server is capability-gated off", async () => {
+  await withSourceRepository(async (repository) => {
+    const base = manifest();
+    base.configOverrides["mcp_servers.oracle.command"] = "/bin/sh";
+    base.mcpServers = [oracleMcpServer()];
+    // Oracle input is not supplied, so the declared "oracle" server is
+    // filtered out by the capability gate. The projected scalar must not
+    // survive that filter and start the server anyway.
+    await assert.rejects(renderBundle(repository, base, {}), (error) =>
+      assertRenderError(error, "CONFIG_INVALID"),
+    );
+  });
+});
+
 // Codex rewrites its own config owner-only on every session, so the bundle
 // installs it that way rather than widening it back to 0644 on each run.
 test("the rendered config is owner-only and the rendered hooks file is not", async () => {

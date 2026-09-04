@@ -88,7 +88,10 @@ servers to write into the managed `config.toml`. Each entry accepts:
 An invalid entry fails with `INVALID_MCP_SERVER`, a repeated `name` fails
 with `DUPLICATE_MCP_SERVER`, a `capability` that no `[[capabilities]]` entry
 declares fails with `UNDECLARED_CAPABILITY`, and any key outside this list
-fails with `UNKNOWN_KEY`.
+fails with `UNKNOWN_KEY`. Top-level `config_keys` and `config_overrides` may
+not name `mcp_servers.*` — that would bypass a server's own `capability`
+gate — and fail with `RESERVED_CONFIG_KEY`; MCP servers are declared only
+through `[[mcp_servers]]`.
 
 The runtime Oracle root never appears in the rendered config; a server
 reaches it through `env_vars` forwarding or through a shell that reads
