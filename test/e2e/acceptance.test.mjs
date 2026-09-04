@@ -7,7 +7,7 @@
 // Application Support directory.
 
 import assert from "node:assert/strict";
-import { execFile as execFileCallback, spawn } from "node:child_process";
+import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
   copyFile,
@@ -27,6 +27,8 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import { probeStrictConfig } from "../helpers/strict-config.mjs";
 
 const execFile = promisify(execFileCallback);
 // fileURLToPath, not pathname: a checkout under a path with spaces or
@@ -543,29 +545,6 @@ test("an unauthenticated managed home blocks doctor and refuses to run", async (
 const liveSmokeRequested = process.env.ANDREW_AGENT_REAL_SMOKE === "1";
 const cacheBoundarySmokeRequested =
   process.env.ANDREW_AGENT_CACHE_BOUNDARY_SMOKE === "1";
-
-// The probe exits once its stdin closes; leaving the pipe open makes it serve.
-function probeStrictConfig(codexBin, codexHome) {
-  return new Promise((resolve, reject) => {
-    const child = spawn(codexBin, ["app-server", "--strict-config", "--listen", "stdio://"], {
-      env: { CODEX_HOME: codexHome, PATH: process.env.PATH ?? "/usr/bin:/bin" },
-      stdio: ["pipe", "pipe", "pipe"],
-    });
-    child.stdin.end();
-    let stderr = "";
-    child.stderr.setEncoding("utf8");
-    child.stderr.on("data", (chunk) => { stderr += chunk; });
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error("the strict-config probe did not exit"));
-    }, 30_000);
-    child.once("error", reject);
-    child.once("close", (code) => {
-      clearTimeout(timer);
-      resolve({ code, stderr });
-    });
-  });
-}
 
 function capturedStream() {
   const stream = new PassThrough();

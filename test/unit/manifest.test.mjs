@@ -77,6 +77,23 @@ test("decodes a valid manifest into a stable sorted file contract", async () => 
     },
   ]);
   assert.deepEqual(manifest.forbiddenPatternIds, ["github-token", "private-key"]);
+  assert.deepEqual(manifest.mcpServers, [
+    {
+      name: "oracle",
+      command: "/bin/sh",
+      args: [
+        "-c",
+        'cd "$LLM_WIKI_ROOT" && exec pnpm exec tsx mcp-server/src/start-local.ts',
+      ],
+      env: { LLM_WIKI_MCP_MODE: "managed" },
+      envVars: ["LLM_WIKI_ROOT"],
+      enabledTools: ["search_precedent", "read_precedent", "read_evidence"],
+      defaultToolsApprovalMode: "approve",
+      startupTimeoutSec: 240,
+      toolTimeoutSec: 60,
+      capability: "oracle",
+    },
+  ]);
 });
 
 test("rejects unknown keys at decoded table levels", async () => {
@@ -253,4 +270,100 @@ test("rejects capability tokens outside the allowed root set", async () => {
   const valid = await fixture("valid");
 
   assertManifestError(valid.replace('required_tokens = ["LLM_WIKI_ROOT", "CODEX_HOME"]', 'required_tokens = ["UNDECLARED"]'), "UNDECLARED_TOKEN");
+});
+
+test("rejects a duplicate MCP server name", async () => {
+  assertManifestError(await fixture("mcp-duplicate"), "DUPLICATE_MCP_SERVER");
+});
+
+test("rejects a bad command, name, key, or approval mode", async () => {
+  const valid = await fixture("valid");
+  assertManifestError(
+    valid.replace('command = "/bin/sh"', 'command = "sh"'),
+    "INVALID_MCP_SERVER",
+  );
+  assertManifestError(
+    valid.replace(
+      'name = "oracle"\ncommand',
+      'name = "Oracle Server"\ncommand',
+    ),
+    "INVALID_MCP_SERVER",
+  );
+  assertManifestError(
+    valid.replace(
+      "tool_timeout_sec = 60",
+      'tool_timeout_sec = 60\ncwd = "/tmp"',
+    ),
+    "UNKNOWN_KEY",
+  );
+  assertManifestError(
+    valid.replace(
+      'default_tools_approval_mode = "approve"',
+      'default_tools_approval_mode = "always"',
+    ),
+    "INVALID_MCP_SERVER",
+  );
+  assertManifestError(valid.replace('LLM_WIKI_MCP_MODE = "managed"', 'llm_wiki_mcp_mode = "managed"'), "INVALID_MCP_SERVER");
+  assertManifestError(valid.replace('LLM_WIKI_MCP_MODE = "managed"', "LLM_WIKI_MCP_MODE = 1"), "INVALID_MCP_SERVER");
+});
+
+test("rejects an MCP server capability that is not declared", async () => {
+  const valid = await fixture("valid");
+  assertManifestError(
+    valid.replace(
+      'tool_timeout_sec = 60\ncapability = "oracle"',
+      'tool_timeout_sec = 60\ncapability = "shared-memory"',
+    ),
+    "UNDECLARED_CAPABILITY",
+  );
+});
+
+test("rejects a non-canonical MCP server command path", async () => {
+  const valid = await fixture("valid");
+  assertManifestError(
+    valid.replace('command = "/bin/sh"', 'command = "/bin/../sh"'),
+    "INVALID_MCP_SERVER",
+  );
+  assertManifestError(
+    valid.replace('command = "/bin/sh"', 'command = "/bin/s*"'),
+    "INVALID_MCP_SERVER",
+  );
+});
+
+test("rejects config_keys and config_overrides entries reserved for mcp_servers", async () => {
+  const valid = await fixture("valid");
+  assertManifestError(
+    valid.replace(
+      'config_keys = ["model", "features.hooks"]',
+      'config_keys = ["model", "mcp_servers.probe.command"]',
+    ),
+    "RESERVED_CONFIG_KEY",
+  );
+  assertManifestError(
+    valid.replace(
+      'approval_policy = "on-request"',
+      '"mcp_servers.probe.command" = "/bin/sh"\napproval_policy = "on-request"',
+    ),
+    "RESERVED_CONFIG_KEY",
+  );
+});
+
+test("accepts a config_overrides key that merely starts with mcp_servers", async () => {
+  const manifest = parse(
+    (await fixture("valid")).replace(
+      'approval_policy = "on-request"',
+      'mcp_servers_extra = true\napproval_policy = "on-request"',
+    ),
+  );
+  assert.equal(manifest.configOverrides.mcp_servers_extra, true);
+});
+
+test("a manifest without mcp_servers parses to an empty list", async () => {
+  const manifest = parse(
+    (await fixture("valid")).replace(
+      /\[\[mcp_servers\]\][\s\S]*?capability = "oracle"\n/,
+      "",
+    ),
+  );
+  assert.deepEqual(manifest.mcpServers, []);
 });

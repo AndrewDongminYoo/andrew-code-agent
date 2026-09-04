@@ -107,7 +107,10 @@ path:
    and hooks with token substitution and `oracle` / `shared-memory` capability
    gating (`render.ts`), scans the rendered bytes for secrets, credentials, and
    leaked runtime identifiers (`validate.ts`), and writes a content-addressed
-   artifact with a `bundle-metadata.json` digest inventory (`artifact.ts`).
+   artifact with a `bundle-metadata.json` digest inventory (`artifact.ts`). The
+   generated config also carries capability-gated MCP server tables from the
+   manifest's `[[mcp_servers]]` section; see `README.md` for the key
+   reference.
 1. **Install** (`src/bundle/install.ts`) applies the artifact into `codex-home`
    through a journal with preimages, so an interrupted install is recoverable
    by `recoverInterruptedInstall` on the next run.

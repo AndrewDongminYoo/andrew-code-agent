@@ -14,6 +14,8 @@ import { basename, delimiter, dirname, join, relative } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
+import { probeStrictConfig } from "../helpers/strict-config.mjs";
+
 const execFileAsync = promisify(execFile);
 const clientModule = await import("../../dist/app-server/client.js").catch(
   () => null,
@@ -192,6 +194,39 @@ test("regenerates stable artifacts byte-for-byte", { skip: pinnedCodexSkipReason
     await rm(temporary, { recursive: true, force: true });
   }
 });
+
+test(
+  "the pinned binary accepts a rendered MCP server table under strict config",
+  { skip: pinnedCodexSkipReason },
+  async () => {
+    const home = await mkdtemp(join(tmpdir(), "andrew-agent-mcp-strict-"));
+    try {
+      await writeFile(
+        join(home, "config.toml"),
+        [
+          "[mcp_servers]",
+          "",
+          "[mcp_servers.oracle]",
+          'command = "/bin/sh"',
+          'args = ["-c", "exec cat", "\\u007f"]',
+          'env_vars = ["LLM_WIKI_ROOT"]',
+          'enabled_tools = ["search_precedent"]',
+          'default_tools_approval_mode = "approve"',
+          "startup_timeout_sec = 5",
+          "tool_timeout_sec = 5",
+          "",
+          "[mcp_servers.oracle.env]",
+          'LLM_WIKI_MCP_MODE = "managed"',
+          "",
+        ].join("\n"),
+      );
+      const probe = await probeStrictConfig(pinnedCodexBin, home);
+      assert.equal(probe.code, 0, probe.stderr);
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  },
+);
 
 test("completes initialize and initialized before typed thread calls", async () => {
   await withFakeCodex("normal", async ({ binary, codexHome, root }) => {

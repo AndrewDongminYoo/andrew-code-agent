@@ -11,6 +11,7 @@ import type {
   BundleManifest,
   CapabilityDefinition,
   HookSelection,
+  McpServerDefinition,
   RequirementDefinition,
 } from "./manifest.js";
 import { resolveSourceFiles, type ResolvedSourceFile } from "./source-tree.js";
@@ -63,9 +64,10 @@ export class RenderError extends Error {
 }
 
 type ConfigScalar = string | boolean | number;
+type ConfigValue = ConfigScalar | readonly string[] | ConfigTable;
 
 interface ConfigTable {
-  [key: string]: ConfigScalar | ConfigTable;
+  [key: string]: ConfigValue;
 }
 
 export async function renderBundle(
@@ -104,6 +106,11 @@ export async function renderBundle(
       hook.capability === undefined ||
       enabledCapabilities.includes(hook.capability),
   );
+  const activeMcpServers = manifest.mcpServers.filter(
+    (server) =>
+      server.capability === undefined ||
+      enabledCapabilities.includes(server.capability),
+  );
   assertHookCommands(activeHooks);
   assertUniqueHookSelections(activeHooks);
   const sourceFiles = await resolveSourceFiles(
@@ -133,6 +140,7 @@ export async function renderBundle(
     sourceConfig,
     manifest,
     filesWithoutDisabledInstructions,
+    activeMcpServers,
   );
   const generatedHooks = createGeneratedHooks(activeHooks);
   const files = [
@@ -645,6 +653,7 @@ function createGeneratedConfig(
   source: Record<string, unknown>,
   manifest: BundleManifest,
   files: readonly ResolvedSourceFile[],
+  servers: readonly McpServerDefinition[],
 ): ResolvedSourceFile {
   const projected: ConfigTable = {};
   for (const key of manifest.configKeys) {
@@ -659,6 +668,27 @@ function createGeneratedConfig(
       `agents.${agent}.config_file`,
       `./agents/${agent}.toml`,
     );
+  }
+  if (Object.hasOwn(projected, "mcp_servers")) {
+    throw new RenderError(
+      "CONFIG_INVALID",
+      "mcp_servers may only come from the manifest's [[mcp_servers]] " +
+        "section.",
+    );
+  }
+  for (const server of servers) {
+    const table: ConfigTable = { command: server.command, args: server.args };
+    if (Object.keys(server.env).length > 0) table.env = { ...server.env };
+    if (server.envVars.length > 0) table.env_vars = server.envVars;
+    if (server.enabledTools.length > 0)
+      table.enabled_tools = server.enabledTools;
+    if (server.defaultToolsApprovalMode !== undefined)
+      table.default_tools_approval_mode = server.defaultToolsApprovalMode;
+    if (server.startupTimeoutSec !== undefined)
+      table.startup_timeout_sec = server.startupTimeoutSec;
+    if (server.toolTimeoutSec !== undefined)
+      table.tool_timeout_sec = server.toolTimeoutSec;
+    setConfigTable(projected, ["mcp_servers", server.name], table);
   }
   return {
     sourcePath: "generated:config.toml",
@@ -713,13 +743,12 @@ function setConfigValue(
   }
   let current = table;
   for (const segment of segments) {
-    const existing = current[segment];
-    if (existing === undefined) {
+    if (!Object.hasOwn(current, segment)) {
       const nested: ConfigTable = {};
       current[segment] = nested;
       current = nested;
-    } else if (isConfigTable(existing)) {
-      current = existing;
+    } else if (isConfigTable(current[segment] as ConfigValue)) {
+      current = current[segment] as ConfigTable;
     } else {
       throw new RenderError(
         "CONFIG_INVALID",
@@ -727,8 +756,8 @@ function setConfigValue(
       );
     }
   }
-  const existing = current[finalSegment];
-  if (existing !== undefined) {
+  if (Object.hasOwn(current, finalSegment)) {
+    const existing = current[finalSegment] as ConfigValue;
     if (isConfigTable(existing) || !allowExactOverwrite) {
       throw new RenderError(
         "CONFIG_INVALID",
@@ -739,10 +768,38 @@ function setConfigValue(
   current[finalSegment] = value;
 }
 
-function isConfigTable(
-  value: ConfigScalar | ConfigTable,
-): value is ConfigTable {
-  return typeof value === "object" && value !== null;
+function isConfigTable(value: ConfigValue): value is ConfigTable {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function setConfigTable(
+  root: ConfigTable,
+  path: readonly string[],
+  table: ConfigTable,
+): void {
+  let cursor = root;
+  for (const segment of path.slice(0, -1)) {
+    if (!Object.hasOwn(cursor, segment)) {
+      cursor[segment] = {};
+    } else if (!isConfigTable(cursor[segment] as ConfigValue)) {
+      throw new RenderError(
+        "CONFIG_INVALID",
+        `${path.join(".")} collides with a scalar config key.`,
+      );
+    }
+    cursor = cursor[segment] as ConfigTable;
+  }
+  const leaf = path[path.length - 1];
+  if (leaf === undefined) {
+    throw new RenderError("CONFIG_INVALID", "Config table path is empty.");
+  }
+  if (Object.hasOwn(cursor, leaf)) {
+    throw new RenderError(
+      "CONFIG_INVALID",
+      `${path.join(".")} is declared twice.`,
+    );
+  }
+  cursor[leaf] = table;
 }
 
 function selectedAgents(
@@ -775,7 +832,7 @@ function writeTomlTable(
     lines.push(
       ...scalars.map(
         ([key, value]) =>
-          `${formatTomlKey(key)} = ${formatTomlScalar(value as ConfigScalar)}`,
+          `${formatTomlKey(key)} = ${formatTomlValue(value as ConfigScalar | readonly string[])}`,
       ),
     );
     sections.push(lines.join("\n"));
@@ -791,8 +848,18 @@ function formatTomlKey(key: string): string {
   return /^[A-Za-z0-9_-]+$/u.test(key) ? key : JSON.stringify(key);
 }
 
-function formatTomlScalar(value: ConfigScalar): string {
-  return typeof value === "string" ? JSON.stringify(value) : String(value);
+function formatTomlValue(value: ConfigScalar | readonly string[]): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => formatTomlString(item)).join(", ")}]`;
+  }
+  return typeof value === "string" ? formatTomlString(value) : String(value);
+}
+
+function formatTomlString(value: string): string {
+  // JSON.stringify does not escape U+007F (DEL), which is illegal inside a
+  // TOML basic string; escape it explicitly so strict TOML parsers accept
+  // the rendered output.
+  return JSON.stringify(value).replaceAll("", "\\u007f");
 }
 
 function createGeneratedHooks(
