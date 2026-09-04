@@ -669,6 +669,54 @@ test("renders an ungated MCP server with arrays intact", async () => {
   });
 });
 
+test("renders an MCP server named constructor without an inherited-property collision", async () => {
+  await withSourceRepository(async (repository) => {
+    const base = manifest();
+    base.mcpServers = [
+      {
+        name: "constructor",
+        command: "/bin/sh",
+        args: [],
+        env: {},
+        envVars: [],
+        enabledTools: [],
+      },
+    ];
+    const bundle = await renderBundle(repository, base, {});
+    const text = renderedText(bundle, "config.toml");
+    assert.match(text, /\[mcp_servers\.constructor\]/u);
+    assert.match(text, /command = "\/bin\/sh"/u);
+    const config = parse(text);
+    assert.deepEqual(config.mcp_servers, {
+      constructor: { command: "/bin/sh", args: [] },
+    });
+  });
+});
+
+test("escapes U+007F (DEL) in a rendered TOML string so strict parsers accept it", async () => {
+  await withSourceRepository(async (repository) => {
+    const base = manifest();
+    base.mcpServers = [
+      {
+        name: "probe",
+        command: "/bin/sh",
+        args: [""],
+        env: {},
+        envVars: [],
+        enabledTools: [],
+      },
+    ];
+    const bundle = await renderBundle(repository, base, {});
+    const text = renderedText(bundle, "config.toml");
+    assert.match(text, /\\u007f/u);
+    assert.doesNotMatch(text, //u);
+    const config = parse(text);
+    assert.deepEqual(config.mcp_servers, {
+      probe: { command: "/bin/sh", args: [""] },
+    });
+  });
+});
+
 // Codex rewrites its own config owner-only on every session, so the bundle
 // installs it that way rather than widening it back to 0644 on each run.
 test("the rendered config is owner-only and the rendered hooks file is not", async () => {

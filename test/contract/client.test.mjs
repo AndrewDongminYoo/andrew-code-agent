@@ -208,7 +208,7 @@ test(
           "",
           "[mcp_servers.oracle]",
           'command = "/bin/sh"',
-          'args = ["-c", "exec cat"]',
+          'args = ["-c", "exec cat", "\\u007f"]',
           'env_vars = ["LLM_WIKI_ROOT"]',
           'enabled_tools = ["search_precedent"]',
           'default_tools_approval_mode = "approve"',

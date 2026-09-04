@@ -736,13 +736,12 @@ function setConfigValue(
   }
   let current = table;
   for (const segment of segments) {
-    const existing = current[segment];
-    if (existing === undefined) {
+    if (!Object.hasOwn(current, segment)) {
       const nested: ConfigTable = {};
       current[segment] = nested;
       current = nested;
-    } else if (isConfigTable(existing)) {
-      current = existing;
+    } else if (isConfigTable(current[segment] as ConfigValue)) {
+      current = current[segment] as ConfigTable;
     } else {
       throw new RenderError(
         "CONFIG_INVALID",
@@ -750,8 +749,8 @@ function setConfigValue(
       );
     }
   }
-  const existing = current[finalSegment];
-  if (existing !== undefined) {
+  if (Object.hasOwn(current, finalSegment)) {
+    const existing = current[finalSegment] as ConfigValue;
     if (isConfigTable(existing) || !allowExactOverwrite) {
       throw new RenderError(
         "CONFIG_INVALID",
@@ -773,10 +772,9 @@ function setConfigTable(
 ): void {
   let cursor = root;
   for (const segment of path.slice(0, -1)) {
-    const next = cursor[segment];
-    if (next === undefined) {
+    if (!Object.hasOwn(cursor, segment)) {
       cursor[segment] = {};
-    } else if (!isConfigTable(next)) {
+    } else if (!isConfigTable(cursor[segment] as ConfigValue)) {
       throw new RenderError(
         "CONFIG_INVALID",
         `${path.join(".")} collides with a scalar config key.`,
@@ -788,7 +786,7 @@ function setConfigTable(
   if (leaf === undefined) {
     throw new RenderError("CONFIG_INVALID", "Config table path is empty.");
   }
-  if (cursor[leaf] !== undefined) {
+  if (Object.hasOwn(cursor, leaf)) {
     throw new RenderError(
       "CONFIG_INVALID",
       `${path.join(".")} is declared twice.`,
@@ -845,9 +843,16 @@ function formatTomlKey(key: string): string {
 
 function formatTomlValue(value: ConfigScalar | readonly string[]): string {
   if (Array.isArray(value)) {
-    return `[${value.map((item) => JSON.stringify(item)).join(", ")}]`;
+    return `[${value.map((item) => formatTomlString(item)).join(", ")}]`;
   }
-  return typeof value === "string" ? JSON.stringify(value) : String(value);
+  return typeof value === "string" ? formatTomlString(value) : String(value);
+}
+
+function formatTomlString(value: string): string {
+  // JSON.stringify does not escape U+007F (DEL), which is illegal inside a
+  // TOML basic string; escape it explicitly so strict TOML parsers accept
+  // the rendered output.
+  return JSON.stringify(value).replaceAll("", "\\u007f");
 }
 
 function createGeneratedHooks(
