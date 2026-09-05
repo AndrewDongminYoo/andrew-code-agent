@@ -49,7 +49,7 @@ a layer that contributes no coverage.
 Check that the directory holds the files you expect before reading a green
 aggregate as evidence.
 
-Three gates are opt-in, so a default green `pnpm check` does not cover them:
+Four gates are opt-in, so a default green `pnpm check` does not cover them:
 
 - `test/contract/client.test.mjs` verifies the generated trees byte-for-byte
   only when `ANDREW_AGENT_PINNED_CODEX_BIN` points at a `codex` binary whose
@@ -62,8 +62,12 @@ Three gates are opt-in, so a default green `pnpm check` does not cover them:
 - The two live smokes in `test/e2e/acceptance.test.mjs` skip unless
   `ANDREW_AGENT_REAL_SMOKE` is set, and the two-run gate additionally needs
   `ANDREW_AGENT_SMOKE_AUTH`.
-  They are the only tests that spawn a real Codex, and the only place a real
-  Codex writes back into a managed home between two runs.
+  They are the only tests where a real Codex writes back into a managed home
+  between two runs.
+- `test/e2e/oracle-boundary.test.mjs` needs
+  `ANDREW_AGENT_WIKI_SERVER_ROOT` to build its synthetic vault.
+  Its two real-Codex checks also need `ANDREW_AGENT_REAL_SMOKE`,
+  `ANDREW_AGENT_SMOKE_AUTH`, and `ANDREW_AGENT_SMOKE_CODEX_BIN`.
 
 Run the pinned form before trusting the generated contract:
 
