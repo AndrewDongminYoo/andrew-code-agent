@@ -148,3 +148,15 @@ path satisfy these checks.
 A renderer-side exact-literal defense may be considered later only if a trusted
 capability contract supplies those literals without requiring this CLI to
 discover sensitive content itself.
+
+## Status
+
+2026-09-05: The synthetic-vault CLI gate passed against Oracle provider commit
+`354e7d0853389c15f69af10090e557ddd4caa95b`.
+The filtered run reported one omitted restricted result and exposed no
+restricted canary in its tool results or stdout.
+The filter-disabled twin exposed the same canary in both surfaces.
+`omittedRestrictedCount` is tag-scoped, as defined in
+`docs/plans/2026-09-03-oracle-restricted-results.md` in the
+`llm-wiki-dongminyu` repository.
+See `docs/notes/2026-09-05-oracle-boundary-gate-run.md` for the run evidence.
