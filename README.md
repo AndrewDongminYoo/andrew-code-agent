@@ -96,9 +96,10 @@ through `[[mcp_servers]]`.
 The runtime Oracle root never appears in the rendered config; a server
 reaches it through `env_vars` forwarding or through a shell that reads
 `$LLM_WIKI_ROOT`.
-`env_vars` is accepted by Codex 0.152.1 under strict config, but whether a
-forwarded value reaches the child process has not been measured end to end;
-see `docs/notes/2026-09-04-mcp-child-environment.md`.
+Codex 0.152.1 accepts `env_vars` under strict config.
+The synthetic-vault gate also forwarded `LLM_WIKI_ROOT` through `env_vars`,
+started the real provider, and completed two real CLI turns.
+See `docs/notes/2026-09-05-oracle-boundary-gate-run.md`.
 
 ```toml
 [[mcp_servers]]

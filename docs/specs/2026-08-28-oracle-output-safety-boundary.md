@@ -1,7 +1,7 @@
 # Specification: Oracle output safety boundary
 
 Date: 2026-08-28
-Status: design contract for issue #25; no production gate exists yet
+Status: accepted and verified for issue #25
 
 ## Decision
 
@@ -143,8 +143,8 @@ Implementation proceeds in this order:
 5. Re-run the fixture with the filter deliberately disabled and confirm the
    terminal assertion fails.
 
-Issue #25 remains open until the real retrieval provider and the end-to-end CLI
-path satisfy these checks.
+Issue #25 closed after the real retrieval provider and the end-to-end CLI path
+satisfied these checks.
 A renderer-side exact-literal defense may be considered later only if a trusted
 capability contract supplies those literals without requiring this CLI to
 discover sensitive content itself.
