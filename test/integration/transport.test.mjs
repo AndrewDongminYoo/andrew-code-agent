@@ -84,6 +84,19 @@ async function waitForChildExit(child, timeoutMs = 1000) {
   });
 }
 
+async function readPositivePid(path) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    try {
+      const pid = Number(await readFile(path, "utf8"));
+      if (Number.isSafeInteger(pid) && pid > 0) return pid;
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return undefined;
+}
+
 function errorCode(code) {
   return (error) => {
     assert.equal(error.code, code);
@@ -828,6 +841,7 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
   const binary = join(root, "codex");
   const server = join(root, "server.mjs");
   const descendantPid = join(root, "descendant.pid");
+  await writeFile(descendantPid, "");
   await writeFile(
     binary,
     `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'codex-cli 0.152.1'; else exec ${JSON.stringify(process.execPath)} ${JSON.stringify(server)}; fi\n`,
@@ -835,7 +849,7 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
   );
   await writeFile(
     server,
-    `import { spawn } from "node:child_process"; import { writeFile } from "node:fs/promises"; const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" }); await writeFile(${JSON.stringify(descendantPid)}, String(descendant.pid)); setInterval(() => {}, 1000);`,
+    `import { spawn } from "node:child_process"; import { writeFile } from "node:fs/promises"; const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" }); await new Promise((resolve) => setTimeout(resolve, 100)); await writeFile(${JSON.stringify(descendantPid)}, String(descendant.pid)); setInterval(() => {}, 1000);`,
   );
   const startup = requireClient().startAppServer({
     codexBinary: binary,
@@ -850,16 +864,8 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
   );
   let pid;
   try {
-    for (let attempt = 0; attempt < 50; attempt++) {
-      try {
-        pid = Number(await readFile(descendantPid, "utf8"));
-        break;
-      } catch (error) {
-        if (error.code !== "ENOENT") throw error;
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-    }
-    assert.equal(Number.isSafeInteger(pid), true);
+    pid = await readPositivePid(descendantPid);
+    assert.equal(Number.isSafeInteger(pid) && pid > 0, true);
     const outcome = await Promise.race([
       observed,
       new Promise((resolve) =>
@@ -868,9 +874,13 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
     ]);
     assert.equal(outcome.error?.code, "APP_SERVER_HANDSHAKE_TIMEOUT");
   } finally {
-    if (Number.isSafeInteger(pid)) {
+    const cleanupPid =
+      Number.isSafeInteger(pid) && pid > 0
+        ? pid
+        : await readPositivePid(descendantPid);
+    if (cleanupPid !== undefined) {
       try {
-        process.kill(pid, "SIGKILL");
+        process.kill(cleanupPid, "SIGKILL");
       } catch (error) {
         if (error.code !== "ESRCH") throw error;
       }
