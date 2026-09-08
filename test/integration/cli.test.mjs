@@ -1000,14 +1000,21 @@ async function seedThreadRecord(repositoryRoot, fixture) {
 }
 
 async function assertFakeServerCleanup(fixture) {
-  const childPid = Number(await readFile(join(fixture.codexHome, "fake-server.pid"), "utf8"));
+  const childPid = await readPositivePid(
+    join(fixture.codexHome, "fake-server.pid"),
+  );
   await waitFor(() => { assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" }); return true; });
   await assert.rejects(lstat(join(fixture.stateRoot, "run.lock")), { code: "ENOENT" });
 }
 
 async function cleanupFakeAppServerFixture(fixture) {
   try {
-    const childPid = Number(await readFile(join(fixture.codexHome, "fake-server.pid"), "utf8"));
+    const pidPath = join(fixture.codexHome, "fake-server.pid");
+    const parsedPid = Number(await readFile(pidPath, "utf8"));
+    const childPid =
+      Number.isSafeInteger(parsedPid) && parsedPid > 0
+        ? parsedPid
+        : await readPositivePid(pidPath);
     try {
       process.kill(childPid, "SIGTERM");
     } catch (error) {
@@ -1028,7 +1035,9 @@ function observeUnlockAfterChildExit(fixture) {
   const release = fixture.dependencies.releaseProcessLock;
   let calls = 0;
   fixture.dependencies.releaseProcessLock = async (handle) => {
-    const childPid = Number(await readFile(join(fixture.codexHome, "fake-server.pid"), "utf8"));
+    const childPid = await readPositivePid(
+      join(fixture.codexHome, "fake-server.pid"),
+    );
     assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" });
     calls += 1;
     await release(handle);
@@ -1065,6 +1074,15 @@ async function waitFor(check, timeoutMs = 2_000) {
     if (Date.now() >= deadline) throw new Error("fixture timeout");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
+}
+
+async function readPositivePid(path) {
+  let pid;
+  await waitFor(async () => {
+    pid = Number(await readFile(path, "utf8"));
+    return Number.isSafeInteger(pid) && pid > 0;
+  });
+  return pid;
 }
 
 async function settleWithin(settlement, timeoutMs) {
@@ -1104,7 +1122,9 @@ test("real command composition drives and reaps one fake App Server", async (t) 
   assert.equal((await execFile("git", ["-C", repositoryRoot, "remote"])).stdout, "");
   const log = await readFile(join(fixture.codexHome, "fake-server.log"), "utf8");
   assert.match(log, /^initialize\ninitialized\nthread\/start\nturn\/start\n$/);
-  const childPid = Number(await readFile(join(fixture.codexHome, "fake-server.pid"), "utf8"));
+  const childPid = await readPositivePid(
+    join(fixture.codexHome, "fake-server.pid"),
+  );
   await waitFor(() => { assert.throws(() => process.kill(childPid, 0), { code: "ESRCH" }); return true; });
   await assert.rejects(lstat(join(fixture.stateRoot, "run.lock")), { code: "ENOENT" });
 });
