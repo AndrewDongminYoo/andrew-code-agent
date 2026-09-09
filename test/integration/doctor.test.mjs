@@ -507,7 +507,12 @@ test("reports a fully ready base installation with optional warnings", async () 
       [...findingOrder].sort(),
     );
     assert.equal(finding(result, "OPTIONAL_ORACLE").severity, "warning");
-    assert.equal(finding(result, "OPTIONAL_SHARED_MEMORY").severity, "warning");
+    assert.deepEqual(finding(result, "OPTIONAL_SHARED_MEMORY"), {
+      severity: "warning",
+      code: "OPTIONAL_SHARED_MEMORY",
+      message: "Shared memory is unavailable.",
+      remediation: "Continue without shared memory.",
+    });
     for (const entry of result.findings.filter(
       (value) => !value.code.startsWith("OPTIONAL_"),
     )) {
