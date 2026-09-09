@@ -328,7 +328,7 @@ async function runDoctorInternal(
     setWarning(
       findings,
       "OPTIONAL_SHARED_MEMORY",
-      "Shared memory is unavailable in v0.1.",
+      "Shared memory is unavailable.",
       "Continue without shared memory.",
     );
     await classifyProcessLock(dependencies, findings);
