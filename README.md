@@ -163,6 +163,9 @@ final Git status.
 
 ## Commands
 
+- `andrew-agent commit` proposes one subject and short summary for the staged
+  changes in the current repository, then commits only after terminal
+  confirmation.
 - `andrew-agent doctor` reports readiness and exits 0 only when nothing is a
   blocker.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
@@ -174,6 +177,28 @@ final Git status.
 `status` with no argument resolves the latest thread for the repository you
 are standing in. `resume` with no prompt prints the stored record and starts
 no turn.
+
+`commit` reads the staged diff, committed root `AGENTS.md` when present, and
+eight recent commit subjects.
+It does not stage unstaged or untracked files.
+The proposal runs with the managed Codex login in an ephemeral, read-only
+scratch directory with the shell tool disabled.
+The command sends the staged patch and style context without passing the
+repository root.
+The read-only sandbox is a write boundary; it does not itself restrict every
+file the Codex process can read.
+The command displays the message, summary, and staged paths before accepting
+an exact `yes` on a terminal.
+Piped input can display a proposal but cannot authorize a commit.
+After confirmation, it checks HEAD and staged content again, runs the normal
+Git commit hooks, and checks the resulting patch and subject against the
+reviewed proposal.
+If another writer changes HEAD or the index after that check, Git may create a
+different commit before this command can report the mismatch; inspect HEAD
+before retrying.
+The model is asked to recommend splitting unrelated changes; the command does
+not split, push, or publish.
+Diffs larger than 256 KiB are refused instead of being truncated.
 
 Exit codes:
 

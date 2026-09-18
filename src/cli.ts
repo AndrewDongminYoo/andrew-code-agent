@@ -11,6 +11,7 @@ import {
   SUPPORTED_CAPABILITIES,
   type RequestedCapability,
 } from "./constants.js";
+import { commitCommand } from "./commands/commit.js";
 import { runDoctor } from "./commands/doctor.js";
 import { resumeCommand } from "./commands/resume.js";
 import {
@@ -23,6 +24,7 @@ import { statusCommand } from "./commands/status.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime/paths.js";
 
 const usage = {
+  commit: "andrew-agent commit",
   doctor: "andrew-agent doctor",
   run: "andrew-agent run <repository> <prompt>",
   resume: "andrew-agent resume <thread-id> [prompt]",
@@ -46,6 +48,7 @@ const CAPABILITY_ASSIGNMENT = `${CAPABILITY_FLAG}=`;
 // The CLI never supplies one and passes `undefined` so the callee's default
 // applies, but the type says what the functions actually accept.
 interface CommandHandlers {
+  readonly commit: (io: CommandIO) => Promise<ExitCode>;
   readonly doctor: (io: CommandIO, env: NodeJS.ProcessEnv) => Promise<ExitCode>;
   readonly run: (
     repository: string,
@@ -73,6 +76,7 @@ interface MainOptions extends CommandIO {
 }
 
 const defaultHandlers: CommandHandlers = {
+  commit: (io) => commitCommand(process.cwd(), io),
   doctor: doctorCommand,
   run: runCommand,
   resume: resumeCommand,
@@ -142,6 +146,7 @@ export async function main(
       );
       return 3;
     }
+    if (command === "commit") return await handlers.commit(io);
     if (command === "doctor") return await handlers.doctor(io, env);
     // ponytail: the requested set reaches the handler and is ignored there
     // until step 2 of docs/plans/2026-08-25-v0.2-oracle-capability.md threads
@@ -304,6 +309,7 @@ function validPositionals(
   positionals: readonly string[],
 ): boolean {
   if (positionals.some((value) => value.length === 0)) return false;
+  if (command === "commit") return positionals.length === 0;
   if (command === "doctor") return positionals.length === 0;
   if (command === "run") return positionals.length === 2;
   if (command === "resume")
@@ -337,6 +343,7 @@ async function writeUsage(
     return;
   }
   await writeLine(output, "Usage:");
+  await writeLine(output, usage.commit);
   await writeLine(output, usage.doctor);
   await writeLine(output, usage.run);
   await writeLine(output, usage.resume);
