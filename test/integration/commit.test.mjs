@@ -198,7 +198,7 @@ test("commit refuses a branch change with the same HEAD commit", async () => {
   });
 });
 
-test("commit refuses blank or control-character proposals before confirmation", async () => {
+test("commit refuses blank, trailing-whitespace, or control-character proposals before confirmation", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "staged\n");
@@ -206,6 +206,7 @@ test("commit refuses blank or control-character proposals before confirmation", 
     const before = await git(root, "rev-parse", "HEAD");
     for (const proposal of [
       { subject: "   ", summary: "Updates the fixture." },
+      { subject: "fix: update fixture ", summary: "Updates the fixture." },
       { subject: "fix: update fixture", summary: "\u001b[31mUpdates the fixture." },
     ]) {
       const io = output();

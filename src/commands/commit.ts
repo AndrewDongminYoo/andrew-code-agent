@@ -296,6 +296,7 @@ function assertProposal(value: CommitProposal): void {
   if (
     typeof value?.subject !== "string" ||
     value.subject.trim().length === 0 ||
+    value.subject.trimEnd() !== value.subject ||
     value.subject.length > 120 ||
     /[\u0000-\u001f\u007f]/.test(value.subject) ||
     typeof value.summary !== "string" ||
