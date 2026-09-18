@@ -137,6 +137,84 @@ test("a staged gitlink deletion is refused", async () => {
   });
 });
 
+test("a resolved merge is refused before proposing an ordinary commit", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    const originalBranch = await git(root, "symbolic-ref", "--short", "HEAD");
+    await git(root, "switch", "--quiet", "-c", "feature");
+    await writeFile(join(root, "tracked.txt"), "feature\n");
+    await git(root, "add", "tracked.txt");
+    await git(root, "commit", "--quiet", "-m", "feat: branch change");
+    await git(root, "switch", "--quiet", originalBranch);
+    await writeFile(join(root, "tracked.txt"), "main\n");
+    await git(root, "add", "tracked.txt");
+    await git(root, "commit", "--quiet", "-m", "fix: current branch change");
+    await assert.rejects(git(root, "merge", "feature"));
+    await writeFile(join(root, "tracked.txt"), "resolved\n");
+    await git(root, "add", "tracked.txt");
+    assert.notEqual(await git(root, "rev-parse", "MERGE_HEAD"), "");
+    assert.equal(await git(root, "ls-files", "--unmerged"), "");
+    const before = await git(root, "rev-parse", "HEAD");
+    let proposed = false;
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { proposed = true; return { subject: "fix: resolve merge", summary: "Resolves the merge." }; },
+      async confirm() { return true; },
+    });
+    assert.equal(code, 3);
+    assert.equal(proposed, false);
+    assert.equal(await git(root, "rev-parse", "HEAD"), before);
+    assert.match(io.read().stderr, /merge/i);
+  });
+});
+
+test("commit reports a merge parent introduced after the final check", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    const originalBranch = await git(root, "symbolic-ref", "--short", "HEAD");
+    await git(root, "switch", "--quiet", "-c", "feature");
+    await git(root, "commit", "--quiet", "--allow-empty", "-m", "feat: other branch");
+    await git(root, "switch", "--quiet", originalBranch);
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-merge-race-"));
+    const realGit = (await execFile("which", ["git"])).stdout.trim();
+    const wrapper = join(runtime, "git");
+    await writeFile(wrapper, `#!${process.execPath}
+const { spawnSync } = require("node:child_process");
+const args = process.argv.slice(2);
+const realGit = ${JSON.stringify(realGit)};
+function run(...gitArgs) {
+  const result = spawnSync(realGit, ["-C", args[1], ...gitArgs], { stdio: "inherit" });
+  if (result.status !== 0) process.exit(result.status ?? 1);
+}
+if (args[2] === "commit" && args[3] === "--quiet") {
+  run("reset", "--quiet", "--mixed", "HEAD");
+  run("merge", "--no-commit", "--no-ff", "feature");
+  run("add", "tracked.txt");
+}
+const result = spawnSync(realGit, args, { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`);
+    await chmod(wrapper, 0o700);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${runtime}:${originalPath}`;
+    try {
+      const io = output();
+      const code = await commitModule.commitCommand(root, io, {
+        async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+        async confirm() { return true; },
+      });
+      assert.equal(code, 1);
+      assert.equal((await git(root, "show", "-s", "--format=%P", "HEAD")).split(" ").length, 2);
+      assert.match(io.read().stderr, /differs from the reviewed/i);
+    } finally {
+      process.env.PATH = originalPath;
+      await rm(runtime, { recursive: true, force: true });
+    }
+  });
+});
+
 test("commit refuses an index change after confirmation", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {

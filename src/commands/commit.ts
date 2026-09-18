@@ -2,8 +2,8 @@
 
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
-import { join } from "node:path";
+import { lstat, mkdtemp, rm } from "node:fs/promises";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 import { executeGit } from "../git/process.js";
@@ -141,6 +141,17 @@ export async function commitCommand(
     const parent = (
       await executeGit(snapshot.repositoryRoot, ["rev-parse", "HEAD^"])
     ).trim();
+    const lineage = (
+      await executeGit(snapshot.repositoryRoot, [
+        "rev-list",
+        "--parents",
+        "-n",
+        "1",
+        committedHead,
+      ])
+    )
+      .trim()
+      .split(" ");
     const committedPatch = await executeGit(snapshot.repositoryRoot, [
       "diff",
       "--no-ext-diff",
@@ -155,6 +166,9 @@ export async function commitCommand(
       await executeGit(snapshot.repositoryRoot, ["log", "-1", "--format=%s"])
     ).trimEnd();
     if (
+      lineage.length !== 2 ||
+      lineage[0] !== committedHead ||
+      lineage[1] !== snapshot.head ||
       parent !== snapshot.head ||
       committedHeadRef !== snapshot.headRef ||
       committedPatch !== snapshot.patch ||
@@ -186,6 +200,7 @@ export async function commitCommand(
 
 async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
   const repositoryRoot = await resolveRepositoryRoot(input);
+  await assertNoMergeHead(repositoryRoot);
   const head = (await executeGit(repositoryRoot, ["rev-parse", "HEAD"])).trim();
   const headRef = (
     await executeGit(repositoryRoot, [
@@ -291,6 +306,25 @@ async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
     rules,
     recentSubjects,
   };
+}
+
+async function assertNoMergeHead(repositoryRoot: string): Promise<void> {
+  const mergeHead = (
+    await executeGit(repositoryRoot, ["rev-parse", "--git-path", "MERGE_HEAD"])
+  ).trim();
+  try {
+    await lstat(resolve(repositoryRoot, mergeHead));
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    )
+      return;
+    throw error;
+  }
+  throw new CommitError("Complete or abort the merge before using commit.");
 }
 
 function assertProposal(value: CommitProposal): void {

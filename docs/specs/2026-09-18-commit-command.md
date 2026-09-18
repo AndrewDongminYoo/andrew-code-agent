@@ -47,8 +47,8 @@ The command never pushes.
 ## Limits and non-goals
 
 The first version refuses a staged patch over 256 KiB.
-It requires an existing HEAD and does not support staged submodules or
-unresolved index conflicts.
+It requires an existing HEAD.
+Staged submodules, unresolved index conflicts, and in-progress merges are not supported.
 It does not implement `review`, `pr`, automatic commit splitting, or push.
 
 ## Acceptance criteria
