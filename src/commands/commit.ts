@@ -111,8 +111,9 @@ export async function commitCommand(
     if (currentHead !== snapshot.head || currentHeadRef !== snapshot.headRef)
       throw new CommitError("HEAD changed; review the staged changes again.");
     const current = await readStagedSnapshot(snapshot.repositoryRoot);
+    if (current.head !== snapshot.head || current.headRef !== snapshot.headRef)
+      throw new CommitError("HEAD changed; review the staged changes again.");
     if (
-      current.headRef !== snapshot.headRef ||
       current.indexDigest !== snapshot.indexDigest ||
       current.patch !== snapshot.patch
     )
@@ -298,10 +299,12 @@ function assertProposal(value: CommitProposal): void {
     value.subject.trim().length === 0 ||
     value.subject.trimEnd() !== value.subject ||
     value.subject.length > 120 ||
+    Buffer.from(value.subject, "utf8").toString("utf8") !== value.subject ||
     /[\u0000-\u001f\u007f]/.test(value.subject) ||
     typeof value.summary !== "string" ||
     value.summary.trim().length === 0 ||
     value.summary.length > 500 ||
+    Buffer.from(value.summary, "utf8").toString("utf8") !== value.summary ||
     /[\u0000-\u001f\u007f]/.test(value.summary)
   )
     throw new CommitError("The proposed message has an invalid format.");

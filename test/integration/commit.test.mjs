@@ -177,6 +177,59 @@ test("commit refuses a HEAD change after confirmation", async () => {
   });
 });
 
+test("commit refuses a HEAD change between its final reads", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-head-race-"));
+    const realGit = (await execFile("which", ["git"])).stdout.trim();
+    const trigger = join(runtime, "move-head");
+    const wrapper = join(runtime, "git");
+    await writeFile(wrapper, `#!${process.execPath}
+const { spawnSync } = require("node:child_process");
+const { existsSync, unlinkSync } = require("node:fs");
+const realGit = ${JSON.stringify(realGit)};
+const trigger = ${JSON.stringify(trigger)};
+const args = process.argv.slice(2);
+function run(...gitArgs) {
+  const result = spawnSync(realGit, ["-C", args[1], ...gitArgs], { encoding: "utf8" });
+  if (result.status !== 0) {
+    process.stderr.write(result.stderr);
+    process.exit(result.status ?? 1);
+  }
+  return result.stdout.trim();
+}
+if (existsSync(trigger) && args[2] === "rev-parse" && args[3] === "--symbolic-full-name") {
+  unlinkSync(trigger);
+  const head = run("rev-parse", "HEAD");
+  const tree = run("rev-parse", "HEAD^{tree}");
+  const ref = run("symbolic-ref", "HEAD");
+  const moved = run("commit-tree", tree, "-p", head, "-m", "parallel move");
+  run("update-ref", ref, moved, head);
+}
+const result = spawnSync(realGit, args, { stdio: "inherit" });
+process.exit(result.status ?? 1);
+`);
+    await chmod(wrapper, 0o700);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${runtime}:${originalPath}`;
+    try {
+      const io = output();
+      const code = await commitModule.commitCommand(root, io, {
+        async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+        async confirm() { await writeFile(trigger, "ready"); return true; },
+      });
+      assert.equal(code, 3);
+      assert.equal(await git(root, "log", "-1", "--format=%s"), "parallel move");
+      assert.match(io.read().stderr, /HEAD changed/i);
+    } finally {
+      process.env.PATH = originalPath;
+      await rm(runtime, { recursive: true, force: true });
+    }
+  });
+});
+
 test("commit refuses a branch change with the same HEAD commit", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
@@ -198,7 +251,7 @@ test("commit refuses a branch change with the same HEAD commit", async () => {
   });
 });
 
-test("commit refuses blank, trailing-whitespace, or control-character proposals before confirmation", async () => {
+test("commit refuses blank, trailing-whitespace, control-character, or malformed Unicode proposals before confirmation", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "staged\n");
@@ -208,6 +261,8 @@ test("commit refuses blank, trailing-whitespace, or control-character proposals 
       { subject: "   ", summary: "Updates the fixture." },
       { subject: "fix: update fixture ", summary: "Updates the fixture." },
       { subject: "fix: update fixture", summary: "\u001b[31mUpdates the fixture." },
+      { subject: "fix: update fixture\ud800", summary: "Updates the fixture." },
+      { subject: "fix: update fixture", summary: "Updates the fixture\udc00." },
     ]) {
       const io = output();
       let confirmed = false;
