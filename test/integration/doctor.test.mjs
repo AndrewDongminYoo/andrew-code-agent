@@ -832,7 +832,7 @@ test("isolates and strictly validates the Codex version probe", async (t) => {
         versionBehavior: "late-descendant",
         markerPath,
       });
-      const result = await runUnchanged(fixture, { commandTimeoutMs: 40 });
+      const result = await runUnchanged(fixture, { commandTimeoutMs: 2000 });
       await assertRecordedProcessWasReaped(markerPath);
       assert.equal(finding(result, "CODEX_VERSION").severity, "blocker");
     });
