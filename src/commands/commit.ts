@@ -40,6 +40,7 @@ export interface CommitDependencies {
 interface StagedSnapshot extends CommitProposalInput {
   readonly repositoryRoot: string;
   readonly head: string;
+  readonly headRef: string;
   readonly indexDigest: string;
 }
 
@@ -100,10 +101,18 @@ export async function commitCommand(
     const currentHead = (
       await executeGit(snapshot.repositoryRoot, ["rev-parse", "HEAD"])
     ).trim();
-    if (currentHead !== snapshot.head)
+    const currentHeadRef = (
+      await executeGit(snapshot.repositoryRoot, [
+        "rev-parse",
+        "--symbolic-full-name",
+        "HEAD",
+      ])
+    ).trim();
+    if (currentHead !== snapshot.head || currentHeadRef !== snapshot.headRef)
       throw new CommitError("HEAD changed; review the staged changes again.");
     const current = await readStagedSnapshot(snapshot.repositoryRoot);
     if (
+      current.headRef !== snapshot.headRef ||
       current.indexDigest !== snapshot.indexDigest ||
       current.patch !== snapshot.patch
     )
@@ -120,6 +129,13 @@ export async function commitCommand(
     commitCompleted = true;
     const committedHead = (
       await executeGit(snapshot.repositoryRoot, ["rev-parse", "HEAD"])
+    ).trim();
+    const committedHeadRef = (
+      await executeGit(snapshot.repositoryRoot, [
+        "rev-parse",
+        "--symbolic-full-name",
+        "HEAD",
+      ])
     ).trim();
     const parent = (
       await executeGit(snapshot.repositoryRoot, ["rev-parse", "HEAD^"])
@@ -139,6 +155,7 @@ export async function commitCommand(
     ).trimEnd();
     if (
       parent !== snapshot.head ||
+      committedHeadRef !== snapshot.headRef ||
       committedPatch !== snapshot.patch ||
       committedSubject !== proposal.subject
     ) {
@@ -169,6 +186,13 @@ export async function commitCommand(
 async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
   const repositoryRoot = await resolveRepositoryRoot(input);
   const head = (await executeGit(repositoryRoot, ["rev-parse", "HEAD"])).trim();
+  const headRef = (
+    await executeGit(repositoryRoot, [
+      "rev-parse",
+      "--symbolic-full-name",
+      "HEAD",
+    ])
+  ).trim();
   const index = await executeGit(repositoryRoot, ["ls-files", "--stage", "-z"]);
   if (index.split("\0").some((entry) => /^\d+ [0-9a-f]+ [123]\t/.test(entry)))
     throw new CommitError("Resolve merge conflicts before committing.");
@@ -214,12 +238,19 @@ async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
   const secondHead = (
     await executeGit(repositoryRoot, ["rev-parse", "HEAD"])
   ).trim();
+  const secondHeadRef = (
+    await executeGit(repositoryRoot, [
+      "rev-parse",
+      "--symbolic-full-name",
+      "HEAD",
+    ])
+  ).trim();
   const secondIndex = await executeGit(repositoryRoot, [
     "ls-files",
     "--stage",
     "-z",
   ]);
-  if (head !== secondHead || index !== secondIndex)
+  if (head !== secondHead || headRef !== secondHeadRef || index !== secondIndex)
     throw new CommitError(
       "HEAD or staged content changed while it was read; retry.",
     );
@@ -252,6 +283,7 @@ async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
   return {
     repositoryRoot,
     head,
+    headRef,
     indexDigest: createHash("sha256").update(index).digest("hex"),
     patch,
     paths,
@@ -324,11 +356,12 @@ async function proposeWithCodex(
   }
 }
 
-async function runCodex(
+export async function runCodex(
   binary: string,
   codexHome: string,
   cwd: string,
   prompt: string,
+  timeoutMs = MODEL_TIMEOUT_MS,
 ): Promise<string> {
   return await new Promise((resolve, reject) => {
     const child = spawn(
@@ -349,6 +382,7 @@ async function runCodex(
       ],
       {
         cwd,
+        detached: true,
         env: {
           CODEX_HOME: codexHome,
           PATH: process.env.PATH ?? "/usr/bin:/bin",
@@ -359,29 +393,65 @@ async function runCodex(
     let stdout = "";
     let stderr = "";
     let overflow = false;
-    const timer = setTimeout(() => child.kill(), MODEL_TIMEOUT_MS);
+    let stopped = false;
+    let terminationError: Error | undefined;
+    let stopTimer: NodeJS.Timeout | undefined;
+    const timer = setTimeout(
+      () => terminate(new Error("Codex proposal timed out.")),
+      timeoutMs,
+    );
+    const fail = (error: Error): void => {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(timer);
+      if (stopTimer !== undefined) clearTimeout(stopTimer);
+      reject(error);
+    };
+    const succeed = (value: string): void => {
+      if (stopped) return;
+      stopped = true;
+      clearTimeout(timer);
+      if (stopTimer !== undefined) clearTimeout(stopTimer);
+      resolve(value);
+    };
+    function terminate(error: Error): void {
+      if (terminationError !== undefined || stopped) return;
+      terminationError = error;
+      signalProcessGroup(child.pid, "SIGTERM");
+      stopTimer = setTimeout(() => {
+        signalProcessGroup(child.pid, "SIGKILL");
+        fail(error);
+      }, 500);
+    }
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk: string) => {
+      if (overflow) return;
       stdout += chunk;
       if (Buffer.byteLength(stdout) > MAX_MODEL_OUTPUT_BYTES) {
         overflow = true;
-        child.kill();
+        terminate(new Error("Codex output exceeded the limit."));
       }
     });
     child.stderr.on("data", (chunk: string) => {
+      if (overflow) return;
       stderr += chunk;
       if (Buffer.byteLength(stderr) > MAX_MODEL_OUTPUT_BYTES) {
         overflow = true;
-        child.kill();
+        terminate(new Error("Codex output exceeded the limit."));
       }
     });
-    child.on("error", reject);
+    child.stdin.on("error", () => {
+      terminate(new Error("Codex proposal failed."));
+    });
+    child.on("error", fail);
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (overflow)
-        return reject(new Error("Codex output exceeded the limit."));
-      if (code !== 0) return reject(new Error("Codex proposal failed."));
+      if (terminationError !== undefined) {
+        signalProcessGroup(child.pid, "SIGKILL");
+        return fail(terminationError);
+      }
+      if (overflow) return fail(new Error("Codex output exceeded the limit."));
+      if (code !== 0) return fail(new Error("Codex proposal failed."));
       let lastMessage = "";
       let completed = false;
       try {
@@ -417,14 +487,26 @@ async function runCodex(
             );
         }
       } catch (error) {
-        return reject(error);
+        return fail(error instanceof Error ? error : new Error(String(error)));
       }
       if (!completed || lastMessage === "")
-        return reject(new Error("Codex returned no completed proposal."));
-      resolve(lastMessage);
+        return fail(new Error("Codex returned no completed proposal."));
+      succeed(lastMessage);
     });
     child.stdin.end(prompt);
   });
+}
+
+function signalProcessGroup(
+  pid: number | undefined,
+  signal: NodeJS.Signals,
+): void {
+  if (pid === undefined) return;
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    // The isolated process group may have already exited.
+  }
 }
 
 function errorMessage(error: unknown, fallback: string): string {
