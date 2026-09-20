@@ -65,6 +65,65 @@ test("commit proposes and commits only staged content", async () => {
   });
 });
 
+test("commit accepts repository rules at 64 KiB", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "AGENTS.md"), "r".repeat(64 * 1024));
+    await git(root, "add", "AGENTS.md");
+    await git(root, "commit", "--quiet", "-m", "docs: add repository rules");
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const io = output();
+    let input;
+    const code = await commitModule.commitCommand(root, io, {
+      async propose(value) {
+        input = value;
+        return {
+          subject: "fix: update fixture",
+          summary: "Updates the fixture.",
+        };
+      },
+      async confirm() {
+        return false;
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(Buffer.byteLength(input.rules, "utf8"), 64 * 1024);
+    assert.match(io.read().stdout, /Commit cancelled/);
+  });
+});
+
+test("commit refuses repository rules above 64 KiB before proposal", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "AGENTS.md"), "r".repeat(64 * 1024 + 1));
+    await git(root, "add", "AGENTS.md");
+    await git(root, "commit", "--quiet", "-m", "docs: add repository rules");
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const io = output();
+    let proposed = false;
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() {
+        proposed = true;
+        return {
+          subject: "fix: update fixture",
+          summary: "Updates the fixture.",
+        };
+      },
+      async confirm() {
+        return true;
+      },
+    });
+    assert.equal(code, 3);
+    assert.equal(proposed, false);
+    assert.match(
+      io.read().stderr,
+      /Repository rules exceed the commit proposal limit/,
+    );
+  });
+});
+
 test("terminal confirmation requires an exact yes", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {

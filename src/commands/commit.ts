@@ -284,7 +284,7 @@ async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
   ) {
     rules = await executeGit(repositoryRoot, ["show", `${head}:AGENTS.md`]);
   }
-  if (Buffer.byteLength(rules, "utf8") > 32 * 1024)
+  if (Buffer.byteLength(rules, "utf8") > 64 * 1024)
     throw new CommitError("Repository rules exceed the commit proposal limit.");
   const recentSubjects = (
     await executeGit(repositoryRoot, ["log", "-8", "--format=%s"])
