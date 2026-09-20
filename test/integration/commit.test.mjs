@@ -51,7 +51,7 @@ test("commit proposes and commits only staged content", async () => {
     let input;
     const code = await commitModule.commitCommand(root, io, {
       async propose(value) { input = value; return { subject: "fix: update tracked content", summary: "Updates the tracked fixture." }; },
-      async confirm() { return true; },
+      async authorize() { return true; },
     });
     assert.equal(code, 0);
     assert.match(input.patch, /\+staged/);
@@ -65,39 +65,96 @@ test("commit proposes and commits only staged content", async () => {
   });
 });
 
-test("terminal confirmation requires an exact yes", async () => {
+test("commit accepts repository rules at 64 KiB", async () => {
   assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "AGENTS.md"), "r".repeat(64 * 1024));
+    await git(root, "add", "AGENTS.md");
+    await git(root, "commit", "--quiet", "-m", "docs: add repository rules");
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const io = output();
+    let input;
+    const code = await commitModule.commitCommand(root, io, {
+      async propose(value) {
+        input = value;
+        return {
+          subject: "fix: update fixture",
+          summary: "Updates the fixture.",
+        };
+      },
+      async authorize() {
+        return false;
+      },
+    });
+    assert.equal(code, 0);
+    assert.equal(Buffer.byteLength(input.rules, "utf8"), 64 * 1024);
+    assert.match(io.read().stdout, /Commit cancelled/);
+  });
+});
+
+test("commit refuses repository rules above 64 KiB before proposal", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "AGENTS.md"), "r".repeat(64 * 1024 + 1));
+    await git(root, "add", "AGENTS.md");
+    await git(root, "commit", "--quiet", "-m", "docs: add repository rules");
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const io = output();
+    let proposed = false;
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() {
+        proposed = true;
+        return {
+          subject: "fix: update fixture",
+          summary: "Updates the fixture.",
+        };
+      },
+      async authorize() {
+        return true;
+      },
+    });
+    assert.equal(code, 3);
+    assert.equal(proposed, false);
+    assert.match(
+      io.read().stderr,
+      /Repository rules exceed the commit proposal limit/,
+    );
+  });
+});
+
+test("terminal invocation authorizes a commit without reading input", async () => {
+  assert.equal(typeof commitModule?.authorizeInteractiveCommit, "function");
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "staged\n");
     await git(root, "add", "tracked.txt");
     const io = output();
-    io.stdin = Readable.from(["yes\n"]);
-    io.stdin.isTTY = true;
+    io.stdin = { isTTY: true };
     assert.equal(await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-      confirm: commitModule.confirmInTerminal,
+      authorize: commitModule.authorizeInteractiveCommit,
     }), 0);
     assert.equal(await git(root, "log", "-1", "--format=%s"), "fix: update fixture");
+    assert.doesNotMatch(io.read().stdout, /Type yes/);
   });
 });
 
-test("terminal confirmation refuses every response except exact yes", async () => {
-  assert.notEqual(commitModule, null);
+test("non-interactive input remains preview-only even when it contains yes", async () => {
+  assert.equal(typeof commitModule?.authorizeInteractiveCommit, "function");
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "staged\n");
     await git(root, "add", "tracked.txt");
     const before = await git(root, "rev-parse", "HEAD");
-    for (const answer of ["YES\n", "yes \n", "\n", "no\n"]) {
-      const io = output();
-      io.stdin = Readable.from([answer]);
-      io.stdin.isTTY = true;
-      assert.equal(await commitModule.commitCommand(root, io, {
-        async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-        confirm: commitModule.confirmInTerminal,
-      }), 0);
-      assert.match(io.read().stdout, /Commit cancelled/);
-      assert.equal(await git(root, "rev-parse", "HEAD"), before);
-    }
+    const io = output();
+    io.stdin = Readable.from(["yes\n"]);
+    io.stdin.isTTY = false;
+    assert.equal(await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      authorize: commitModule.authorizeInteractiveCommit,
+    }), 0);
+    assert.match(io.read().stdout, /Commit cancelled/);
+    assert.equal(await git(root, "rev-parse", "HEAD"), before);
   });
 });
 
@@ -112,7 +169,7 @@ test("an unchanged gitlink does not block an ordinary staged change", async () =
     const io = output();
     assert.equal(await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-      async confirm() { return true; },
+      async authorize() { return true; },
     }), 0);
     assert.equal(await git(root, "log", "-1", "--format=%s"), "fix: update fixture");
   });
@@ -129,7 +186,7 @@ test("a staged gitlink deletion is refused", async () => {
     const io = output();
     const code = await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "chore: remove gitlink", summary: "Removes the gitlink." }; },
-      async confirm() { return true; },
+      async authorize() { return true; },
     });
     assert.equal(code, 3);
     assert.equal(await git(root, "rev-parse", "HEAD"), before);
@@ -159,7 +216,7 @@ test("a resolved merge is refused before proposing an ordinary commit", async ()
     const io = output();
     const code = await commitModule.commitCommand(root, io, {
       async propose() { proposed = true; return { subject: "fix: resolve merge", summary: "Resolves the merge." }; },
-      async confirm() { return true; },
+      async authorize() { return true; },
     });
     assert.equal(code, 3);
     assert.equal(proposed, false);
@@ -203,7 +260,7 @@ process.exit(result.status ?? 1);
       const io = output();
       const code = await commitModule.commitCommand(root, io, {
         async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-        async confirm() { return true; },
+        async authorize() { return true; },
       });
       assert.equal(code, 1);
       assert.equal((await git(root, "show", "-s", "--format=%P", "HEAD")).split(" ").length, 2);
@@ -215,7 +272,7 @@ process.exit(result.status ?? 1);
   });
 });
 
-test("commit refuses an index change after confirmation", async () => {
+test("commit refuses an index change after authorization", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "first\n");
@@ -224,7 +281,7 @@ test("commit refuses an index change after confirmation", async () => {
     const io = output();
     const code = await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-      async confirm() {
+      async authorize() {
         await writeFile(join(root, "tracked.txt"), "second\n");
         await git(root, "add", "tracked.txt");
         return true;
@@ -236,7 +293,7 @@ test("commit refuses an index change after confirmation", async () => {
   });
 });
 
-test("commit refuses a HEAD change after confirmation", async () => {
+test("commit refuses a HEAD change after authorization", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "staged\n");
@@ -244,7 +301,7 @@ test("commit refuses a HEAD change after confirmation", async () => {
     const io = output();
     const code = await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-      async confirm() {
+      async authorize() {
         await git(root, "commit", "--quiet", "-m", "parallel commit");
         return true;
       },
@@ -296,7 +353,7 @@ process.exit(result.status ?? 1);
       const io = output();
       const code = await commitModule.commitCommand(root, io, {
         async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-        async confirm() { await writeFile(trigger, "ready"); return true; },
+        async authorize() { await writeFile(trigger, "ready"); return true; },
       });
       assert.equal(code, 3);
       assert.equal(await git(root, "log", "-1", "--format=%s"), "parallel move");
@@ -317,7 +374,7 @@ test("commit refuses a branch change with the same HEAD commit", async () => {
     const io = output();
     const code = await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-      async confirm() {
+      async authorize() {
         await git(root, "switch", "--quiet", "-c", "other-branch");
         return true;
       },
@@ -329,7 +386,7 @@ test("commit refuses a branch change with the same HEAD commit", async () => {
   });
 });
 
-test("commit refuses blank, trailing-whitespace, control-character, or malformed Unicode proposals before confirmation", async () => {
+test("commit refuses blank, trailing-whitespace, control-character, or malformed Unicode proposals before authorization", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "staged\n");
@@ -343,13 +400,13 @@ test("commit refuses blank, trailing-whitespace, control-character, or malformed
       { subject: "fix: update fixture", summary: "Updates the fixture\udc00." },
     ]) {
       const io = output();
-      let confirmed = false;
+      let authorized = false;
       const code = await commitModule.commitCommand(root, io, {
         async propose() { return proposal; },
-        async confirm() { confirmed = true; return true; },
+        async authorize() { authorized = true; return true; },
       });
       assert.equal(code, 1);
-      assert.equal(confirmed, false);
+      assert.equal(authorized, false);
       assert.equal(await git(root, "rev-parse", "HEAD"), before);
     }
   });
@@ -366,7 +423,7 @@ test("commit reports a message rewritten by a Git hook", async () => {
     const io = output();
     const code = await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-      async confirm() { return true; },
+      async authorize() { return true; },
     });
     assert.equal(code, 1);
     assert.equal(await git(root, "log", "-1", "--format=%s"), "hook changed subject");
@@ -385,7 +442,7 @@ test("commit does not suggest a blind retry after post-commit verification fails
     const io = output();
     const code = await commitModule.commitCommand(root, io, {
       async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
-      async confirm() { return true; },
+      async authorize() { return true; },
     });
     assert.equal(code, 3);
     assert.match(io.read().stderr, /commit may exist|successful commit/i);

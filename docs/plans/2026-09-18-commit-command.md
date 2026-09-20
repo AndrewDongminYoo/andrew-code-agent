@@ -7,8 +7,9 @@ Status: implementation present; local review and PR delivery pending
 
 The operator approved `commit` as the first daily task and asked to wait for ten
 real uses before choosing another command.
-The same request approves a staged-only proposal, terminal confirmation, HEAD
-and index recheck, normal Git commit, and no push from this command.
+The approved direction uses a staged-only proposal, direct terminal invocation
+as authorization, HEAD and index recheck, normal Git commit, and no push from
+this command.
 
 ## Steps and checks
 
@@ -18,9 +19,10 @@ and index recheck, normal Git commit, and no push from this command.
    proposal.
    Verify with a fixture containing staged, unstaged, and untracked variants,
    plus a real non-interactive preview.
-3. Confirm on a terminal, recheck HEAD and index, commit with normal hooks, and
-   compare the result with the reviewed proposal.
-   Verify with index-race, HEAD-race, terminal-confirmation, and hook tests.
+3. Authorize through direct terminal invocation, recheck HEAD and index, commit
+   with normal hooks, and compare the result with the reviewed proposal.
+   Verify with interactive-authorization, non-interactive preview, index-race,
+   HEAD-race, and hook tests.
 4. Review the complete candidate, repair only contract defects, then run scoped
    tests, `pnpm check`, and `trunk check --all --no-fix`.
    Repair a reproduced gate fixture failure separately from the feature.

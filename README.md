@@ -164,8 +164,8 @@ final Git status.
 ## Commands
 
 - `andrew-agent commit` proposes one subject and short summary for the staged
-  changes in the current repository, then commits only after terminal
-  confirmation.
+  changes in the current repository, then commits automatically when invoked
+  from a terminal.
 - `andrew-agent doctor` reports readiness and exits 0 only when nothing is a
   blocker.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
@@ -187,11 +187,12 @@ The command sends the staged patch and style context without passing the
 repository root.
 The read-only sandbox is a write boundary; it does not itself restrict every
 file the Codex process can read.
-The command displays the message, summary, and staged paths before accepting
-an exact `yes` on a terminal.
-Piped input can display a proposal but cannot authorize a commit.
-After confirmation, it checks HEAD and staged content again, runs the normal
-Git commit hooks, and checks the resulting patch and subject against the
+The command displays the message, summary, and staged paths before committing.
+A direct terminal invocation authorizes the commit without another prompt.
+Piped or other non-interactive input can display a proposal but cannot
+authorize a commit.
+After authorization, the command checks HEAD and staged content again, runs the
+normal Git commit hooks, and checks the resulting patch and subject against the
 reviewed proposal.
 If another writer changes HEAD or the index after that check, Git may create a
 different commit before this command can report the mismatch; inspect HEAD

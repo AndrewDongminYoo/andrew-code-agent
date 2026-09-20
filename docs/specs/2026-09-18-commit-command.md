@@ -23,13 +23,13 @@ It proposes one subject and one short summary.
 The prompt asks for a split recommendation when staged changes are unrelated.
 The command never splits or stages changes automatically.
 
-## Confirmation and Git boundary
+## Authorization and Git boundary
 
 The terminal displays the proposed subject, summary, and staged paths.
-Only an exact `yes` from terminal stdin authorizes a commit.
+A direct terminal invocation authorizes the commit without another prompt.
 Non-interactive input can preview the proposal but cannot commit.
 
-Immediately after confirmation, the command rechecks HEAD, index entries, and
+Immediately after authorization, the command rechecks HEAD, index entries, and
 the staged patch.
 If any reviewed Git input changed by that check, it refuses the commit and asks
 for another review.
@@ -55,8 +55,8 @@ It does not implement `review`, `pr`, automatic commit splitting, or push.
 
 1. Staged content alone reaches the proposal and commit while unstaged and
    untracked content remains untouched.
-2. The proposed subject and summary are shown before an exact terminal
-   confirmation; a pipe cannot authorize a commit.
+2. The proposed subject and summary are shown before an interactive invocation
+   commits; a pipe cannot authorize a commit.
 3. A changed HEAD or staged index detected by the final pre-commit check
    prevents the commit.
 4. A hook-rewritten subject or patch is reported after commit creation.
@@ -67,5 +67,8 @@ It does not implement `review`, `pr`, automatic commit splitting, or push.
 ## Consultation record
 
 Oracle's staged-index precedent supports the immediate index recheck.
-Its confirmation precedent supports the explicit `yes` boundary.
+Oracle's confirmation precedent originally supported the explicit `yes` boundary.
+After eight real uses, the operator found the repeated prompt unnecessary and
+explicitly made direct terminal invocation the authorization boundary while
+retaining preview-only non-interactive behavior.
 Its hook precedent supports normal hook execution and post-commit comparison.

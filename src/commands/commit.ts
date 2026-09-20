@@ -4,7 +4,6 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { createInterface } from "node:readline";
 
 import { executeGit } from "../git/process.js";
 import { resolveRepositoryRoot } from "../runtime/git.js";
@@ -34,7 +33,7 @@ export interface CommitProposal {
 
 export interface CommitDependencies {
   readonly propose: (input: CommitProposalInput) => Promise<CommitProposal>;
-  readonly confirm: (io: CommandIO) => Promise<boolean>;
+  readonly authorize: (io: CommandIO) => Promise<boolean>;
 }
 
 interface StagedSnapshot extends CommitProposalInput {
@@ -46,7 +45,7 @@ interface StagedSnapshot extends CommitProposalInput {
 
 const defaultDependencies: CommitDependencies = {
   propose: proposeWithCodex,
-  confirm: confirmInTerminal,
+  authorize: authorizeInteractiveCommit,
 };
 
 export async function commitCommand(
@@ -90,7 +89,7 @@ export async function commitCommand(
   await writeLine(io.stdout, "Staged paths:");
   for (const path of snapshot.paths)
     await writeLine(io.stdout, `  ${JSON.stringify(path)}`);
-  if (!(await dependencies.confirm(io))) {
+  if (!(await dependencies.authorize(io))) {
     await writeLine(io.stdout, "Commit cancelled.");
     return 0;
   }
@@ -284,7 +283,7 @@ async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
   ) {
     rules = await executeGit(repositoryRoot, ["show", `${head}:AGENTS.md`]);
   }
-  if (Buffer.byteLength(rules, "utf8") > 32 * 1024)
+  if (Buffer.byteLength(rules, "utf8") > 64 * 1024)
     throw new CommitError("Repository rules exceed the commit proposal limit.");
   const recentSubjects = (
     await executeGit(repositoryRoot, ["log", "-8", "--format=%s"])
@@ -344,24 +343,14 @@ function assertProposal(value: CommitProposal): void {
     throw new CommitError("The proposed message has an invalid format.");
 }
 
-export async function confirmInTerminal(io: CommandIO): Promise<boolean> {
+export async function authorizeInteractiveCommit(
+  io: CommandIO,
+): Promise<boolean> {
   const input = io.stdin;
-  if (
-    input === undefined ||
-    (input as typeof input & { isTTY?: boolean }).isTTY !== true
-  )
-    return false;
-  await writeLine(
-    io.stdout,
-    "Type yes to commit exactly these staged changes:",
+  return (
+    input !== undefined &&
+    (input as typeof input & { isTTY?: boolean }).isTTY === true
   );
-  const lines = createInterface({ input, terminal: false });
-  try {
-    for await (const line of lines) return line === "yes";
-    return false;
-  } finally {
-    lines.close();
-  }
 }
 
 async function proposeWithCodex(
