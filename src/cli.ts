@@ -11,7 +11,7 @@ import {
   SUPPORTED_CAPABILITIES,
   type RequestedCapability,
 } from "./constants.js";
-import { commitCommand } from "./commands/commit.js";
+import { commitCommand, type CommitMessageFormat } from "./commands/commit.js";
 import { runDoctor } from "./commands/doctor.js";
 import { resumeCommand } from "./commands/resume.js";
 import {
@@ -24,7 +24,7 @@ import { statusCommand } from "./commands/status.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime/paths.js";
 
 const usage = {
-  commit: "andrew-agent commit",
+  commit: "andrew-agent commit [--long | --short]",
   doctor: "andrew-agent doctor",
   run: "andrew-agent run <repository> <prompt>",
   resume: "andrew-agent resume <thread-id> [prompt]",
@@ -48,7 +48,10 @@ const CAPABILITY_ASSIGNMENT = `${CAPABILITY_FLAG}=`;
 // The CLI never supplies one and passes `undefined` so the callee's default
 // applies, but the type says what the functions actually accept.
 interface CommandHandlers {
-  readonly commit: (io: CommandIO) => Promise<ExitCode>;
+  readonly commit: (
+    io: CommandIO,
+    messageFormat: CommitMessageFormat,
+  ) => Promise<ExitCode>;
   readonly doctor: (io: CommandIO, env: NodeJS.ProcessEnv) => Promise<ExitCode>;
   readonly run: (
     repository: string,
@@ -76,7 +79,8 @@ interface MainOptions extends CommandIO {
 }
 
 const defaultHandlers: CommandHandlers = {
-  commit: (io) => commitCommand(process.cwd(), io),
+  commit: (io, messageFormat) =>
+    commitCommand(process.cwd(), io, undefined, messageFormat),
   doctor: doctorCommand,
   run: runCommand,
   resume: resumeCommand,
@@ -122,6 +126,8 @@ export async function main(
         options: {
           help: { type: "boolean", short: "h" },
           capability: { type: "string", multiple: true },
+          long: { type: "boolean" },
+          short: { type: "boolean" },
         },
       });
     } catch {
@@ -138,6 +144,13 @@ export async function main(
       return await usageFailure(io, command);
     const capabilities = readCapabilities(command, parsed.values.capability);
     if (capabilities === undefined) return await usageFailure(io, command);
+    const commitMessageFormat = readCommitMessageFormat(
+      command,
+      parsed.values.long,
+      parsed.values.short,
+    );
+    if (commitMessageFormat === undefined)
+      return await usageFailure(io, command);
     const missingInput = missingCapabilityInput(capabilities, env);
     if (missingInput !== undefined) {
       await writeLine(
@@ -146,7 +159,8 @@ export async function main(
       );
       return 3;
     }
-    if (command === "commit") return await handlers.commit(io);
+    if (command === "commit")
+      return await handlers.commit(io, commitMessageFormat);
     if (command === "doctor") return await handlers.doctor(io, env);
     // ponytail: the requested set reaches the handler and is ignored there
     // until step 2 of docs/plans/2026-08-25-v0.2-oracle-capability.md threads
@@ -261,9 +275,22 @@ function isAllowedOption(argument: string): boolean {
   return (
     argument === "-h" ||
     argument === "--help" ||
+    argument === "--long" ||
+    argument === "--short" ||
     argument === CAPABILITY_FLAG ||
     argument.startsWith(CAPABILITY_ASSIGNMENT)
   );
+}
+
+function readCommitMessageFormat(
+  command: PublicCommand,
+  long: boolean | undefined,
+  short: boolean | undefined,
+): CommitMessageFormat | undefined {
+  if (command !== "commit")
+    return long === undefined && short === undefined ? "long" : undefined;
+  if (long === true && short === true) return undefined;
+  return short === true ? "short" : "long";
 }
 
 // Returns the sorted unique requested set, or undefined when the request is

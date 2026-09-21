@@ -1,6 +1,7 @@
 # Specification: Staged commit command
 
 Date: 2026-09-18
+Updated: 2026-09-20
 Status: approved by the operator's commit-first brief
 
 ## Goal
@@ -20,12 +21,16 @@ with its shell tool disabled.
 The read-only sandbox does not itself restrict every file the Codex process can
 read.
 It proposes one subject and one short summary.
+Long format is the default and commits the subject, a blank line, and the
+summary as the body.
+`--long` selects the default explicitly, while `--short` commits only the
+subject.
 The prompt asks for a split recommendation when staged changes are unrelated.
 The command never splits or stages changes automatically.
 
 ## Authorization and Git boundary
 
-The terminal displays the proposed subject, summary, and staged paths.
+The terminal displays the proposed subject, included body, and staged paths.
 A direct terminal invocation authorizes the commit without another prompt.
 Non-interactive input can preview the proposal but cannot commit.
 
@@ -33,9 +38,10 @@ Immediately after authorization, the command rechecks HEAD, index entries, and
 the staged patch.
 If any reviewed Git input changed by that check, it refuses the commit and asks
 for another review.
-It runs normal Git hooks without `--no-verify`.
+It passes the complete message to `git commit --file` through a private
+temporary file and runs normal Git hooks without `--no-verify`.
 After Git reports success, it compares the new commit's parent, patch, and
-subject with the reviewed proposal.
+complete message with the reviewed proposal.
 A hook or concurrent writer that changes the result is reported rather than
 silently accepted.
 Another writer can change HEAD or the index after the final check and before
@@ -59,7 +65,7 @@ It does not implement `review`, `pr`, automatic commit splitting, or push.
    commits; a pipe cannot authorize a commit.
 3. A changed HEAD or staged index detected by the final pre-commit check
    prevents the commit.
-4. A hook-rewritten subject or patch is reported after commit creation.
+4. A hook-rewritten subject, body, or patch is reported after commit creation.
 5. A manual real Codex run can produce a proposal without committing in a
    non-interactive preview.
 6. The CLI grammar, README, scoped tests, and Trunk gate cover the command.
@@ -72,3 +78,6 @@ After eight real uses, the operator found the repeated prompt unnecessary and
 explicitly made direct terminal invocation the authorization boundary while
 retaining preview-only non-interactive behavior.
 Its hook precedent supports normal hook execution and post-commit comparison.
+Oracle found no precedent for the exact long-message structure or default.
+Its file-transport precedent supports passing the generated message through
+`git commit --file` instead of shell-interpolated text.
