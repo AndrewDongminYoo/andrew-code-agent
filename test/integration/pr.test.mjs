@@ -104,6 +104,47 @@ test("pr drafts a body from the exact committed comparison and passed diff check
   });
 });
 
+test("pr bounds changed paths in the model prompt", async () => {
+  assert.notEqual(prModule, null);
+  await withRepository(async ({ root }) => {
+    const generatedPaths = Array.from(
+      { length: 513 },
+      (_, index) => `generated-${String(index).padStart(4, "0")}.txt`,
+    );
+    await Promise.all(
+      generatedPaths.map((path) => writeFile(join(root, path), "generated\n")),
+    );
+    await execFile("git", ["-C", root, "add", "--", ...generatedPaths]);
+    await execFile("git", [
+      "-C",
+      root,
+      "commit",
+      "--quiet",
+      "-m",
+      "test: add generated fixtures",
+    ]);
+
+    let received;
+    assert.equal(
+      await prModule.prCommand(root, undefined, output().io, {
+        async draft(input) {
+          received = input;
+          return validBody;
+        },
+      }),
+      0,
+    );
+
+    const metadata = JSON.parse(received.prompt.split("\n\n").at(-1));
+    assert.equal(received.paths.length, 514);
+    assert.equal(metadata.changedFileCount, 514);
+    assert.equal(metadata.paths.length, 512);
+    assert.equal(metadata.omittedPathCount, 2);
+    assert.equal(metadata.paths.includes("generated-0511.txt"), false);
+    assert.equal(metadata.paths.includes("generated-0512.txt"), false);
+  });
+});
+
 test("pr accepts one explicit base and skips an empty comparison", async () => {
   assert.notEqual(prModule, null);
   await withRepository(async ({ root, base }) => {

@@ -15,6 +15,7 @@ import {
 import { writeLine, type CommandIO } from "./run.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_PROMPT_PATHS = 512;
 const CLEANUP_WARNING = "Temporary PR checkout cleanup failed.";
 const VERIFICATION = [
   "- `git diff --check`: passed.",
@@ -139,6 +140,7 @@ async function checkDiff(input: Omit<PrInput, "prompt">): Promise<void> {
 }
 
 function prPrompt(input: Omit<PrInput, "prompt">): string {
+  const suppliedPaths = input.paths.slice(0, MAX_PROMPT_PATHS);
   const metadata = {
     baseRef: input.baseRef,
     base: input.base,
@@ -149,7 +151,8 @@ function prPrompt(input: Omit<PrInput, "prompt">): string {
     additions: input.additions,
     deletions: input.deletions,
     binaryFiles: input.binaryFiles,
-    paths: input.paths,
+    paths: suppliedPaths,
+    omittedPathCount: input.paths.length - suppliedPaths.length,
     commits: input.commits,
   };
   return [
