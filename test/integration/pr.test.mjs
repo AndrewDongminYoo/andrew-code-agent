@@ -145,6 +145,41 @@ test("pr bounds changed paths in the model prompt", async () => {
   });
 });
 
+test("pr bounds commit metadata in the model prompt", async () => {
+  assert.notEqual(prModule, null);
+  await withRepository(async ({ root }) => {
+    const longSubject = `oversized-${"x".repeat(70 * 1024)}`;
+    const messagePath = join(root, ".git", "long-commit-message.txt");
+    await writeFile(messagePath, longSubject);
+    await execFile("git", [
+      "-C",
+      root,
+      "commit",
+      "--quiet",
+      "--amend",
+      `--file=${messagePath}`,
+    ]);
+
+    let received;
+    assert.equal(
+      await prModule.prCommand(root, undefined, output().io, {
+        async draft(input) {
+          received = input;
+          return validBody;
+        },
+      }),
+      0,
+    );
+
+    const metadata = JSON.parse(received.prompt.split("\n\n").at(-1));
+    assert.equal(received.commits.length, 1);
+    assert.match(received.commits[0], new RegExp(longSubject.slice(0, 128)));
+    assert.deepEqual(metadata.commits, []);
+    assert.equal(metadata.omittedCommitCount, 1);
+    assert.doesNotMatch(received.prompt, new RegExp(longSubject.slice(0, 128)));
+  });
+});
+
 test("pr accepts one explicit base and skips an empty comparison", async () => {
   assert.notEqual(prModule, null);
   await withRepository(async ({ root, base }) => {
@@ -254,6 +289,20 @@ test("pr rejects malformed, unsupported verification, controlled, and oversized 
     ["empty", ""],
     ["outer fence", `\`\`\`markdown\n${validBody}\n\`\`\``],
     ["duplicate heading", `${validBody}\n\n## Summary\n\nDuplicate.`],
+    [
+      "indented level-two heading",
+      validBody.replace(
+        "- Change the fixture.",
+        "  ## Details\n\n- Change the fixture.",
+      ),
+    ],
+    [
+      "setext level-two heading",
+      validBody.replace(
+        "- Change the fixture.",
+        "Details\n-------\n\n- Change the fixture.",
+      ),
+    ],
     ["unsupported validation", `${validBody}\n- pnpm check: passed.`],
     [
       "unclosed HTML comment",
