@@ -61,13 +61,13 @@ export async function prCommand(
   let cleanupWarning: string | undefined;
   try {
     const result = await dependencies.draft(snapshot);
-    body = validateBody(typeof result === "string" ? result : result.response);
     cleanupWarning =
       typeof result === "string" ? undefined : result.cleanupWarning;
+    body = validateBody(typeof result === "string" ? result : result.response);
   } catch (error) {
     const primaryError =
       error instanceof ReviewExecutionError ? error.primaryError : error;
-    if (error instanceof ReviewExecutionError)
+    if (error instanceof ReviewExecutionError || cleanupWarning !== undefined)
       await writeLine(io.stderr, CLEANUP_WARNING);
     const preparationFailure = runtimePreparationMessage(primaryError);
     if (preparationFailure !== undefined) {
@@ -196,9 +196,13 @@ function validateBody(value: string): string {
 }
 
 function hasValidationSuccessClaim(summary: string): boolean {
-  return /\b(?:tests?|checks?|gates?|ci)\b[^\n]{0,32}\b(?:pass(?:ed|es)?|succeed(?:ed|s)?|green)\b/iu.test(
-    summary,
-  );
+  const validation = "(?:tests?|checks?|gates?|ci)";
+  const success =
+    "(?:pass(?:ed|es)?|success(?:ful(?:ly)?|es|ed)?|succeed(?:ed|s)?|green)";
+  return new RegExp(
+    `(?:\\b${validation}\\b\\s*(?::|[-—])?\\s+${success}\\b|\\b${success}\\b\\s+(?:all\\s+)?${validation}\\b)`,
+    "iu",
+  ).test(summary);
 }
 
 function preflightMessage(error: unknown): string {

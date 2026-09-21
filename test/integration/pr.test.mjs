@@ -218,6 +218,14 @@ test("pr rejects malformed, unsupported, controlled, and oversized bodies", asyn
       "validation claim in summary",
       validBody.replace("- Change the fixture.", "- Tests passed."),
     ],
+    [
+      "leading validation success claim",
+      validBody.replace("- Change the fixture.", "- Passed all tests."),
+    ],
+    [
+      "successful validation claim",
+      validBody.replace("- Change the fixture.", "- pnpm test: successful."),
+    ],
     ["terminal control", validBody.replace("Change", "Change\u001b[31m")],
     ["oversized", `${validBody}\n${"x".repeat(64 * 1024)}`],
   ];
@@ -283,6 +291,28 @@ test("pr preserves a valid body when temporary checkout cleanup warns", async ()
     assert.equal(code, 0);
     assert.equal(capture.read().stdout, `${validBody}\n`);
     assert.equal(capture.read().stderr, "Temporary PR checkout cleanup failed.\n");
+  });
+});
+
+test("pr preserves a cleanup warning when returned body validation fails", async () => {
+  assert.notEqual(prModule, null);
+  await withRepository(async ({ root }) => {
+    const capture = output();
+    const code = await prModule.prCommand(root, undefined, capture.io, {
+      async draft() {
+        return {
+          response: "invalid body",
+          cleanupWarning: "sensitive cleanup detail",
+        };
+      },
+    });
+    assert.equal(code, 1);
+    assert.equal(capture.read().stdout, "");
+    assert.equal(
+      capture.read().stderr,
+      "Temporary PR checkout cleanup failed.\nUnable to draft PR body. Check the managed Codex login and runtime paths.\n",
+    );
+    assert.doesNotMatch(capture.read().stderr, /sensitive cleanup detail/);
   });
 });
 
