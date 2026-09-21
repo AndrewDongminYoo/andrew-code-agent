@@ -168,6 +168,8 @@ final Git status.
   invoked from a terminal.
 - `andrew-agent doctor` reports readiness and exits 0 only when nothing is a
   blocker.
+- `andrew-agent review [base]` reviews committed current-branch changes against
+  an explicit base or the default `origin/HEAD` base.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
 - `andrew-agent resume <thread-id> [prompt]` prints a stored thread, or
   continues it.
@@ -208,14 +210,35 @@ The model is asked to recommend splitting unrelated changes; the command does
 not split, push, or publish.
 Diffs larger than 256 KiB are refused instead of being truncated.
 
+`review` requires a named branch and a clean worktree because its first version
+reviews committed branch changes only.
+With no argument, it resolves the symbolic `origin/HEAD` remote-tracking ref;
+one positional ref selects another base.
+The command resolves and displays the exact HEAD, base commit, and merge base
+for a three-dot comparison.
+It copies the exact committed comparison into a temporary standalone repository
+under managed runtime state, without retaining a remote to the source worktree.
+It invokes the managed Codex login through `codex exec review` in that isolated
+checkout with an ephemeral read-only sandbox and user configuration disabled.
+The sandbox restricts writes but is not a universal filesystem read boundary;
+the isolated checkout keeps normal repository inspection away from transient
+source-worktree content.
+The review must tie defects to changed paths and lines, explain their failure
+mechanism, and list missing verification separately from correctness findings.
+After Codex finishes, the command rechecks HEAD, the branch ref, the base ref,
+and worktree cleanliness before it prints the response.
+It discards a stale response if any reviewed input changed and never edits,
+commits, pushes, or publishes review comments.
+An empty comparison exits successfully without invoking Codex.
+
 Exit codes:
 
 - `0` succeeded, or the turn completed.
-- `1` the turn failed, the thread was not found, or output could not be
-  written.
+- `1` the turn or review failed, the thread was not found, or output could not
+  be written.
 - `2` invalid command usage.
-- `3` preflight or runtime preparation failed, including a failed Doctor
-  check.
+- `3` repository, comparison, preflight, or runtime preparation failed,
+  including a failed Doctor check.
 - `4` the App Server failed.
 - `130` the turn was interrupted.
 
@@ -398,7 +421,8 @@ behind a fallback.
 
 - **macOS only.** Every other platform is refused at startup.
 - **One repository, one process.** A single lock covers the whole state root.
-- **The target worktree must be clean.** There is no partial-authority mode.
+- **`run`, prompted `resume`, and `review` require a clean target worktree.**
+  `commit` has its separate staged-only boundary.
 - **Submodules and gitlinks are unsupported.** Any `160000` entry, in the
   commit tree or in the index, is rejected.
 - **The bundle source root must be clean, and bundled files must be tracked.**
