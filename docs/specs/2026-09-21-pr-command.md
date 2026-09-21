@@ -42,6 +42,8 @@ characters, and include these headings exactly once:
 
 The body must not include an outer Markdown fence.
 The Verification section must contain only the two host-supplied facts above.
+Summary must not contain raw angle-bracket syntax or fenced-code markers that
+could hide the following Verification section in rendered Markdown.
 The prompt tells Codex not to put validation results in Summary; the host does
 not attempt to classify the meaning of arbitrary Summary prose.
 After Codex finishes, the command rechecks the current HEAD, branch ref, base

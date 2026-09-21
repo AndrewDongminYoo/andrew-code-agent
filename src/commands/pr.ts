@@ -186,7 +186,12 @@ function validateBody(value: string): string {
     throw new PrError("PR body has invalid sections.");
   const summary = body.slice("## Summary\n\n".length, markerIndex).trim();
   const verification = body.slice(markerIndex + verificationMarker.length);
-  if (summary.length === 0 || verification !== VERIFICATION)
+  if (
+    summary.length === 0 ||
+    /[<>]/u.test(summary) ||
+    /(?:`{3,}|~{3,})/u.test(summary) ||
+    verification !== VERIFICATION
+  )
     throw new PrError("PR body has invalid or unsupported claims.");
   return body;
 }

@@ -251,6 +251,8 @@ The generated English Markdown contains exactly `## Summary` and
 `## Verification` sections and is limited to 64 KiB of UTF-8.
 The command rejects terminal controls, an outer fence, or any Verification text
 other than the two host-supplied facts.
+It also rejects raw angle-bracket syntax and fenced-code markers in Summary so
+Markdown cannot hide the Verification section.
 The generation prompt tells Codex not to put validation results in Summary;
 the host does not attempt to infer the meaning of arbitrary prose with a word
 filter.

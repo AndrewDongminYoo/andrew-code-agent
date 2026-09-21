@@ -214,6 +214,14 @@ test("pr rejects malformed, unsupported verification, controlled, and oversized 
     ["outer fence", `\`\`\`markdown\n${validBody}\n\`\`\``],
     ["duplicate heading", `${validBody}\n\n## Summary\n\nDuplicate.`],
     ["unsupported validation", `${validBody}\n- pnpm check: passed.`],
+    [
+      "unclosed HTML comment",
+      validBody.replace("- Change the fixture.", "- Change the fixture. <!--"),
+    ],
+    [
+      "unclosed fenced code",
+      validBody.replace("- Change the fixture.", "- Change the fixture.\n\n```text"),
+    ],
     ["terminal control", validBody.replace("Change", "Change\u001b[31m")],
     ["oversized", `${validBody}\n${"x".repeat(64 * 1024)}`],
   ];
