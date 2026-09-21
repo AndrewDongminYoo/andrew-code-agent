@@ -297,6 +297,18 @@ test("pr rejects malformed, unsupported verification, controlled, and oversized 
       ),
     ],
     [
+      "unordered-list level-two heading",
+      validBody.replace("- Change the fixture.", "- ## Details"),
+    ],
+    [
+      "ordered-list level-two heading",
+      validBody.replace("- Change the fixture.", "1. ## Details"),
+    ],
+    [
+      "blockquote level-two heading",
+      validBody.replace("- Change the fixture.", "> ## Details"),
+    ],
+    [
       "setext level-two heading",
       validBody.replace(
         "- Change the fixture.",

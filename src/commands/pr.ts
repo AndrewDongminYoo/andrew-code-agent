@@ -184,6 +184,21 @@ function boundedPromptCommits(commits: readonly string[]): string[] {
   return supplied;
 }
 
+function hasAtxLevelTwoHeading(value: string): boolean {
+  return value.split("\n").some((line) => {
+    let content = line;
+    while (true) {
+      const unwrapped = content.replace(
+        /^[ ]{0,3}(?:>[\t ]?|(?:[-+*]|\d{1,9}[.)])(?:[ ]{1,4}(?![ ])|\t))/u,
+        "",
+      );
+      if (unwrapped === content) break;
+      content = unwrapped;
+    }
+    return /^[ ]{0,3}##(?:[\t ]+|$)/u.test(content);
+  });
+}
+
 function validateBody(value: string): string {
   if (Buffer.byteLength(value, "utf8") > MAX_BODY_BYTES)
     throw new PrError("PR body exceeds the output limit.");
@@ -210,7 +225,7 @@ function validateBody(value: string): string {
     summary.length === 0 ||
     /[<>]/u.test(summary) ||
     /(?:`{3,}|~{3,})/u.test(summary) ||
-    /^[ ]{0,3}##(?:[\t ]+|$)/mu.test(summary) ||
+    hasAtxLevelTwoHeading(summary) ||
     /(?:^|\n)[^\n]+\n[ ]{0,3}-+[\t ]*(?=\n|$)/u.test(summary) ||
     verification !== VERIFICATION
   )
