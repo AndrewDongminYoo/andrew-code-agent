@@ -168,6 +168,9 @@ final Git status.
   invoked from a terminal.
 - `andrew-agent doctor` reports readiness and exits 0 only when nothing is a
   blocker.
+- `andrew-agent pr [base]` drafts a Markdown pull-request body from committed
+  current-branch changes against an explicit base or the default `origin/HEAD`
+  base.
 - `andrew-agent review [base]` reviews committed current-branch changes against
   an explicit base or the default `origin/HEAD` base.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
@@ -237,11 +240,32 @@ If the operator interrupts the review, it terminates the Codex process group
 and attempts checkout cleanup before returning a failure.
 An empty comparison exits successfully without invoking Codex.
 
+`pr` uses the same named-branch, clean-worktree, exact-comparison,
+isolated-checkout, race-recheck, cleanup, and interruption boundaries as
+`review`.
+Before drafting, it runs `git diff --check` against the resolved base and HEAD
+commits.
+That result is the only validation it reports as passed; it states explicitly
+that project-specific tests and quality gates were not run by the command.
+The generated English Markdown contains exactly `## Summary` and
+`## Verification` sections and is limited to 64 KiB of UTF-8.
+The command rejects terminal controls, an outer fence, or any Verification text
+other than the two host-supplied facts.
+It also rejects raw angle-bracket syntax and fenced-code markers in Summary so
+Markdown cannot hide the Verification section.
+The generation prompt tells Codex not to put validation results in Summary;
+the host does not attempt to infer the meaning of arbitrary prose with a word
+filter.
+Successful output contains only the body so it can be redirected or passed to
+another command.
+The command does not write a file, generate a title, contact GitHub, open or
+update a pull request, commit, or push.
+
 Exit codes:
 
 - `0` succeeded, or the turn completed.
-- `1` the turn or review failed, the thread was not found, or output could not
-  be written.
+- `1` the turn, review, or PR draft failed, the thread was not found, or output
+  could not be written.
 - `2` invalid command usage.
 - `3` repository, comparison, preflight, or runtime preparation failed,
   including a failed Doctor check.
@@ -427,7 +451,7 @@ behind a fallback.
 
 - **macOS only.** Every other platform is refused at startup.
 - **One repository, one process.** A single lock covers the whole state root.
-- **`run`, prompted `resume`, and `review` require a clean target worktree.**
+- **`run`, prompted `resume`, `pr`, and `review` require a clean target worktree.**
   `commit` has its separate staged-only boundary.
 - **Submodules and gitlinks are unsupported.** Any `160000` entry, in the
   commit tree or in the index, is rejected.

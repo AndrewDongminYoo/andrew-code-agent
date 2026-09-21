@@ -13,6 +13,7 @@ import {
 } from "./constants.js";
 import { commitCommand, type CommitMessageFormat } from "./commands/commit.js";
 import { runDoctor } from "./commands/doctor.js";
+import { prCommand } from "./commands/pr.js";
 import { reviewCommand } from "./commands/review.js";
 import { resumeCommand } from "./commands/resume.js";
 import {
@@ -27,6 +28,7 @@ import { resolveRuntimePaths, type RuntimePaths } from "./runtime/paths.js";
 const usage = {
   commit: "andrew-agent commit [--long | --short]",
   doctor: "andrew-agent doctor",
+  pr: "andrew-agent pr [base]",
   review: "andrew-agent review [base]",
   run: "andrew-agent run <repository> <prompt>",
   resume: "andrew-agent resume <thread-id> [prompt]",
@@ -55,6 +57,10 @@ interface CommandHandlers {
     messageFormat: CommitMessageFormat,
   ) => Promise<ExitCode>;
   readonly doctor: (io: CommandIO, env: NodeJS.ProcessEnv) => Promise<ExitCode>;
+  readonly pr: (
+    baseRef: string | undefined,
+    io: CommandIO,
+  ) => Promise<ExitCode>;
   readonly review: (
     baseRef: string | undefined,
     io: CommandIO,
@@ -88,6 +94,7 @@ const defaultHandlers: CommandHandlers = {
   commit: (io, messageFormat) =>
     commitCommand(process.cwd(), io, undefined, messageFormat),
   doctor: doctorCommand,
+  pr: (baseRef, io) => prCommand(process.cwd(), baseRef, io),
   review: (baseRef, io) => reviewCommand(process.cwd(), baseRef, io),
   run: runCommand,
   resume: resumeCommand,
@@ -169,6 +176,7 @@ export async function main(
     if (command === "commit")
       return await handlers.commit(io, commitMessageFormat);
     if (command === "doctor") return await handlers.doctor(io, env);
+    if (command === "pr") return await handlers.pr(positionals[0], io);
     if (command === "review") return await handlers.review(positionals[0], io);
     // ponytail: the requested set reaches the handler and is ignored there
     // until step 2 of docs/plans/2026-08-25-v0.2-oracle-capability.md threads
@@ -346,6 +354,7 @@ function validPositionals(
   if (positionals.some((value) => value.length === 0)) return false;
   if (command === "commit") return positionals.length === 0;
   if (command === "doctor") return positionals.length === 0;
+  if (command === "pr") return positionals.length <= 1;
   if (command === "review") return positionals.length <= 1;
   if (command === "run") return positionals.length === 2;
   if (command === "resume")
@@ -381,6 +390,7 @@ async function writeUsage(
   await writeLine(output, "Usage:");
   await writeLine(output, usage.commit);
   await writeLine(output, usage.doctor);
+  await writeLine(output, usage.pr);
   await writeLine(output, usage.review);
   await writeLine(output, usage.run);
   await writeLine(output, usage.resume);
