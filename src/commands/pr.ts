@@ -186,22 +186,9 @@ function validateBody(value: string): string {
     throw new PrError("PR body has invalid sections.");
   const summary = body.slice("## Summary\n\n".length, markerIndex).trim();
   const verification = body.slice(markerIndex + verificationMarker.length);
-  if (
-    summary.length === 0 ||
-    hasValidationSuccessClaim(summary) ||
-    verification !== VERIFICATION
-  )
+  if (summary.length === 0 || verification !== VERIFICATION)
     throw new PrError("PR body has invalid or unsupported claims.");
   return body;
-}
-
-function hasValidationSuccessClaim(summary: string): boolean {
-  const validation = /\b(?:tests?|checks?|gates?|ci)\b/iu;
-  const result =
-    /\b(?:pass(?:ed|es)?|success(?:ful(?:ly)?|es|ed)?|succeed(?:ed|s)?|green)\b/iu;
-  return summary
-    .split("\n")
-    .some((line) => validation.test(line) && result.test(line));
 }
 
 function preflightMessage(error: unknown): string {

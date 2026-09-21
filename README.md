@@ -248,9 +248,12 @@ commits.
 That result is the only validation it reports as passed; it states explicitly
 that project-specific tests and quality gates were not run by the command.
 The generated English Markdown contains exactly `## Summary` and
-`## Verification` sections, is limited to 64 KiB of UTF-8, and is rejected if
-it contains terminal controls, an outer fence, or additional verification
-claims.
+`## Verification` sections and is limited to 64 KiB of UTF-8.
+The command rejects terminal controls, an outer fence, or any Verification text
+other than the two host-supplied facts.
+The generation prompt tells Codex not to put validation results in Summary;
+the host does not attempt to infer the meaning of arbitrary prose with a word
+filter.
 Successful output contains only the body so it can be redirected or passed to
 another command.
 The command does not write a file, generate a title, contact GitHub, open or

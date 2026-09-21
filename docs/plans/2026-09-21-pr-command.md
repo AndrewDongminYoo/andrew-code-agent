@@ -56,9 +56,9 @@ by `review` without weakening either command.
 
 Review the complete diff against the specification after the first green
 aggregate gate.
-Check prompt-injection boundaries, unsupported validation claims, output purity,
+Check prompt-injection boundaries, Verification-section claims, output purity,
 Git races, cleanup, and interruption.
-Apply at most two local repair rounds before publication.
+Apply bounded local repairs until no supported findings remain.
 
 ## Delivery
 

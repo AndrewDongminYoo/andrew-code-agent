@@ -40,7 +40,10 @@ characters, and include these headings exactly once:
 - `## Summary`
 - `## Verification`
 
-The body must not include an outer Markdown fence or unsupported test claims.
+The body must not include an outer Markdown fence.
+The Verification section must contain only the two host-supplied facts above.
+The prompt tells Codex not to put validation results in Summary; the host does
+not attempt to classify the meaning of arbitrary Summary prose.
 After Codex finishes, the command rechecks the current HEAD, branch ref, base
 commit, and worktree cleanliness.
 If any reviewed input changed, it discards the draft and asks the operator to
@@ -66,8 +69,8 @@ cleanup before returning a failure.
 ## Non-goals
 
 The first version does not run arbitrary repository checks, infer CI status,
-read prior terminal logs, accept free-form validation claims, generate a PR
-title, or publish to GitHub.
+read prior terminal logs, accept operator-supplied validation evidence, generate
+a PR title, or publish to GitHub.
 Supplying independently captured local, CI, integration, or runtime evidence is
 a later feature with a separate provenance contract.
 

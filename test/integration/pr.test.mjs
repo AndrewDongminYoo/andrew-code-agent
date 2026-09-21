@@ -207,40 +207,13 @@ test("pr classifies runtime preparation failures without leaking details", async
   });
 });
 
-test("pr rejects malformed, unsupported, controlled, and oversized bodies", async () => {
+test("pr rejects malformed, unsupported verification, controlled, and oversized bodies", async () => {
   assert.notEqual(prModule, null);
   const cases = [
     ["empty", ""],
     ["outer fence", `\`\`\`markdown\n${validBody}\n\`\`\``],
     ["duplicate heading", `${validBody}\n\n## Summary\n\nDuplicate.`],
     ["unsupported validation", `${validBody}\n- pnpm check: passed.`],
-    [
-      "validation claim in summary",
-      validBody.replace("- Change the fixture.", "- Tests passed."),
-    ],
-    [
-      "leading validation success claim",
-      validBody.replace("- Change the fixture.", "- Passed all tests."),
-    ],
-    [
-      "successful validation claim",
-      validBody.replace("- Change the fixture.", "- pnpm test: successful."),
-    ],
-    [
-      "validation claim with auxiliary verb",
-      validBody.replace("- Change the fixture.", "- All tests have passed."),
-    ],
-    [
-      "validation claim with Markdown punctuation",
-      validBody.replace("- Change the fixture.", "- `pnpm check`: passed."),
-    ],
-    [
-      "validation claim with intervening verb",
-      validBody.replace(
-        "- Change the fixture.",
-        "- pnpm test completed successfully.",
-      ),
-    ],
     ["terminal control", validBody.replace("Change", "Change\u001b[31m")],
     ["oversized", `${validBody}\n${"x".repeat(64 * 1024)}`],
   ];
@@ -260,6 +233,27 @@ test("pr rejects malformed, unsupported, controlled, and oversized bodies", asyn
         name,
       );
     }
+  });
+});
+
+test("pr accepts implementation prose without inferring validation semantics", async () => {
+  assert.notEqual(prModule, null);
+  await withRepository(async ({ root }) => {
+    const capture = output();
+    const body = validBody.replace(
+      "- Change the fixture.",
+      "- Add regression tests that reject unsupported success claims.",
+    );
+    assert.equal(
+      await prModule.prCommand(root, undefined, capture.io, {
+        async draft() {
+          return body;
+        },
+      }),
+      0,
+    );
+    assert.equal(capture.read().stdout, `${body}\n`);
+    assert.equal(capture.read().stderr, "");
   });
 });
 
