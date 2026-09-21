@@ -1,11 +1,11 @@
 /// <reference types="node" />
 
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { runCodexExec } from "../codex/exec.js";
 import { executeGit } from "../git/process.js";
 import { resolveRepositoryRoot } from "../runtime/git.js";
 import {
@@ -15,7 +15,6 @@ import {
 import { writeLine, type CommandIO } from "./run.js";
 
 const MAX_PATCH_BYTES = 256 * 1024;
-const MAX_MODEL_OUTPUT_BYTES = 1024 * 1024;
 const MODEL_TIMEOUT_MS = 120_000;
 
 class CommitError extends Error {}
@@ -429,150 +428,35 @@ export async function runCodex(
   prompt: string,
   timeoutMs = MODEL_TIMEOUT_MS,
 ): Promise<string> {
-  return await new Promise((resolve, reject) => {
-    const child = spawn(
-      binary,
-      [
-        "exec",
-        "--json",
-        "--ephemeral",
-        "--ignore-user-config",
-        "--disable",
-        "shell_tool",
-        "--sandbox",
-        "read-only",
-        "--skip-git-repo-check",
-        "-C",
-        cwd,
-        "-",
-      ],
-      {
-        cwd,
-        detached: true,
-        env: {
-          CODEX_HOME: codexHome,
-          PATH: process.env.PATH ?? "/usr/bin:/bin",
-        },
-        stdio: ["pipe", "pipe", "pipe"],
-      },
-    );
-    let stdout = "";
-    let stderr = "";
-    let overflow = false;
-    let stopped = false;
-    let terminationError: Error | undefined;
-    let stopTimer: NodeJS.Timeout | undefined;
-    const timer = setTimeout(
-      () => terminate(new Error("Codex proposal timed out.")),
-      timeoutMs,
-    );
-    const fail = (error: Error): void => {
-      if (stopped) return;
-      stopped = true;
-      clearTimeout(timer);
-      if (stopTimer !== undefined) clearTimeout(stopTimer);
-      reject(error);
-    };
-    const succeed = (value: string): void => {
-      if (stopped) return;
-      stopped = true;
-      clearTimeout(timer);
-      if (stopTimer !== undefined) clearTimeout(stopTimer);
-      resolve(value);
-    };
-    function terminate(error: Error): void {
-      if (terminationError !== undefined || stopped) return;
-      terminationError = error;
-      signalProcessGroup(child.pid, "SIGTERM");
-      stopTimer = setTimeout(() => {
-        signalProcessGroup(child.pid, "SIGKILL");
-        fail(error);
-      }, 500);
-    }
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      if (overflow) return;
-      stdout += chunk;
-      if (Buffer.byteLength(stdout) > MAX_MODEL_OUTPUT_BYTES) {
-        overflow = true;
-        terminate(new Error("Codex output exceeded the limit."));
-      }
-    });
-    child.stderr.on("data", (chunk: string) => {
-      if (overflow) return;
-      stderr += chunk;
-      if (Buffer.byteLength(stderr) > MAX_MODEL_OUTPUT_BYTES) {
-        overflow = true;
-        terminate(new Error("Codex output exceeded the limit."));
-      }
-    });
-    child.stdin.on("error", () => {
-      terminate(new Error("Codex proposal failed."));
-    });
-    child.on("error", fail);
-    child.on("close", (code) => {
-      if (terminationError !== undefined) {
-        signalProcessGroup(child.pid, "SIGKILL");
-        return fail(terminationError);
-      }
-      if (overflow) return fail(new Error("Codex output exceeded the limit."));
-      if (code !== 0) return fail(new Error("Codex proposal failed."));
-      let lastMessage = "";
-      let completed = false;
-      try {
-        for (const line of stdout.split("\n")) {
-          if (line === "") continue;
-          const event: unknown = JSON.parse(line);
-          if (
-            typeof event !== "object" ||
-            event === null ||
-            Array.isArray(event)
-          )
-            continue;
-          const entry = event as {
-            type?: unknown;
-            item?: { type?: unknown; text?: unknown };
-          };
-          if (entry.type === "turn.completed") completed = true;
-          if (
-            entry.type === "item.completed" &&
-            entry.item?.type === "agent_message" &&
-            typeof entry.item.text === "string"
-          )
-            lastMessage = entry.item.text;
-          if (
-            (entry.type === "item.started" ||
-              entry.type === "item.completed") &&
-            !["agent_message", "reasoning", "error"].includes(
-              String(entry.item?.type),
-            )
-          )
-            throw new Error(
-              "Codex attempted to use a tool during commit proposal.",
-            );
-        }
-      } catch (error) {
-        return fail(error instanceof Error ? error : new Error(String(error)));
-      }
-      if (!completed || lastMessage === "")
-        return fail(new Error("Codex returned no completed proposal."));
-      succeed(lastMessage);
-    });
-    child.stdin.end(prompt);
+  return await runCodexExec({
+    binary,
+    codexHome,
+    cwd,
+    args: [
+      "exec",
+      "--json",
+      "--ephemeral",
+      "--ignore-user-config",
+      "--disable",
+      "shell_tool",
+      "--sandbox",
+      "read-only",
+      "--skip-git-repo-check",
+      "-C",
+      cwd,
+      "-",
+    ],
+    prompt,
+    timeoutMs,
+    allowedItemTypes: ["agent_message", "reasoning", "error"],
+    messages: {
+      timeout: "Codex proposal timed out.",
+      outputLimit: "Codex output exceeded the limit.",
+      failed: "Codex proposal failed.",
+      empty: "Codex returned no completed proposal.",
+      unexpectedItem: "Codex attempted to use a tool during commit proposal.",
+    },
   });
-}
-
-function signalProcessGroup(
-  pid: number | undefined,
-  signal: NodeJS.Signals,
-): void {
-  if (pid === undefined) return;
-  try {
-    process.kill(-pid, signal);
-  } catch {
-    // The isolated process group may have already exited.
-  }
 }
 
 function errorMessage(error: unknown, fallback: string): string {

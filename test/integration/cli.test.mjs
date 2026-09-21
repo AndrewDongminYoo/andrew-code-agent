@@ -102,31 +102,33 @@ function operationHarness(repositoryRoot, overrides = {}) {
   return { order, dependencies };
 }
 
-test("compiled CLI exposes exact help and routes the five-command grammar", async () => {
+test("compiled CLI exposes exact help and routes the six-command grammar", async () => {
   const { cliModule } = modules();
   const output = capture();
   const calls = [];
-  const handlers = { commit: async (_io, format) => { calls.push(["commit", format]); return 0; }, doctor: async () => { calls.push(["doctor"]); return 0; }, run: async (...args) => { calls.push(["run", ...args.slice(0, 2)]); return 0; }, resume: async (...args) => { calls.push(["resume", ...args.slice(0, 2)]); return 0; }, status: async (...args) => { calls.push(["status", ...args.slice(0, 1)]); return 0; } };
+  const handlers = { commit: async (_io, format) => { calls.push(["commit", format]); return 0; }, doctor: async () => { calls.push(["doctor"]); return 0; }, review: async (...args) => { calls.push(["review", ...args.slice(0, 1)]); return 0; }, run: async (...args) => { calls.push(["run", ...args.slice(0, 2)]); return 0; }, resume: async (...args) => { calls.push(["resume", ...args.slice(0, 2)]); return 0; }, status: async (...args) => { calls.push(["status", ...args.slice(0, 1)]); return 0; } };
   assert.equal(await cliModule.main(["--help"], { ...output, handlers }), 0);
-  assert.equal(output.output().stdout, "Usage:\nandrew-agent commit [--long | --short]\nandrew-agent doctor\nandrew-agent run <repository> <prompt>\nandrew-agent resume <thread-id> [prompt]\nandrew-agent status [thread-id]\n");
+  assert.equal(output.output().stdout, "Usage:\nandrew-agent commit [--long | --short]\nandrew-agent doctor\nandrew-agent review [base]\nandrew-agent run <repository> <prompt>\nandrew-agent resume <thread-id> [prompt]\nandrew-agent status [thread-id]\n");
   assert.equal(await cliModule.main(["commit"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["commit", "--long"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["commit", "--short"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["doctor"], { ...capture(), handlers }), 0);
+  assert.equal(await cliModule.main(["review"], { ...capture(), handlers }), 0);
+  assert.equal(await cliModule.main(["review", "origin/develop"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["run", "/repo", "prompt"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["resume", "thread-1"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["resume", "thread-1", "next"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["status"], { ...capture(), handlers }), 0);
   assert.equal(await cliModule.main(["status", "thread-1"], { ...capture(), handlers }), 0);
-  assert.deepEqual(calls, [["commit", "long"], ["commit", "long"], ["commit", "short"], ["doctor"], ["run", "/repo", "prompt"], ["resume", "thread-1", undefined], ["resume", "thread-1", "next"], ["status", undefined], ["status", "thread-1"]]);
+  assert.deepEqual(calls, [["commit", "long"], ["commit", "long"], ["commit", "short"], ["doctor"], ["review", undefined], ["review", "origin/develop"], ["run", "/repo", "prompt"], ["resume", "thread-1", undefined], ["resume", "thread-1", "next"], ["status", undefined], ["status", "thread-1"]]);
 });
 
 test("command help exits before handlers and invalid grammar exits 2", async () => {
   const { cliModule } = modules();
   const calls = [];
-  const handlers = Object.fromEntries(["commit", "doctor", "run", "resume", "status"].map((name) => [name, async () => { calls.push(name); return 0; }]));
-  const topLevelUsage = "Usage:\nandrew-agent commit [--long | --short]\nandrew-agent doctor\nandrew-agent run <repository> <prompt>\nandrew-agent resume <thread-id> [prompt]\nandrew-agent status [thread-id]\n";
-  for (const [argv, usage] of [[["commit", "-h"], "andrew-agent commit [--long | --short]"], [["doctor", "-h"], "andrew-agent doctor"], [["run", "--help"], "andrew-agent run <repository> <prompt>"], [["resume", "-h"], "andrew-agent resume <thread-id> [prompt]"], [["status", "--help"], "andrew-agent status [thread-id]"]]) {
+  const handlers = Object.fromEntries(["commit", "doctor", "review", "run", "resume", "status"].map((name) => [name, async () => { calls.push(name); return 0; }]));
+  const topLevelUsage = "Usage:\nandrew-agent commit [--long | --short]\nandrew-agent doctor\nandrew-agent review [base]\nandrew-agent run <repository> <prompt>\nandrew-agent resume <thread-id> [prompt]\nandrew-agent status [thread-id]\n";
+  for (const [argv, usage] of [[["commit", "-h"], "andrew-agent commit [--long | --short]"], [["doctor", "-h"], "andrew-agent doctor"], [["review", "-h"], "andrew-agent review [base]"], [["run", "--help"], "andrew-agent run <repository> <prompt>"], [["resume", "-h"], "andrew-agent resume <thread-id> [prompt]"], [["status", "--help"], "andrew-agent status [thread-id]"]]) {
     const output = capture();
     assert.equal(await cliModule.main(argv, { ...output, handlers }), 0);
     assert.equal(output.output().stdout, `Usage: ${usage}\n`);
@@ -144,6 +146,8 @@ test("command help exits before handlers and invalid grammar exits 2", async () 
     [["doctor", "--help=true"], "Invalid command usage.\nUsage: andrew-agent doctor\n"],
     [["doctor", "--bad"], "Invalid command usage.\nUsage: andrew-agent doctor\n"],
     [["doctor", "extra"], "Invalid command usage.\nUsage: andrew-agent doctor\n"],
+    [["review", "one", "two"], "Invalid command usage.\nUsage: andrew-agent review [base]\n"],
+    [["review", "--long"], "Invalid command usage.\nUsage: andrew-agent review [base]\n"],
     [["run", "--bad"], "Invalid command usage.\nUsage: andrew-agent run <repository> <prompt>\n"],
     [["run", "", "p"], "Invalid command usage.\nUsage: andrew-agent run <repository> <prompt>\n"],
     [["run", "/r"], "Invalid command usage.\nUsage: andrew-agent run <repository> <prompt>\n"],
