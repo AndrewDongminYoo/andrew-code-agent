@@ -24,13 +24,13 @@ const MAX_PROMPT_COMMITS = 50;
 const CLEANUP_WARNING = "Temporary review checkout cleanup failed.";
 
 class ReviewError extends Error {}
-class ReviewPreparationError extends Error {
+export class ReviewPreparationError extends Error {
   constructor(cause?: unknown) {
     super("Review checkout preparation failed.", { cause });
   }
 }
 
-class ReviewExecutionError extends Error {
+export class ReviewExecutionError extends Error {
   readonly primaryError: unknown;
   readonly cleanupWarning: string;
 
@@ -146,7 +146,7 @@ export async function reviewCommand(
   return 0;
 }
 
-async function readReviewInput(
+export async function readReviewInput(
   repositoryInput: string,
   baseInput: string | undefined,
 ): Promise<ReviewInput> {
@@ -372,7 +372,7 @@ function reviewPrompt(input: Omit<ReviewInput, "prompt">): string {
   ].join("\n\n");
 }
 
-async function reviewWithCodex(
+export async function reviewWithCodex(
   input: ReviewInput,
 ): Promise<ReviewExecutionResult> {
   let paths;
@@ -592,7 +592,7 @@ export async function runCodexReview(
   });
 }
 
-function reviewIdentity(input: ReviewInput): string {
+export function reviewIdentity(input: ReviewInput): string {
   return JSON.stringify({
     repositoryRoot: input.repositoryRoot,
     baseRef: input.baseRef,
