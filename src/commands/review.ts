@@ -21,9 +21,14 @@ const MODEL_TIMEOUT_MS = 300_000;
 const DEFAULT_BASE_SYMBOLIC_REF = "refs/remotes/origin/HEAD";
 const MAX_PROMPT_PATHS = 512;
 const MAX_PROMPT_COMMITS = 50;
+const CLEANUP_WARNING = "Temporary review checkout cleanup failed.";
 
 class ReviewError extends Error {}
-class ReviewPreparationError extends Error {}
+class ReviewPreparationError extends Error {
+  constructor(cause?: unknown) {
+    super("Review checkout preparation failed.", { cause });
+  }
+}
 
 class ReviewExecutionError extends Error {
   readonly primaryError: unknown;
@@ -382,8 +387,13 @@ async function reviewWithCodex(
       input.head,
     );
   } catch (error) {
-    if (error instanceof RuntimePathError) throw error;
-    throw new ReviewPreparationError("Review checkout preparation failed.");
+    const primaryError =
+      error instanceof ReviewExecutionError ? error.primaryError : error;
+    if (primaryError instanceof RuntimePathError) throw error;
+    const preparationError = new ReviewPreparationError(primaryError);
+    if (error instanceof ReviewExecutionError)
+      throw new ReviewExecutionError(preparationError, error.cleanupWarning);
+    throw preparationError;
   }
   return await settleReviewExecution(
     async () =>
@@ -415,7 +425,7 @@ export async function settleReviewExecution(
   try {
     await cleanup();
   } catch {
-    cleanupWarning = "Temporary review checkout cleanup failed.";
+    cleanupWarning = CLEANUP_WARNING;
   }
 
   if (reviewFailed) {
@@ -433,6 +443,8 @@ export async function createReviewCheckout(
   stateRoot: string,
   base: string,
   head: string,
+  removeCheckout: (path: string) => Promise<void> = async (path) =>
+    await rm(path, { recursive: true, force: true }),
 ): Promise<string> {
   const checkout = await mkdtemp(join(stateRoot, "review-"));
   const isolated = { isolateConfig: true } as const;
@@ -499,7 +511,11 @@ export async function createReviewCheckout(
       throw new ReviewError("Review checkout identity mismatch.");
     return checkout;
   } catch (error) {
-    await rm(checkout, { recursive: true, force: true });
+    try {
+      await removeCheckout(checkout);
+    } catch {
+      throw new ReviewExecutionError(error, CLEANUP_WARNING);
+    }
     throw error;
   }
 }

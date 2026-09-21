@@ -40,22 +40,29 @@ export async function runCodexExec(input: CodexExecInput): Promise<string> {
     let stopped = false;
     let terminationError: Error | undefined;
     let stopTimer: NodeJS.Timeout | undefined;
+    const onInterrupt = (): void => {
+      terminate(new Error(input.messages.failed));
+    };
+    process.on("SIGINT", onInterrupt);
     const timer = setTimeout(
       () => terminate(new Error(input.messages.timeout)),
       input.timeoutMs,
     );
+    const finish = (): void => {
+      clearTimeout(timer);
+      if (stopTimer !== undefined) clearTimeout(stopTimer);
+      process.off("SIGINT", onInterrupt);
+    };
     const fail = (error: Error): void => {
       if (stopped) return;
       stopped = true;
-      clearTimeout(timer);
-      if (stopTimer !== undefined) clearTimeout(stopTimer);
+      finish();
       reject(error);
     };
     const succeed = (value: string): void => {
       if (stopped) return;
       stopped = true;
-      clearTimeout(timer);
-      if (stopTimer !== undefined) clearTimeout(stopTimer);
+      finish();
       resolve(value);
     };
     function terminate(error: Error): void {

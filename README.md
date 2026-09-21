@@ -233,6 +233,8 @@ It discards a stale response if any reviewed input changed and never edits,
 commits, pushes, or publishes review comments.
 If temporary-checkout cleanup fails, it emits a redacted warning without
 discarding the review response or replacing the original review failure.
+If the operator interrupts the review, it terminates the Codex process group
+and attempts checkout cleanup before returning a failure.
 An empty comparison exits successfully without invoking Codex.
 
 Exit codes:

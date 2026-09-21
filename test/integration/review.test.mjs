@@ -187,6 +187,39 @@ test("review settlement preserves the primary failure when cleanup also fails", 
   );
 });
 
+test("review checkout preparation preserves its failure when cleanup also fails", async () => {
+  assert.equal(typeof reviewModule?.createReviewCheckout, "function");
+  const runtime = await realpath(
+    await mkdtemp(join(tmpdir(), "andrew-agent-review-prepare-cleanup-")),
+  );
+  const stateRoot = join(runtime, "state");
+  await mkdir(stateRoot);
+  try {
+    await assert.rejects(
+      reviewModule.createReviewCheckout(
+        join(runtime, "missing-source"),
+        stateRoot,
+        "a".repeat(40),
+        "b".repeat(40),
+        async () => {
+          throw new Error("sensitive cleanup detail");
+        },
+      ),
+      (error) => {
+        assert.ok(error.primaryError instanceof Error);
+        assert.equal(
+          error.cleanupWarning,
+          "Temporary review checkout cleanup failed.",
+        );
+        assert.doesNotMatch(error.cleanupWarning, /sensitive cleanup detail/);
+        return true;
+      },
+    );
+  } finally {
+    await rm(runtime, { recursive: true, force: true });
+  }
+});
+
 test("review skips Codex when the three-dot comparison is empty", async () => {
   assert.notEqual(reviewModule, null);
   await withRepository(async (root) => {
@@ -474,6 +507,81 @@ process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
         false,
       );
     } finally {
+      for (const [key, value] of Object.entries(environment)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await rm(runtime, { recursive: true, force: true });
+    }
+  });
+});
+
+test("an interrupted review terminates Codex and removes its checkout", async () => {
+  assert.notEqual(reviewModule, null);
+  await withRepository(async (root) => {
+    const runtime = await realpath(
+      await mkdtemp(join(tmpdir(), "andrew-agent-review-interrupt-")),
+    );
+    const stateRoot = join(runtime, "state");
+    const pidFile = join(runtime, "pid");
+    const binary = join(runtime, "codex");
+    const script = `#!${process.execPath}
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
+process.on("SIGTERM", () => {});
+setInterval(() => {}, 1000);
+`;
+    await writeFile(binary, script);
+    await chmod(binary, 0o755);
+    const environment = {
+      ANDREW_AGENT_CODEX_SOURCE: process.env.ANDREW_AGENT_CODEX_SOURCE,
+      ANDREW_AGENT_STATE_ROOT: process.env.ANDREW_AGENT_STATE_ROOT,
+      ANDREW_AGENT_CODEX_BIN: process.env.ANDREW_AGENT_CODEX_BIN,
+    };
+    process.env.ANDREW_AGENT_CODEX_SOURCE = root;
+    process.env.ANDREW_AGENT_STATE_ROOT = stateRoot;
+    process.env.ANDREW_AGENT_CODEX_BIN = binary;
+    let pid = 0;
+    try {
+      const listenersBefore = process.listenerCount("SIGINT");
+      const running = reviewModule.reviewCommand(root, "main", output());
+      const readyDeadline = Date.now() + 1_000;
+      while (pid === 0 && Date.now() < readyDeadline) {
+        pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
+        if (pid === 0)
+          await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      assert.ok(pid > 0, "the fake Codex process must start before interrupt");
+      process.emit("SIGINT");
+      const result = await Promise.race([
+        running,
+        new Promise((resolve) =>
+          setTimeout(() => resolve("hung"), 1_500),
+        ),
+      ]);
+      if (result === "hung") {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+        await running;
+      }
+      assert.equal(result, 1);
+      assert.equal(process.listenerCount("SIGINT"), listenersBefore);
+      assert.throws(() => process.kill(pid, 0), { code: "ESRCH" });
+      assert.equal(
+        (await readdir(stateRoot)).some((entry) => entry.startsWith("review-")),
+        false,
+      );
+    } finally {
+      if (pid > 0) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch (error) {
+          if (error.code !== "ESRCH") throw error;
+        }
+      }
       for (const [key, value] of Object.entries(environment)) {
         if (value === undefined) delete process.env[key];
         else process.env[key] = value;

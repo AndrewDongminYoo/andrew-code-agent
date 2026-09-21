@@ -59,6 +59,8 @@ The command prints the resolved comparison identities before the final review
 response.
 If temporary-checkout cleanup fails, the command emits a redacted warning while
 preserving a successful response or the original review failure and exit code.
+If the operator interrupts the review, the command terminates the Codex process
+group and attempts checkout cleanup before returning a failure.
 
 ## Limits and non-goals
 
@@ -87,8 +89,9 @@ It does not guarantee that Codex ran every relevant test.
    exact committed comparison and no source-worktree dirt.
 4. Checkout preparation does not run system or global Git hooks and works when
    the exact comparison is available from a shallow source repository.
-5. A cleanup failure is reported without replacing a successful response or
-   the primary review failure.
+5. An interrupt terminates the Codex process group and attempts checkout
+   cleanup, and a cleanup failure is reported without replacing a successful
+   response or the primary review failure.
 6. Empty comparisons do not invoke Codex.
 7. A changed HEAD, branch ref, base commit, or worktree detected after review
    prevents stale output from being reported.
