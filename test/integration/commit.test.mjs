@@ -576,6 +576,25 @@ test("an early Codex exit reports a proposal failure without an unhandled stdin 
   });
 });
 
+test("the shared Codex runner preserves the commit tool-use refusal", async () => {
+  assert.equal(typeof commitModule?.runCodex, "function");
+  const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-tool-refusal-"));
+  const binary = join(runtime, "fake-codex");
+  await writeFile(
+    binary,
+    `#!${process.execPath}\nprocess.stdin.resume();\nprocess.stdin.on("end", () => {\n  process.stdout.write(JSON.stringify({ type: "item.started", item: { type: "command_execution" } }) + "\\n");\n  process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "{}" } }) + "\\n");\n  process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");\n});\n`,
+  );
+  await chmod(binary, 0o700);
+  try {
+    await assert.rejects(
+      commitModule.runCodex(binary, runtime, runtime, "test prompt", 1_200),
+      /Codex attempted to use a tool during commit proposal/,
+    );
+  } finally {
+    await rm(runtime, { recursive: true, force: true });
+  }
+});
+
 test("a proposal timeout terminates a Codex process that ignores SIGTERM", async () => {
   assert.equal(typeof commitModule?.runCodex, "function");
   const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-timeout-"));
