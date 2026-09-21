@@ -323,7 +323,8 @@ function reviewPrompt(input: Omit<ReviewInput, "prompt">): string {
     commits: input.commits,
   };
   return [
-    "Review only the committed three-dot changes described by the supplied comparison metadata.",
+    "Inspect the repository and review only the committed three-dot changes described by the supplied comparison metadata.",
+    "Use the exact base, merge base, and HEAD commits from the metadata when reading the diff.",
     "Report only defects that are supported by repository evidence.",
     "For each defect, cite a changed path and line and explain the concrete failure mechanism.",
     "Do not report style-only comments, unsupported speculation, or findings outside the comparison.",
@@ -356,7 +357,6 @@ async function reviewWithCodex(input: ReviewInput): Promise<string> {
       paths.codexBin,
       paths.codexHome,
       checkout,
-      input.base,
       input.prompt,
     );
   } finally {
@@ -420,7 +420,6 @@ export async function runCodexReview(
   binary: string,
   codexHome: string,
   repositoryRoot: string,
-  base: string,
   prompt: string,
   timeoutMs = MODEL_TIMEOUT_MS,
 ): Promise<string> {
@@ -437,9 +436,6 @@ export async function runCodexReview(
       "read-only",
       "-C",
       repositoryRoot,
-      "review",
-      "--base",
-      base,
       "-",
     ],
     prompt,

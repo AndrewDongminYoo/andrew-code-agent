@@ -218,7 +218,7 @@ The command resolves and displays the exact HEAD, base commit, and merge base
 for a three-dot comparison.
 It copies the exact committed comparison into a temporary standalone repository
 under managed runtime state, without retaining a remote to the source worktree.
-It invokes the managed Codex login through `codex exec review` in that isolated
+It invokes the managed Codex login through `codex exec` in that isolated
 checkout with an ephemeral read-only sandbox and user configuration disabled.
 The sandbox restricts writes but is not a universal filesystem read boundary;
 the isolated checkout keeps normal repository inspection away from transient

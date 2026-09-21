@@ -214,7 +214,7 @@ test("review discards stale output when HEAD, branch, base, or worktree moves", 
   }
 });
 
-test("Codex review uses an ephemeral read-only child in the provided review repository", async () => {
+test("Codex review uses an ephemeral read-only exec child in the provided review repository", async () => {
   assert.equal(typeof reviewModule?.runCodexReview, "function");
   const root = await realpath(
     await mkdtemp(join(tmpdir(), "andrew-agent-review-child-")),
@@ -232,12 +232,10 @@ process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
 `;
     await writeFile(binary, script);
     await chmod(binary, 0o755);
-    const base = "a".repeat(40);
     const result = await reviewModule.runCodexReview(
       binary,
       join(root, "codex-home"),
       root,
-      base,
       "review prompt",
       1_200,
     );
@@ -252,9 +250,6 @@ process.stdout.write(JSON.stringify({ type: "turn.completed" }) + "\\n");
       "read-only",
       "-C",
       root,
-      "review",
-      "--base",
-      base,
       "-",
     ]);
     assert.equal(invocation.cwd, root);

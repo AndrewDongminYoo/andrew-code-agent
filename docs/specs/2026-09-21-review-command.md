@@ -31,8 +31,8 @@ The command copies the exact resolved base and HEAD commit objects into a
 temporary standalone review repository under the managed state root.
 The temporary repository retains no remote that points to the source worktree
 and contains only committed checkout content.
-The command invokes the managed Codex login through `codex exec review` in that
-isolated checkout with the exact resolved base commit.
+The command invokes the managed Codex login through `codex exec` in that
+isolated checkout with the exact resolved comparison metadata.
 Codex runs with an explicit read-only sandbox, ephemeral session storage, and
 user configuration disabled.
 Repository instructions remain available to the review.
@@ -76,7 +76,7 @@ It does not guarantee that Codex ran every relevant test.
 
 1. The default base and one explicit base ref resolve to exact commits, and the
    command reports the exact comparison identities.
-2. Only committed three-dot branch changes reach `codex exec review`; a dirty
+2. Only committed three-dot branch changes reach `codex exec`; a dirty
    worktree is rejected before model invocation.
 3. The Codex child receives an explicit read-only, ephemeral,
    user-config-independent invocation in a temporary repository containing the
