@@ -61,7 +61,36 @@ test("commit proposes and commits only staged content", async () => {
     assert.equal(await readFile(join(root, "tracked.txt"), "utf8"), "unstaged\n");
     assert.equal(await readFile(join(root, "untracked.txt"), "utf8"), "untracked\n");
     assert.equal(await git(root, "log", "-1", "--format=%s"), "fix: update tracked content");
+    assert.equal(
+      await git(root, "log", "-1", "--format=%B"),
+      "fix: update tracked content\n\nUpdates the tracked fixture.",
+    );
+    assert.match(io.read().stdout, /Body: Updates the tracked fixture\./);
     assert.match(io.read().stdout, /tracked.txt/);
+  });
+});
+
+test("short format commits only the proposed subject", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() {
+        return {
+          subject: "fix: update fixture",
+          summary: "Updates the fixture.",
+        };
+      },
+      async authorize() { return true; },
+    }, "short");
+    assert.equal(code, 0);
+    assert.equal(
+      await git(root, "log", "-1", "--format=%B"),
+      "fix: update fixture",
+    );
+    assert.match(io.read().stdout, /Body: \(omitted by --short\)/);
   });
 });
 
@@ -395,6 +424,8 @@ test("commit refuses blank, trailing-whitespace, control-character, or malformed
     for (const proposal of [
       { subject: "   ", summary: "Updates the fixture." },
       { subject: "fix: update fixture ", summary: "Updates the fixture." },
+      { subject: "fix: update fixture", summary: " Updates the fixture." },
+      { subject: "fix: update fixture", summary: "Updates the fixture. " },
       { subject: "fix: update fixture", summary: "\u001b[31mUpdates the fixture." },
       { subject: "fix: update fixture\ud800", summary: "Updates the fixture." },
       { subject: "fix: update fixture", summary: "Updates the fixture\udc00." },
@@ -427,6 +458,31 @@ test("commit reports a message rewritten by a Git hook", async () => {
     });
     assert.equal(code, 1);
     assert.equal(await git(root, "log", "-1", "--format=%s"), "hook changed subject");
+    assert.match(io.read().stderr, /differs from the reviewed/i);
+  });
+});
+
+test("commit reports a body rewritten by a Git hook", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "commit-msg");
+    await writeFile(hook, "#!/bin/sh\nprintf '\\nHook changed body.\\n' >> \"$1\"\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() {
+        return {
+          subject: "fix: update fixture",
+          summary: "Updates the fixture.",
+        };
+      },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 1);
+    assert.equal(await git(root, "log", "-1", "--format=%s"), "fix: update fixture");
+    assert.match(await git(root, "log", "-1", "--format=%B"), /Hook changed body/);
     assert.match(io.read().stderr, /differs from the reviewed/i);
   });
 });
