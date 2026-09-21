@@ -196,13 +196,17 @@ function validateBody(value: string): string {
 }
 
 function hasValidationSuccessClaim(summary: string): boolean {
-  const validation = "(?:tests?|checks?|gates?|ci)";
-  const success =
-    "(?:pass(?:ed|es)?|success(?:ful(?:ly)?|es|ed)?|succeed(?:ed|s)?|green)";
-  return new RegExp(
-    `(?:\\b${validation}\\b\\s*(?::|[-—])?\\s+${success}\\b|\\b${success}\\b\\s+(?:all\\s+)?${validation}\\b)`,
-    "iu",
-  ).test(summary);
+  const validation = /\b(?:tests?|checks?|gates?|ci)\b/iu;
+  const result = /\b(?:pass(?:ed|es)?|succeed(?:ed|s)?|green)\b/iu;
+  if (
+    summary
+      .split("\n")
+      .some((line) => validation.test(line) && result.test(line))
+  )
+    return true;
+  return /\b(?:tests?|checks?|gates?|ci)\b\s*(?::|[-—])?\s+success(?:ful(?:ly)?|es|ed)?\b/iu.test(
+    summary,
+  );
 }
 
 function preflightMessage(error: unknown): string {
