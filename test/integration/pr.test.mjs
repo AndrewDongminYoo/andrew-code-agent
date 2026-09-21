@@ -234,6 +234,13 @@ test("pr rejects malformed, unsupported, controlled, and oversized bodies", asyn
       "validation claim with Markdown punctuation",
       validBody.replace("- Change the fixture.", "- `pnpm check`: passed."),
     ],
+    [
+      "validation claim with intervening verb",
+      validBody.replace(
+        "- Change the fixture.",
+        "- pnpm test completed successfully.",
+      ),
+    ],
     ["terminal control", validBody.replace("Change", "Change\u001b[31m")],
     ["oversized", `${validBody}\n${"x".repeat(64 * 1024)}`],
   ];
