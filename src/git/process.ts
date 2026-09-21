@@ -18,9 +18,14 @@ export class GitProcessError extends Error {
   }
 }
 
+export interface GitProcessOptions {
+  readonly isolateConfig?: boolean;
+}
+
 export async function executeGit(
   repositoryRoot: string,
   args: readonly string[],
+  options: GitProcessOptions = {},
 ): Promise<string> {
   try {
     const { stdout } = await execFile("git", ["-C", repositoryRoot, ...args], {
@@ -33,6 +38,12 @@ export async function executeGit(
         TMPDIR: process.env.TMPDIR,
         GIT_OPTIONAL_LOCKS: "0",
         GIT_NO_REPLACE_OBJECTS: "1",
+        ...(options.isolateConfig
+          ? {
+              GIT_CONFIG_GLOBAL: "/dev/null",
+              GIT_CONFIG_NOSYSTEM: "1",
+            }
+          : {}),
         LANG: "C",
         LC_ALL: "C",
       },

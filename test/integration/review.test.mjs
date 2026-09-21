@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
+  mkdir,
   mkdtemp,
   readdir,
   readFile,
@@ -289,6 +290,98 @@ test("the isolated review checkout contains committed content but no source work
       await rm(stateRoot, { recursive: true, force: true });
     }
   });
+});
+
+test("the isolated review checkout ignores global Git hooks", async () => {
+  assert.equal(typeof reviewModule?.createReviewCheckout, "function");
+  await withRepository(async (root, base) => {
+    const runtime = await realpath(
+      await mkdtemp(join(tmpdir(), "andrew-agent-review-hooks-")),
+    );
+    const stateRoot = join(runtime, "state");
+    const hooks = join(runtime, "hooks");
+    const marker = join(runtime, "post-checkout-ran");
+    await mkdir(stateRoot);
+    await mkdir(hooks);
+    await writeFile(
+      join(runtime, ".gitconfig"),
+      `[core]\n\thooksPath = ${hooks}\n`,
+    );
+    await writeFile(
+      join(hooks, "post-checkout"),
+      `#!/bin/sh\nprintf ran > ${JSON.stringify(marker)}\n`,
+    );
+    await chmod(join(hooks, "post-checkout"), 0o755);
+    const previousHome = process.env.HOME;
+    process.env.HOME = runtime;
+    let checkout;
+    try {
+      checkout = await reviewModule.createReviewCheckout(
+        root,
+        stateRoot,
+        base,
+        await git(root, "rev-parse", "HEAD"),
+      );
+      await assert.rejects(readFile(marker, "utf8"), { code: "ENOENT" });
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (checkout !== undefined)
+        await rm(checkout, { recursive: true, force: true });
+      await rm(runtime, { recursive: true, force: true });
+    }
+  });
+});
+
+test("the isolated review checkout preserves a shallow source boundary", async () => {
+  assert.equal(typeof reviewModule?.createReviewCheckout, "function");
+  const runtime = await realpath(
+    await mkdtemp(join(tmpdir(), "andrew-agent-review-shallow-")),
+  );
+  const upstream = join(runtime, "upstream.git");
+  const author = join(runtime, "author");
+  const shallow = join(runtime, "shallow");
+  const stateRoot = join(runtime, "state");
+  await mkdir(upstream);
+  await mkdir(author);
+  await mkdir(stateRoot);
+  let checkout;
+  try {
+    await git(upstream, "init", "--quiet", "--bare", "--initial-branch=main");
+    await git(author, "init", "--quiet", "--initial-branch=main");
+    await git(author, "config", "user.name", "Test User");
+    await git(author, "config", "user.email", "test@example.invalid");
+    for (const value of ["one", "two", "three"]) {
+      await writeFile(join(author, "tracked.txt"), `${value}\n`);
+      await git(author, "add", "tracked.txt");
+      await git(author, "commit", "--quiet", "-m", `test: ${value}`);
+    }
+    await git(author, "remote", "add", "origin", upstream);
+    await git(author, "push", "--quiet", "origin", "main");
+    await execFile(
+      "git",
+      ["clone", "--quiet", "--depth=2", `file://${upstream}`, shallow],
+      { encoding: "utf8" },
+    );
+    const head = await git(shallow, "rev-parse", "HEAD");
+    const base = await git(shallow, "rev-parse", "HEAD^");
+    assert.equal(await git(shallow, "rev-parse", "--is-shallow-repository"), "true");
+    checkout = await reviewModule.createReviewCheckout(
+      shallow,
+      stateRoot,
+      base,
+      head,
+    );
+    assert.equal(await git(checkout, "rev-parse", "HEAD"), head);
+    assert.equal(
+      await git(checkout, "rev-parse", "--is-shallow-repository"),
+      "true",
+    );
+  } finally {
+    if (checkout !== undefined)
+      await rm(checkout, { recursive: true, force: true });
+    await rm(runtime, { recursive: true, force: true });
+  }
 });
 
 test("the default review path excludes ignored source content and removes its checkout", async () => {

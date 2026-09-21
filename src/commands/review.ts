@@ -375,39 +375,67 @@ export async function createReviewCheckout(
   head: string,
 ): Promise<string> {
   const checkout = await mkdtemp(join(stateRoot, "review-"));
+  const isolated = { isolateConfig: true } as const;
   try {
     const objectFormat = (
       await executeGit(sourceRepository, ["rev-parse", "--show-object-format"])
     ).trim();
     if (objectFormat !== "sha1" && objectFormat !== "sha256")
       throw new ReviewError("Unsupported Git object format.");
-    await executeGit(checkout, [
-      "init",
-      "--quiet",
-      `--object-format=${objectFormat}`,
-      "--initial-branch=scratch",
-    ]);
-    await executeGit(checkout, ["config", "core.logAllRefUpdates", "false"]);
-    await executeGit(checkout, [
-      "fetch",
-      "--quiet",
-      "--no-tags",
-      "--no-write-fetch-head",
-      sourceRepository,
-      `${head}:refs/heads/review-head`,
-      `${base}:refs/heads/review-base`,
-    ]);
-    await executeGit(checkout, [
-      "switch",
-      "--quiet",
-      "--detach",
-      "review-head",
-    ]);
-    const checkoutSnapshot = await assertCleanGitSnapshot(
-      await readGitSnapshot(checkout),
+    await executeGit(
+      checkout,
+      [
+        "init",
+        "--quiet",
+        `--object-format=${objectFormat}`,
+        "--initial-branch=scratch",
+      ],
+      isolated,
     );
-    const checkoutBase = await resolveCommit(checkout, "review-base");
-    if (checkoutSnapshot.head !== head || checkoutBase !== base)
+    await executeGit(
+      checkout,
+      ["config", "core.logAllRefUpdates", "false"],
+      isolated,
+    );
+    await executeGit(
+      checkout,
+      [
+        "fetch",
+        "--quiet",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--update-shallow",
+        sourceRepository,
+        `${head}:refs/heads/review-head`,
+        `${base}:refs/heads/review-base`,
+      ],
+      isolated,
+    );
+    await executeGit(
+      checkout,
+      ["switch", "--quiet", "--detach", "review-head"],
+      isolated,
+    );
+    const checkoutHead = (
+      await executeGit(
+        checkout,
+        ["rev-parse", "--verify", "HEAD^{commit}"],
+        isolated,
+      )
+    ).trim();
+    const checkoutBase = (
+      await executeGit(
+        checkout,
+        ["rev-parse", "--verify", "review-base^{commit}"],
+        isolated,
+      )
+    ).trim();
+    const checkoutStatus = await executeGit(
+      checkout,
+      ["status", "--porcelain=v1", "--untracked-files=all"],
+      isolated,
+    );
+    if (checkoutHead !== head || checkoutBase !== base || checkoutStatus !== "")
       throw new ReviewError("Review checkout identity mismatch.");
     return checkout;
   } catch (error) {

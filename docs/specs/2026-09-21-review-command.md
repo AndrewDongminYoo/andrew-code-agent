@@ -31,6 +31,8 @@ The command copies the exact resolved base and HEAD commit objects into a
 temporary standalone review repository under the managed state root.
 The temporary repository retains no remote that points to the source worktree
 and contains only committed checkout content.
+Git commands that construct and validate the checkout ignore system and global
+configuration, and exact fetches preserve shallow source boundaries.
 The command invokes the managed Codex login through `codex exec` in that
 isolated checkout with the exact resolved comparison metadata.
 Codex runs with an explicit read-only sandbox, ephemeral session storage, and
@@ -81,12 +83,14 @@ It does not guarantee that Codex ran every relevant test.
 3. The Codex child receives an explicit read-only, ephemeral,
    user-config-independent invocation in a temporary repository containing the
    exact committed comparison and no source-worktree dirt.
-4. Empty comparisons do not invoke Codex.
-5. A changed HEAD, branch ref, base commit, or worktree detected after review
+4. Checkout preparation does not run system or global Git hooks and works when
+   the exact comparison is available from a shallow source repository.
+5. Empty comparisons do not invoke Codex.
+6. A changed HEAD, branch ref, base commit, or worktree detected after review
    prevents stale output from being reported.
-6. Output instructions distinguish evidence-backed defects from missing
+7. Output instructions distinguish evidence-backed defects from missing
    verification and accept zero findings.
-7. CLI grammar, README, focused integration tests, `pnpm check`, and the Trunk
+8. CLI grammar, README, focused integration tests, `pnpm check`, and the Trunk
    gate cover the command.
 
 ## Consultation record
