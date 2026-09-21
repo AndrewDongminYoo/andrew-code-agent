@@ -376,35 +376,74 @@ async function reviewWithCodex(
   input: ReviewInput,
 ): Promise<ReviewExecutionResult> {
   let paths;
-  let checkout: string;
   try {
     paths = await resolveRuntimePaths();
     await initializeRuntimeState(paths);
-    checkout = await createReviewCheckout(
-      input.repositoryRoot,
-      paths.stateRoot,
-      input.base,
-      input.head,
-    );
   } catch (error) {
-    const primaryError =
-      error instanceof ReviewExecutionError ? error.primaryError : error;
-    if (primaryError instanceof RuntimePathError) throw error;
-    const preparationError = new ReviewPreparationError(primaryError);
-    if (error instanceof ReviewExecutionError)
-      throw new ReviewExecutionError(preparationError, error.cleanupWarning);
-    throw preparationError;
+    if (error instanceof RuntimePathError) throw error;
+    throw new ReviewPreparationError(error);
   }
-  return await settleReviewExecution(
-    async () =>
+  return await runPreparedReview(
+    async () => {
+      try {
+        return await createReviewCheckout(
+          input.repositoryRoot,
+          paths.stateRoot,
+          input.base,
+          input.head,
+        );
+      } catch (error) {
+        const primaryError =
+          error instanceof ReviewExecutionError ? error.primaryError : error;
+        const preparationError = new ReviewPreparationError(primaryError);
+        if (error instanceof ReviewExecutionError)
+          throw new ReviewExecutionError(
+            preparationError,
+            error.cleanupWarning,
+          );
+        throw preparationError;
+      }
+    },
+    async (checkout) =>
       await runCodexReview(
         paths.codexBin,
         paths.codexHome,
         checkout,
         input.prompt,
       ),
-    async () => await rm(checkout, { recursive: true, force: true }),
+    async (checkout) => await rm(checkout, { recursive: true, force: true }),
   );
+}
+
+export async function runPreparedReview<T>(
+  prepare: () => Promise<T>,
+  review: (prepared: T) => Promise<string>,
+  cleanup: (prepared: T) => Promise<void>,
+): Promise<ReviewExecutionResult> {
+  let interrupted = false;
+  const onInterrupt = (): void => {
+    interrupted = true;
+  };
+  process.on("SIGINT", onInterrupt);
+  try {
+    const prepared = await prepare();
+    const result = await settleReviewExecution(
+      async () => {
+        if (interrupted) throw new ReviewError("Review interrupted.");
+        const response = await review(prepared);
+        if (interrupted) throw new ReviewError("Review interrupted.");
+        return response;
+      },
+      async () => await cleanup(prepared),
+    );
+    if (!interrupted) return result;
+    const error = new ReviewError("Review interrupted.");
+    if (result.cleanupWarning !== undefined)
+      throw new ReviewExecutionError(error, result.cleanupWarning);
+    throw error;
+  } finally {
+    process.off("SIGINT", onInterrupt);
+  }
 }
 
 export async function settleReviewExecution(

@@ -220,6 +220,43 @@ test("review checkout preparation preserves its failure when cleanup also fails"
   }
 });
 
+test("review interruption is latched during checkout preparation", async () => {
+  assert.equal(typeof reviewModule?.runPreparedReview, "function");
+  let releasePreparation;
+  let reportPreparationStarted;
+  const preparationStarted = new Promise((resolve) => {
+    reportPreparationStarted = resolve;
+  });
+  const preparationReleased = new Promise((resolve) => {
+    releasePreparation = resolve;
+  });
+  let reviewed = false;
+  let cleaned = false;
+  const listenersBefore = process.listenerCount("SIGINT");
+  const running = reviewModule.runPreparedReview(
+    async () => {
+      reportPreparationStarted();
+      await preparationReleased;
+      return "fixture-checkout";
+    },
+    async () => {
+      reviewed = true;
+      return "unexpected";
+    },
+    async (checkout) => {
+      assert.equal(checkout, "fixture-checkout");
+      cleaned = true;
+    },
+  );
+  await preparationStarted;
+  process.emit("SIGINT");
+  releasePreparation();
+  await assert.rejects(running, /Review interrupted\./);
+  assert.equal(reviewed, false);
+  assert.equal(cleaned, true);
+  assert.equal(process.listenerCount("SIGINT"), listenersBefore);
+});
+
 test("review skips Codex when the three-dot comparison is empty", async () => {
   assert.notEqual(reviewModule, null);
   await withRepository(async (root) => {
