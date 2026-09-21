@@ -25,6 +25,17 @@ const MAX_PROMPT_COMMITS = 50;
 class ReviewError extends Error {}
 class ReviewPreparationError extends Error {}
 
+class ReviewExecutionError extends Error {
+  readonly primaryError: unknown;
+  readonly cleanupWarning: string;
+
+  constructor(primaryError: unknown, cleanupWarning: string) {
+    super("Review failed and checkout cleanup also failed.");
+    this.primaryError = primaryError;
+    this.cleanupWarning = cleanupWarning;
+  }
+}
+
 export interface ReviewInput {
   readonly repositoryRoot: string;
   readonly baseRef: string;
@@ -41,7 +52,14 @@ export interface ReviewInput {
 }
 
 export interface ReviewDependencies {
-  readonly review: (input: ReviewInput) => Promise<string>;
+  readonly review: (
+    input: ReviewInput,
+  ) => Promise<string | ReviewExecutionResult>;
+}
+
+export interface ReviewExecutionResult {
+  readonly response: string;
+  readonly cleanupWarning?: string;
 }
 
 const defaultDependencies: ReviewDependencies = {
@@ -71,12 +89,20 @@ export async function reviewCommand(
   }
 
   let response: string;
+  let cleanupWarning: string | undefined;
   try {
-    response = await dependencies.review(snapshot);
+    const result = await dependencies.review(snapshot);
+    response = typeof result === "string" ? result : result.response;
+    cleanupWarning =
+      typeof result === "string" ? undefined : result.cleanupWarning;
     if (response.trim().length === 0)
       throw new ReviewError("Codex returned an empty review.");
   } catch (error) {
-    const preparationFailure = runtimePreparationMessage(error);
+    const primaryError =
+      error instanceof ReviewExecutionError ? error.primaryError : error;
+    if (error instanceof ReviewExecutionError)
+      await writeLine(io.stderr, error.cleanupWarning);
+    const preparationFailure = runtimePreparationMessage(primaryError);
     if (preparationFailure !== undefined) {
       await writeLine(io.stderr, preparationFailure);
       return 3;
@@ -92,10 +118,14 @@ export async function reviewCommand(
   try {
     current = await readReviewInput(repositoryInput, baseInput);
   } catch {
+    if (cleanupWarning !== undefined)
+      await writeLine(io.stderr, cleanupWarning);
     await writeLine(io.stderr, "Review inputs changed; run review again.");
     return 3;
   }
   if (reviewIdentity(current) !== reviewIdentity(snapshot)) {
+    if (cleanupWarning !== undefined)
+      await writeLine(io.stderr, cleanupWarning);
     await writeLine(io.stderr, "Review inputs changed; run review again.");
     return 3;
   }
@@ -107,6 +137,7 @@ export async function reviewCommand(
   await writeLine(io.stdout, `Merge base: ${snapshot.mergeBase}.`);
   for (const line of response.trimEnd().split("\n"))
     await writeLine(io.stdout, line);
+  if (cleanupWarning !== undefined) await writeLine(io.stderr, cleanupWarning);
   return 0;
 }
 
@@ -336,7 +367,9 @@ function reviewPrompt(input: Omit<ReviewInput, "prompt">): string {
   ].join("\n\n");
 }
 
-async function reviewWithCodex(input: ReviewInput): Promise<string> {
+async function reviewWithCodex(
+  input: ReviewInput,
+): Promise<ReviewExecutionResult> {
   let paths;
   let checkout: string;
   try {
@@ -352,20 +385,47 @@ async function reviewWithCodex(input: ReviewInput): Promise<string> {
     if (error instanceof RuntimePathError) throw error;
     throw new ReviewPreparationError("Review checkout preparation failed.");
   }
+  return await settleReviewExecution(
+    async () =>
+      await runCodexReview(
+        paths.codexBin,
+        paths.codexHome,
+        checkout,
+        input.prompt,
+      ),
+    async () => await rm(checkout, { recursive: true, force: true }),
+  );
+}
+
+export async function settleReviewExecution(
+  review: () => Promise<string>,
+  cleanup: () => Promise<void>,
+): Promise<ReviewExecutionResult> {
+  let response = "";
+  let primaryError: unknown;
+  let reviewFailed = false;
   try {
-    return await runCodexReview(
-      paths.codexBin,
-      paths.codexHome,
-      checkout,
-      input.prompt,
-    );
-  } finally {
-    try {
-      await rm(checkout, { recursive: true, force: true });
-    } catch {
-      throw new ReviewPreparationError("Review checkout cleanup failed.");
-    }
+    response = await review();
+  } catch (error) {
+    reviewFailed = true;
+    primaryError = error;
   }
+
+  let cleanupWarning: string | undefined;
+  try {
+    await cleanup();
+  } catch {
+    cleanupWarning = "Temporary review checkout cleanup failed.";
+  }
+
+  if (reviewFailed) {
+    if (cleanupWarning !== undefined)
+      throw new ReviewExecutionError(primaryError, cleanupWarning);
+    throw primaryError;
+  }
+  return cleanupWarning === undefined
+    ? { response }
+    : { response, cleanupWarning };
 }
 
 export async function createReviewCheckout(

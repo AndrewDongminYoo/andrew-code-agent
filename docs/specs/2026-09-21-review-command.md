@@ -57,6 +57,8 @@ If any reviewed Git input changed, it discards the response and asks the
 operator to rerun the review.
 The command prints the resolved comparison identities before the final review
 response.
+If temporary-checkout cleanup fails, the command emits a redacted warning while
+preserving a successful response or the original review failure and exit code.
 
 ## Limits and non-goals
 
@@ -85,12 +87,14 @@ It does not guarantee that Codex ran every relevant test.
    exact committed comparison and no source-worktree dirt.
 4. Checkout preparation does not run system or global Git hooks and works when
    the exact comparison is available from a shallow source repository.
-5. Empty comparisons do not invoke Codex.
-6. A changed HEAD, branch ref, base commit, or worktree detected after review
+5. A cleanup failure is reported without replacing a successful response or
+   the primary review failure.
+6. Empty comparisons do not invoke Codex.
+7. A changed HEAD, branch ref, base commit, or worktree detected after review
    prevents stale output from being reported.
-7. Output instructions distinguish evidence-backed defects from missing
+8. Output instructions distinguish evidence-backed defects from missing
    verification and accept zero findings.
-8. CLI grammar, README, focused integration tests, `pnpm check`, and the Trunk
+9. CLI grammar, README, focused integration tests, `pnpm check`, and the Trunk
    gate cover the command.
 
 ## Consultation record

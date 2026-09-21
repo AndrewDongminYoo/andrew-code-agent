@@ -142,6 +142,51 @@ test("review classifies runtime preparation failures as exit 3", async () => {
   });
 });
 
+test("review preserves a successful response when checkout cleanup warns", async () => {
+  assert.notEqual(reviewModule, null);
+  await withRepository(async (root) => {
+    const io = output();
+    const code = await reviewModule.reviewCommand(root, undefined, io, {
+      async review() {
+        return {
+          response: "No findings.",
+          cleanupWarning: "Temporary review checkout cleanup failed.",
+        };
+      },
+    });
+    assert.equal(code, 0);
+    assert.match(io.read().stdout, /No findings\./);
+    assert.equal(
+      io.read().stderr,
+      "Temporary review checkout cleanup failed.\n",
+    );
+  });
+});
+
+test("review settlement preserves the primary failure when cleanup also fails", async () => {
+  assert.equal(typeof reviewModule?.settleReviewExecution, "function");
+  const primary = new Error("primary review failure");
+  await assert.rejects(
+    reviewModule.settleReviewExecution(
+      async () => {
+        throw primary;
+      },
+      async () => {
+        throw new Error("sensitive cleanup detail");
+      },
+    ),
+    (error) => {
+      assert.equal(error.primaryError, primary);
+      assert.equal(
+        error.cleanupWarning,
+        "Temporary review checkout cleanup failed.",
+      );
+      assert.doesNotMatch(error.cleanupWarning, /sensitive cleanup detail/);
+      return true;
+    },
+  );
+});
+
 test("review skips Codex when the three-dot comparison is empty", async () => {
   assert.notEqual(reviewModule, null);
   await withRepository(async (root) => {

@@ -231,6 +231,8 @@ After Codex finishes, the command rechecks HEAD, the branch ref, the base ref,
 and worktree cleanliness before it prints the response.
 It discards a stale response if any reviewed input changed and never edits,
 commits, pushes, or publishes review comments.
+If temporary-checkout cleanup fails, it emits a redacted warning without
+discarding the review response or replacing the original review failure.
 An empty comparison exits successfully without invoking Codex.
 
 Exit codes:
