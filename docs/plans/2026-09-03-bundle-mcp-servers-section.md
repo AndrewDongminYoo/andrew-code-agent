@@ -2,38 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
-> superpowers:executing-plans to implement this plan task-by-task. Steps use
+> superpowers:executing-plans to implement this plan task-by-task.
+> Steps use
 > checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Let a bundle manifest declare a stdio MCP server that is rendered
-into the managed `config.toml` only when its capability is enabled, so an
-Oracle-enabled run can reach the classifying retrieval provider.
+**Goal:** Let a bundle manifest declare a stdio MCP server that is rendered into the managed `config.toml` only when its capability is enabled, so an Oracle-enabled run can reach the classifying retrieval provider.
 
-**Architecture:** A new `[[mcp_servers]]` manifest section parsed by
-`src/bundle/manifest.ts` into `McpServerDefinition`, filtered by capability in
-`src/bundle/render.ts` exactly as `[[files]]` and `[[hooks]]` are, and written
-into the generated `config.toml` as `[mcp_servers.<name>]` tables. The TOML
-writer gains string-array support for `args`, `env_vars` and `enabled_tools`.
-Nothing else in the run path changes: the existing `--strict-config` probe in
-doctor rejects a key the pinned Codex does not accept, which is the
-fail-closed check on the rendered shape.
+**Architecture:** A new `[[mcp_servers]]` manifest section parsed by `src/bundle/manifest.ts` into `McpServerDefinition`, filtered by capability in `src/bundle/render.ts` exactly as `[[files]]` and `[[hooks]]` are, and written into the generated `config.toml` as `[mcp_servers.<name>]` tables.
+The TOML writer gains string-array support for `args`, `env_vars` and `enabled_tools`.
+Nothing else in the run path changes: the existing `--strict-config` probe in doctor rejects a key the pinned Codex does not accept, which is the fail-closed check on the rendered shape.
 
-**Tech Stack:** TypeScript (strict), `smol-toml` for parsing, `node --test`
-layers per `CLAUDE.md`, prettier and markdownlint through Trunk.
+**Tech Stack:** TypeScript (strict), `smol-toml` for parsing, `node --test` layers per `CLAUDE.md`, prettier and markdownlint through Trunk.
 
-**Spec:** `docs/specs/2026-08-28-oracle-output-safety-boundary.md`
-("Implementation ownership and sequence": this repository owns forwarding the
-explicitly enabled Oracle root; it must not implement classification). This
-plan is phase 1 of the sequence recorded on issue #25 on 2026-09-03.
+**Spec:** `docs/specs/2026-08-28-oracle-output-safety-boundary.md` ("Implementation ownership and sequence": this repository owns forwarding the explicitly enabled Oracle root; it must not implement classification).
+This plan is phase 1 of the sequence recorded on issue #25 on 2026-09-03.
 
 ## Global Constraints
 
 - A rendered file must never contain the runtime Oracle root literal;
   `validatePortableFiles` scans for it (`src/bundle/render.ts:144-157`).
-  MCP entries therefore refer to the root only through a shell command that
-  reads `$LLM_WIKI_ROOT` at spawn time or through an environment variable
-  forwarded by name; nothing expands `${...}` tokens inside the generated
-  `config.toml`.
+  MCP entries therefore refer to the root only through a shell command that reads `$LLM_WIKI_ROOT` at spawn time or through an environment variable forwarded by name; nothing expands `${...}` tokens inside the generated `config.toml`.
 - A `${TOKEN}` belonging to a disabled capability must not survive into any
   rendered file (`assertDisabledCapabilityTokens`, `render.ts:619-642`).
   Capability filtering must happen before `createGeneratedConfig` serializes.
@@ -47,11 +35,9 @@ plan is phase 1 of the sequence recorded on issue #25 on 2026-09-03.
 
 ### Task 1: Measure what a Codex 0.152.1 stdio MCP child receives
 
-The manifest shape depends on one fact this repository does not control: the
-environment and working directory Codex gives an MCP child. The pinned binary is
-`~/.codex/packages/standalone/releases/0.152.1-aarch64-apple-darwin/bin/codex`
-(never let `PATH` pick it). This task records the answer in a dated note and
-nothing else.
+The manifest shape depends on one fact this repository does not control: the environment and working directory Codex gives an MCP child.
+The pinned binary is `~/.codex/packages/standalone/releases/0.152.1-aarch64-apple-darwin/bin/codex` (never let `PATH` pick it).
+This task records the answer in a dated note and nothing else.
 
 **Files:**
 
@@ -60,11 +46,9 @@ nothing else.
 **Interfaces:**
 
 - Produces: the facts Task 3 relies on, named `MCP_ENV_INHERITS_PARENT`
-  (boolean), `MCP_ENV_VARS_KEY_ACCEPTED` (boolean, whether
-  `mcp_servers.<name>.env_vars` passes `--strict-config`), and
-  `MCP_CWD_DEFAULT` (the child's `pwd`).
+  (boolean), `MCP_ENV_VARS_KEY_ACCEPTED` (boolean, whether `mcp_servers.<name>.env_vars` passes `--strict-config`), and `MCP_CWD_DEFAULT` (the child's `pwd`).
 
-- [ ] **Step 1: Write a recording MCP "server"**
+- \[ \] **Step 1: Write a recording MCP "server"**
 
 Create `/tmp/mcp-probe/record.sh` (outside the repository):
 
@@ -79,7 +63,7 @@ exec cat
 
 Run `chmod 0755 /tmp/mcp-probe/record.sh`.
 
-- [ ] **Step 2: Write a strict-config probe home**
+- \[ \] **Step 2: Write a strict-config probe home**
 
 Create `/tmp/mcp-probe/home/config.toml`:
 
@@ -92,7 +76,7 @@ env_vars = ["PROBE_PARENT"]
 startup_timeout_sec = 5
 ```
 
-- [ ] **Step 3: Check whether the key set passes strict config**
+- \[ \] **Step 3: Check whether the key set passes strict config**
 
 Run:
 
@@ -102,15 +86,13 @@ CODEX_HOME=/tmp/mcp-probe/home PROBE_PARENT=from-parent \
   app-server --strict-config --stdio < /dev/null; echo "exit=$?"
 ```
 
-Expected: exit 0 means every key was accepted; a non-zero exit with a message
-naming `env_vars` means the key is unknown to 0.152.1. Record the verbatim
-message either way as `MCP_ENV_VARS_KEY_ACCEPTED`.
+Expected: exit 0 means every key was accepted; a non-zero exit with a message naming `env_vars` means the key is unknown to 0.152.1.
+Record the verbatim message either way as `MCP_ENV_VARS_KEY_ACCEPTED`.
 
-- [ ] **Step 4: Drive one thread so the MCP child is spawned**
+- \[ \] **Step 4: Drive one thread so the MCP child is spawned**
 
-Codex spawns MCP servers when a thread starts, not when the app server
-starts. Use the live smoke's credentials (see the project memory
-`live-smoke-setup`) and the existing e2e harness:
+Codex spawns MCP servers when a thread starts, not when the app server starts.
+Use the live smoke's credentials (see the project memory `live-smoke-setup`) and the existing e2e harness:
 
 ```bash
 pnpm build
@@ -121,25 +103,18 @@ ANDREW_AGENT_CODEX_BIN="$CODEX" \
   node --test --test-name-pattern='real Codex' test/e2e/acceptance.test.mjs
 ```
 
-Before running, copy `config.toml` from Step 2 over the fixture's rendered
-`codex-home/config.toml` is not possible (the install owns it), so instead
-add the `[mcp_servers.probe]` table to `/tmp/mcp-probe/source/config.toml`
-of a throwaway bundle source and point `ANDREW_AGENT_CODEX_SOURCE` at it,
-with `config_keys` in its `agent-bundle.toml` listing
-`mcp_servers.probe.command` and `mcp_servers.probe.startup_timeout_sec`.
+Before running, copy `config.toml` from Step 2 over the fixture's rendered `codex-home/config.toml` is not possible (the install owns it), so instead add the `[mcp_servers.probe]` table to `/tmp/mcp-probe/source/config.toml` of a throwaway bundle source and point `ANDREW_AGENT_CODEX_SOURCE` at it, with `config_keys` in its `agent-bundle.toml` listing `mcp_servers.probe.command` and `mcp_servers.probe.startup_timeout_sec`.
 Scalar keys only: this proves the spawn, not the array keys.
 
 Expected: `/tmp/mcp-probe/child.txt` exists after the run.
 
-- [ ] **Step 5: Record the note**
+- \[ \] **Step 5: Record the note**
 
-Write `docs/notes/2026-09-04-mcp-child-environment.md` with: the exact
-commands, the strict-config exit code and message, the full sorted `env` the
-child saw with values redacted to presence, the `cwd`, and the three named
-facts. State which of `HOME`, `PATH`, `CODEX_HOME`, `LLM_WIKI_ROOT` and
-`PROBE_PARENT` were present. Wrap at 80 columns.
+Write `docs/notes/2026-09-04-mcp-child-environment.md` with: the exact commands, the strict-config exit code and message, the full sorted `env` the child saw with values redacted to presence, the `cwd`, and the three named facts.
+State which of `HOME`, `PATH`, `CODEX_HOME`, `LLM_WIKI_ROOT` and `PROBE_PARENT` were present.
+Wrap at 80 columns.
 
-- [ ] **Step 6: Commit**
+- \[ \] **Step 6: Commit**
 
 ```bash
 git add docs/notes/2026-09-04-mcp-child-environment.md
@@ -177,11 +152,10 @@ export interface McpServerDefinition {
 }
 ```
 
-and `BundleManifest.mcpServers: readonly McpServerDefinition[]`, sorted
-by `name`. New `ManifestErrorCode` members: `"INVALID_MCP_SERVER"` and
-`"DUPLICATE_MCP_SERVER"`.
+and `BundleManifest.mcpServers: readonly McpServerDefinition[]`, sorted by `name`.
+New `ManifestErrorCode` members: `"INVALID_MCP_SERVER"` and `"DUPLICATE_MCP_SERVER"`.
 
-- [ ] **Step 1: Extend the valid fixture and write the failing tests**
+- \[ \] **Step 1: Extend the valid fixture and write the failing tests**
 
 Append to `test/fixtures/manifests/valid.toml`:
 
@@ -202,12 +176,9 @@ tool_timeout_sec = 60
 capability = "oracle"
 ```
 
-Create `test/fixtures/manifests/mcp-duplicate.toml` as a copy of
-`valid.toml` with the `[[mcp_servers]]` block repeated verbatim.
+Create `test/fixtures/manifests/mcp-duplicate.toml` as a copy of `valid.toml` with the `[[mcp_servers]]` block repeated verbatim.
 
-Add to `test/unit/manifest.test.mjs`, after the `manifest.requirements`
-assertion inside `decodes a valid manifest into a stable sorted file
-contract`:
+Add to `test/unit/manifest.test.mjs`, after the `manifest.requirements` assertion inside `decodes a valid manifest into a stable sorted file contract`:
 
 ```js
 assert.deepEqual(manifest.mcpServers, [
@@ -276,20 +247,17 @@ test("a manifest without mcp_servers parses to an empty list", async () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- \[ \] **Step 2: Run the tests to verify they fail**
 
-Run: `pnpm build && node --test test/unit/manifest.test.mjs`
-Expected: the first assertion fails with `manifest.mcpServers` undefined;
-the duplicate test fails because `mcp_servers` is reported as `UNKNOWN_KEY`.
+Run: `pnpm build && node --test test/unit/manifest.test.mjs` Expected: the first assertion fails with `manifest.mcpServers` undefined; the duplicate test fails because `mcp_servers` is reported as `UNKNOWN_KEY`.
 
-- [ ] **Step 3: Implement the reader**
+- \[ \] **Step 3: Implement the reader**
 
 In `src/bundle/manifest.ts`:
 
 1. Add `"mcp_servers"` to the root `assertKeys` list at line 112-123.
 2. Add the interface from **Interfaces** next to `RequirementDefinition`,
-   add `readonly mcpServers: readonly McpServerDefinition[];` to
-   `BundleManifest`, and add the two error codes to `ManifestErrorCode`.
+   add `readonly mcpServers: readonly McpServerDefinition[];` to `BundleManifest`, and add the two error codes to `ManifestErrorCode`.
 3. Add the reader, modelled on `readRequirements`:
 
 ```ts
@@ -408,8 +376,7 @@ function readStringMap(
 ```
 
 4. Wire it where `requirements` is read into the `BundleManifest` literal,
-   using whatever array reader `requirements` already uses (read the
-   surrounding code; do not invent a second one):
+   using whatever array reader `requirements` already uses (read the surrounding code; do not invent a second one):
 
 ```ts
 mcpServers: hasOwn(root, "mcp_servers")
@@ -417,12 +384,11 @@ mcpServers: hasOwn(root, "mcp_servers")
   : [],
 ```
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- \[ \] **Step 4: Run the tests to verify they pass**
 
-Run: `pnpm build && node --test test/unit/manifest.test.mjs`
-Expected: all pass, including the three new tests.
+Run: `pnpm build && node --test test/unit/manifest.test.mjs` Expected: all pass, including the three new tests.
 
-- [ ] **Step 5: Run the wider gates**
+- \[ \] **Step 5: Run the wider gates**
 
 Run:
 
@@ -431,12 +397,10 @@ pnpm typecheck && pnpm test:unit && \
   trunk check --no-fix src/bundle/manifest.ts test/fixtures/manifests
 ```
 
-Expected: clean. `test/unit/render.test.mjs` still passes because its
-inline `manifest()` object lacks `mcpServers`; Task 3 makes the renderer
-tolerate `undefined` only through the parser, so add `mcpServers: []` to
-that inline object now to keep the type honest.
+Expected: clean.
+`test/unit/render.test.mjs` still passes because its inline `manifest()` object lacks `mcpServers`; Task 3 makes the renderer tolerate `undefined` only through the parser, so add `mcpServers: []` to that inline object now to keep the type honest.
 
-- [ ] **Step 6: Commit**
+- \[ \] **Step 6: Commit**
 
 ```bash
 git add src/bundle/manifest.ts test/fixtures/manifests \
@@ -451,21 +415,16 @@ git commit -m "feat(bundle): parse a capability-gated mcp_servers section"
 **Files:**
 
 - Modify: `src/bundle/render.ts` (`ConfigTable` at 65-69, capability
-  filters at 97-106, `createGeneratedConfig` at 644-669, `writeTomlTable`
-  and `formatTomlScalar` at 763-796)
+  filters at 97-106, `createGeneratedConfig` at 644-669, `writeTomlTable` and `formatTomlScalar` at 763-796)
 - Test: `test/unit/render.test.mjs`
 
 **Interfaces:**
 
 - Consumes: `BundleManifest.mcpServers` from Task 2.
 - Produces: in the generated `config.toml`, one `[mcp_servers.<name>]`
-  table per active server with keys `command`, `args`, `env` (as a nested
-  `[mcp_servers.<name>.env]` table), `env_vars`, `enabled_tools`,
-  `default_tools_approval_mode`, `startup_timeout_sec`, `tool_timeout_sec`,
-  each present only when the manifest set it (arrays are written even when
-  empty for `args`; `env_vars` and `enabled_tools` are omitted when empty).
+  table per active server with keys `command`, `args`, `env` (as a nested `[mcp_servers.<name>.env]` table), `env_vars`, `enabled_tools`, `default_tools_approval_mode`, `startup_timeout_sec`, `tool_timeout_sec`, each present only when the manifest set it (arrays are written even when empty for `args`; `env_vars` and `enabled_tools` are omitted when empty).
 
-- [ ] **Step 1: Write the failing tests**
+- \[ \] **Step 1: Write the failing tests**
 
 Add to `test/unit/render.test.mjs`, next to the config tests near line 570.
 
@@ -546,11 +505,9 @@ test("renders an ungated MCP server with arrays intact", async () => {
 });
 ```
 
-The `llmWikiRoot: repository` value reuses the fixture repository as the
-Oracle root so the literal-root scan has something to look for; the
-`doesNotMatch` assertion is what proves the root never reaches the config.
+The `llmWikiRoot: repository` value reuses the fixture repository as the Oracle root so the literal-root scan has something to look for; the `doesNotMatch` assertion is what proves the root never reaches the config.
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- \[ \] **Step 2: Run the tests to verify they fail**
 
 Run:
 
@@ -559,10 +516,9 @@ pnpm build && \
   node --test --test-name-pattern='MCP server' test/unit/render.test.mjs
 ```
 
-Expected: both fail; `config.mcp_servers` is `undefined` in the enabled
-case.
+Expected: both fail; `config.mcp_servers` is `undefined` in the enabled case.
 
-- [ ] **Step 3: Implement rendering**
+- \[ \] **Step 3: Implement rendering**
 
 In `src/bundle/render.ts`:
 
@@ -577,9 +533,7 @@ interface ConfigTable {
 }
 ```
 
-Update `isConfigTable` to exclude arrays (`Array.isArray(value)` is
-not a table) and `formatTomlScalar` to accept `ConfigScalar |
-   readonly string[]`:
+Update `isConfigTable` to exclude arrays (`Array.isArray(value)` is not a table) and `formatTomlScalar` to accept `ConfigScalar | readonly string[]`:
 
 ```ts
 function formatTomlValue(value: ConfigScalar | readonly string[]): string {
@@ -590,10 +544,8 @@ function formatTomlValue(value: ConfigScalar | readonly string[]): string {
 }
 ```
 
-and use it in `writeTomlTable` in place of `formatTomlScalar`. Keep
-`setConfigValue`, `readConfigValue` and `config_overrides` scalar-only;
-arrays enter only through the MCP path below, so `config_keys` cannot
-start projecting arrays by accident.
+and use it in `writeTomlTable` in place of `formatTomlScalar`.
+Keep `setConfigValue`, `readConfigValue` and `config_overrides` scalar-only; arrays enter only through the MCP path below, so `config_keys` cannot start projecting arrays by accident.
 
 2. Filter servers beside the other two filters at line 97-106:
 
@@ -605,8 +557,7 @@ const activeMcpServers = manifest.mcpServers.filter(
 );
 ```
 
-and pass `activeMcpServers` into `createGeneratedConfig` (add a fourth
-parameter; update its one call site).
+and pass `activeMcpServers` into `createGeneratedConfig` (add a fourth parameter; update its one call site).
 
 3. In `createGeneratedConfig`, after the agents loop:
 
@@ -626,8 +577,7 @@ for (const server of servers) {
 }
 ```
 
-with a small helper that refuses to overwrite a key `config_keys` or
-`config_overrides` already set:
+with a small helper that refuses to overwrite a key `config_keys` or `config_overrides` already set:
 
 ```ts
 function setConfigTable(
@@ -660,16 +610,14 @@ function setConfigTable(
 ```
 
 4. Token check: `assertDisabledCapabilityTokens` already scans the
-   rendered config; because the filter above runs before serialization, a
-   gated server's `${LLM_WIKI_ROOT}` never reaches a disabled build. No
-   change there.
+   rendered config; because the filter above runs before serialization, a gated server's `${LLM_WIKI_ROOT}` never reaches a disabled build.
+   No change there.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- \[ \] **Step 4: Run the tests to verify they pass**
 
-Run: `pnpm build && node --test test/unit/render.test.mjs`
-Expected: all pass.
+Run: `pnpm build && node --test test/unit/render.test.mjs` Expected: all pass.
 
-- [ ] **Step 5: Run the wider gates**
+- \[ \] **Step 5: Run the wider gates**
 
 Run:
 
@@ -678,12 +626,10 @@ pnpm typecheck && pnpm test:unit && pnpm test:integration && \
   trunk check --no-fix src/bundle/render.ts test/unit/render.test.mjs
 ```
 
-Expected: clean. The integration layer is included because
-`test/integration/install.test.mjs` and `doctor.test.mjs` render real
-bundles from `test/fixtures/manifests/acceptance.toml`; if that fixture
-has no `[[mcp_servers]]`, nothing changes for them.
+Expected: clean.
+The integration layer is included because `test/integration/install.test.mjs` and `doctor.test.mjs` render real bundles from `test/fixtures/manifests/acceptance.toml`; if that fixture has no `[[mcp_servers]]`, nothing changes for them.
 
-- [ ] **Step 6: Commit**
+- \[ \] **Step 6: Commit**
 
 ```bash
 git add src/bundle/render.ts test/unit/render.test.mjs
@@ -694,9 +640,8 @@ git commit -m "feat(bundle): render gated MCP servers into config.toml"
 
 ### Task 4: Prove the rendered table against the pinned binary
 
-`--strict-config` is the only authority on which keys 0.152.1 accepts. The
-doctor probe already runs it against the installed home, so the contract
-test is the place to pin the shape.
+`--strict-config` is the only authority on which keys 0.152.1 accepts.
+The doctor probe already runs it against the installed home, so the contract test is the place to pin the shape.
 
 **Files:**
 
@@ -705,7 +650,7 @@ test is the place to pin the shape.
 - Test: `test/contract/client.test.mjs` (skip-gated on
   `ANDREW_AGENT_PINNED_CODEX_BIN`, like `regenerates stable artifacts`)
 
-- [ ] **Step 1: Write the failing contract test**
+- \[ \] **Step 1: Write the failing contract test**
 
 Add next to `regenerates stable artifacts byte-for-byte`:
 
@@ -742,11 +687,9 @@ test(
 );
 ```
 
-`probeStrictConfig` exists in `test/e2e/acceptance.test.mjs`; move it to a
-shared helper `test/helpers/strict-config.mjs` and import it from both
-files rather than copying it.
+`probeStrictConfig` exists in `test/e2e/acceptance.test.mjs`; move it to a shared helper `test/helpers/strict-config.mjs` and import it from both files rather than copying it.
 
-- [ ] **Step 2: Run it against the pinned binary**
+- \[ \] **Step 2: Run it against the pinned binary**
 
 Run:
 
@@ -758,12 +701,10 @@ ANDREW_AGENT_PINNED_CODEX_BIN="$CODEX" \
   node --test --test-name-pattern='strict config' test/contract/client.test.mjs
 ```
 
-Expected: PASS if every key is accepted. If it fails naming `env_vars`,
-remove `env_vars` from the manifest section (Task 2) and from the renderer
-(Task 3), and record in the Task 1 note that forwarding by name is not
-available in 0.152.1; the bundle then relies on `MCP_ENV_INHERITS_PARENT`.
+Expected: PASS if every key is accepted.
+If it fails naming `env_vars`, remove `env_vars` from the manifest section (Task 2) and from the renderer (Task 3), and record in the Task 1 note that forwarding by name is not available in 0.152.1; the bundle then relies on `MCP_ENV_INHERITS_PARENT`.
 
-- [ ] **Step 3: Commit**
+- \[ \] **Step 3: Commit**
 
 ```bash
 git add test/contract/client.test.mjs test/helpers/strict-config.mjs \
@@ -782,21 +723,15 @@ git commit -m "test(contract): pin the MCP server table under strict config"
 - Modify: `CLAUDE.md` "Architecture" step 3 (one sentence: config also
   carries capability-gated MCP servers)
 
-- [ ] **Step 1: Write the reference**
+- \[ \] **Step 1: Write the reference**
 
-Add a `### mcp_servers` subsection beside the `requirements` one, listing
-every key from Task 2 with its type and whether it is optional, the name
-pattern, the absolute-command rule, the capability filter, and this
-sentence verbatim: "The runtime Oracle root never appears in the rendered
-config; a server reaches it through `env_vars` forwarding or through a
-shell that reads `$LLM_WIKI_ROOT`."
+Add a `### mcp_servers` subsection beside the `requirements` one, listing every key from Task 2 with its type and whether it is optional, the name pattern, the absolute-command rule, the capability filter, and this sentence verbatim: "The runtime Oracle root never appears in the rendered config; a server reaches it through `env_vars` forwarding or through a shell that reads `$LLM_WIKI_ROOT`."
 
-- [ ] **Step 2: Lint**
+- \[ \] **Step 2: Lint**
 
-Run: `trunk check --no-fix README.md CLAUDE.md`
-Expected: clean at 80 columns.
+Run: `trunk check --no-fix README.md CLAUDE.md` Expected: clean at 80 columns.
 
-- [ ] **Step 3: Commit**
+- \[ \] **Step 3: Commit**
 
 ```bash
 git add README.md CLAUDE.md
@@ -808,12 +743,8 @@ git commit -m "docs: describe the mcp_servers manifest section"
 ## Self-review
 
 - Spec coverage: the spec assigns this repository "forwarding the explicitly
-  enabled Oracle root" (Task 3 keeps the root out of rendered bytes and
-  forwards it by name) and forbids classification here (no task touches
-  agent output).
+  enabled Oracle root" (Task 3 keeps the root out of rendered bytes and forwards it by name) and forbids classification here (no task touches agent output).
 - Placeholder scan: Task 1 Step 4 depends on the live smoke; if
-  `ANDREW_AGENT_SMOKE_AUTH` is unavailable, the note records `[TOOL_FAILED]`
-  for the spawn measurement and Task 4's strict-config probe still decides
-  the key set.
+  `ANDREW_AGENT_SMOKE_AUTH` is unavailable, the note records `[TOOL_FAILED]` for the spawn measurement and Task 4's strict-config probe still decides the key set.
 - Type consistency: `McpServerDefinition` field names in Task 2 match the
   object literal in Task 3's tests and the table keys in Task 3's renderer.

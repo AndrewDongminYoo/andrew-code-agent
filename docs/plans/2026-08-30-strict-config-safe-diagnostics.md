@@ -1,7 +1,6 @@
 # Strict-config safe diagnostics plan
 
-Date: 2026-08-30
-Issue: GitHub #38
+Date: 2026-08-30 Issue: GitHub #38
 
 ## Goal
 
@@ -47,5 +46,4 @@ trunk check --all --no-fix
 
 ## Delivery boundary
 
-Do not stage, commit, push, close the issue, or open a pull request without a
-separate operator request.
+Do not stage, commit, push, close the issue, or open a pull request without a separate operator request.

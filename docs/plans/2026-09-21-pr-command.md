@@ -2,10 +2,8 @@
 
 ## Scope
 
-Implement `andrew-agent pr [base]` as a read-only local PR-body generator for
-committed branch changes.
-Reuse the exact-comparison and isolated-checkout safety boundaries established
-by `review` without weakening either command.
+Implement `andrew-agent pr [base]` as a read-only local PR-body generator for committed branch changes.
+Reuse the exact-comparison and isolated-checkout safety boundaries established by `review` without weakening either command.
 
 ## Files
 
@@ -20,14 +18,12 @@ by `review` without weakening either command.
 ## TDD sequence
 
 1. Add CLI and command integration tests that expect `andrew-agent pr [base]`,
-   exact comparison metadata, passed diff-check evidence, and explicit unrun
-   project validation.
+   exact comparison metadata, passed diff-check evidence, and explicit unrun project validation.
 2. Run the focused tests and record the expected missing-command failures.
 3. Implement the smallest command path that produces a validated Markdown body
    from a dependency-injected generator.
 4. Add failing tests for empty comparisons, dirty or detached worktrees,
-   diff-check failure, stale Git inputs, malformed or oversized bodies, isolated
-   checkout contents, cleanup, and interruption.
+   diff-check failure, stale Git inputs, malformed or oversized bodies, isolated checkout contents, cleanup, and interruption.
 5. Reuse or extract only the review comparison and checkout mechanisms needed
    to pass those tests.
 6. Run the focused command, review, commit, and CLI integration tests.
@@ -54,19 +50,14 @@ by `review` without weakening either command.
 
 ## Local review
 
-Review the complete diff against the specification after the first green
-aggregate gate.
-Check prompt-injection boundaries, Verification-section claims, output purity,
-Git races, cleanup, and interruption.
+Review the complete diff against the specification after the first green aggregate gate.
+Check prompt-injection boundaries, Verification-section claims, output purity, Git races, cleanup, and interruption.
 Apply bounded local repairs until no supported findings remain.
 
 ## Delivery
 
-Use concern-based semantic commits, push `feat/pr-command`, and open a PR against
-`main`.
-Observe current-head CI, CodeRabbit or its explicit skip, hosted Codex review,
-and every paginated review thread.
+Use concern-based semantic commits, push `feat/pr-command`, and open a PR against `main`.
+Observe current-head CI, CodeRabbit or its explicit skip, hosted Codex review, and every paginated review thread.
 Stop at the operator merge boundary.
 
-Visual approval is not required because the change affects CLI parsing,
-Markdown text output, documentation, and automated tests only.
+Visual approval is not required because the change affects CLI parsing, Markdown text output, documentation, and automated tests only.

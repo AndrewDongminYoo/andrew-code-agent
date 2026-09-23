@@ -1,8 +1,6 @@
 # Specification: Staged commit command
 
-Date: 2026-09-18
-Updated: 2026-09-20
-Status: approved by the operator's commit-first brief
+Date: 2026-09-18 Updated: 2026-09-20 Status: approved by the operator's commit-first brief
 
 ## Goal
 
@@ -12,19 +10,14 @@ Keep the existing clean-worktree rule for `run` and `resume` intact.
 ## Input and proposal
 
 The command runs in the current Git repository and requires staged changes.
-It reads the staged patch and paths, committed root `AGENTS.md` when present,
-and eight recent commit subjects.
+It reads the staged patch and paths, committed root `AGENTS.md` when present, and eight recent commit subjects.
 It does not add unstaged or untracked content to the proposal or Git index.
 
-Codex receives that bounded input in an ephemeral, read-only scratch directory
-with its shell tool disabled.
-The read-only sandbox does not itself restrict every file the Codex process can
-read.
+Codex receives that bounded input in an ephemeral, read-only scratch directory with its shell tool disabled.
+The read-only sandbox does not itself restrict every file the Codex process can read.
 It proposes one subject and one short summary.
-Long format is the default and commits the subject, a blank line, and the
-summary as the body.
-`--long` selects the default explicitly, while `--short` commits only the
-subject.
+Long format is the default and commits the subject, a blank line, and the summary as the body.
+`--long` selects the default explicitly, while `--short` commits only the subject.
 The prompt asks for a split recommendation when staged changes are unrelated.
 The command never splits or stages changes automatically.
 
@@ -34,19 +27,12 @@ The terminal displays the proposed subject, included body, and staged paths.
 A direct terminal invocation authorizes the commit without another prompt.
 Non-interactive input can preview the proposal but cannot commit.
 
-Immediately after authorization, the command rechecks HEAD, index entries, and
-the staged patch.
-If any reviewed Git input changed by that check, it refuses the commit and asks
-for another review.
-It passes the complete message to `git commit --file` through a private
-temporary file and runs normal Git hooks without `--no-verify`.
-After Git reports success, it compares the new commit's parent, patch, and
-complete message with the reviewed proposal.
-A hook or concurrent writer that changes the result is reported rather than
-silently accepted.
-Another writer can change HEAD or the index after the final check and before
-Git starts committing, so a mismatch may be reported after a commit already
-exists.
+Immediately after authorization, the command rechecks HEAD, index entries, and the staged patch.
+If any reviewed Git input changed by that check, it refuses the commit and asks for another review.
+It passes the complete message to `git commit --file` through a private temporary file and runs normal Git hooks without `--no-verify`.
+After Git reports success, it compares the new commit's parent, patch, and complete message with the reviewed proposal.
+A hook or concurrent writer that changes the result is reported rather than silently accepted.
+Another writer can change HEAD or the index after the final check and before Git starts committing, so a mismatch may be reported after a commit already exists.
 Inspect HEAD before retrying after an uncertain commit result.
 The command never pushes.
 
@@ -74,10 +60,7 @@ It does not implement `review`, `pr`, automatic commit splitting, or push.
 
 Oracle's staged-index precedent supports the immediate index recheck.
 Oracle's confirmation precedent originally supported the explicit `yes` boundary.
-After eight real uses, the operator found the repeated prompt unnecessary and
-explicitly made direct terminal invocation the authorization boundary while
-retaining preview-only non-interactive behavior.
+After eight real uses, the operator found the repeated prompt unnecessary and explicitly made direct terminal invocation the authorization boundary while retaining preview-only non-interactive behavior.
 Its hook precedent supports normal hook execution and post-commit comparison.
 Oracle found no precedent for the exact long-message structure or default.
-Its file-transport precedent supports passing the generated message through
-`git commit --file` instead of shell-interpolated text.
+Its file-transport precedent supports passing the generated message through `git commit --file` instead of shell-interpolated text.

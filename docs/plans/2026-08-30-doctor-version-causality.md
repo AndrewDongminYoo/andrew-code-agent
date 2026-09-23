@@ -1,7 +1,6 @@
 # Doctor version-causality plan
 
-Date: 2026-08-30
-Issue: GitHub #39
+Date: 2026-08-30 Issue: GitHub #39
 
 ## Goal
 
@@ -20,8 +19,7 @@ Do not change #38 strict-config failure classification or test timeout policy.
 ## Sequence
 
 1. Add a wrong-version fixture whose strict-config command would fail if it ran.
-   Assert only `CODEX_VERSION` blocks, downstream findings warn, and strict
-   spawn count stays zero.
+   Assert only `CODEX_VERSION` blocks, downstream findings warn, and strict spawn count stays zero.
 2. Add a CLI readiness fixture with those findings.
    Assert the diagnostic contains only the causal blocker.
 3. Run the focused build-first command and confirm the new assertions fail.
@@ -46,5 +44,4 @@ trunk check --all --no-fix
 
 ## Delivery boundary
 
-Do not stage, commit, push, close the issue, or open a pull request without a
-separate operator request.
+Do not stage, commit, push, close the issue, or open a pull request without a separate operator request.

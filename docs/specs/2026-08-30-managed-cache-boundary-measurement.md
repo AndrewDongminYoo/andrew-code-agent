@@ -1,32 +1,26 @@
 # Specification: Managed cache-boundary measurement
 
-Date: 2026-08-30
-Status: approved test-only scope for GitHub issue #23
+Date: 2026-08-30 Status: approved test-only scope for GitHub issue #23
 
 ## Goal
 
-Measure the real App Server behavior for a synthetic cache root outside the target
-repository and `/tmp` allowance.
+Measure the real App Server behavior for a synthetic cache root outside the target repository and `/tmp` allowance.
 
-Do not change the production writable-root policy before the measurement
-returns evidence.
+Do not change the production writable-root policy before the measurement returns evidence.
 
 ## Scope
 
-The opt-in acceptance test installs the portable configuration into a
-disposable managed home.
+The opt-in acceptance test installs the portable configuration into a disposable managed home.
 
 The test starts a real managed turn through the product coordinator.
 
-The test creates owner-controlled synthetic `cache`, `home`, and `sibling` roots
-under `/Users/Shared`.
+The test creates owner-controlled synthetic `cache`, `home`, and `sibling` roots under `/Users/Shared`.
 
 The test creates an owner-controlled `temporary` root under `/tmp`.
 
 The test writes no real Flutter, Cargo, pnpm, Ruby, or Pub cache.
 
-The test uses `ANDREW_AGENT_CACHE_BOUNDARY_SMOKE=1`,
-`ANDREW_AGENT_SMOKE_CODEX_BIN`, and `ANDREW_AGENT_SMOKE_AUTH`.
+The test uses `ANDREW_AGENT_CACHE_BOUNDARY_SMOKE=1`, `ANDREW_AGENT_SMOKE_CODEX_BIN`, and `ANDREW_AGENT_SMOKE_AUTH`.
 
 The test copies the authentication file into the disposable managed home.
 
@@ -60,44 +54,36 @@ Both runs keep network access disabled.
 
 ## Evidence contract
 
-The helper writes a logical receipt that contains only root role names and
-`written` or `blocked` results.
+The helper writes a logical receipt that contains only root role names and `written` or `blocked` results.
 
 The product coordinator persists the real managed-turn record.
 
-The test requires a completed terminal status, the expected receipt, and
-filesystem canaries.
+The test requires a completed terminal status, the expected receipt, and filesystem canaries.
 
 The test fails if the helper does not run.
 
 The test fails if a policy grants an unexpected root.
 
-The test fails if the synthetic absolute root appears in the persisted record
-or command output.
+The test fails if the synthetic absolute root appears in the persisted record or command output.
 
 ## Non-goals
 
 This test does not grant a real toolchain cache.
 
-This test does not add a CLI option, manifest field, environment variable, or
-production cache-root allowance.
+This test does not add a CLI option, manifest field, environment variable, or production cache-root allowance.
 
-This test does not select the per-run allowance, pre-warm, or
-unsupported-toolchain policy.
+This test does not select the per-run allowance, pre-warm, or unsupported-toolchain policy.
 
-This test does not change the README until a real measurement supports a
-verified boundary claim.
+This test does not change the README until a real measurement supports a verified boundary claim.
 
 ## Consultation record
 
 Oracle requires the real managed session record and command result as evidence.
 
-Oracle requires a deliberate denied-root control before a passing result can
-support a policy decision.
+Oracle requires a deliberate denied-root control before a passing result can support a policy decision.
 
 Oracle found `[no precedent found]` for the production cache-root policy choice.
 
-Advisor limited the implementation to one opt-in acceptance test and a
-test-only narrow candidate.
+Advisor limited the implementation to one opt-in acceptance test and a test-only narrow candidate.
 
 Advisor required the production coordinator to keep its current writable-root policy.

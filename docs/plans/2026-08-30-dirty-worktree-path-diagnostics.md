@@ -1,12 +1,10 @@
 # Dirty-worktree path diagnostics plan
 
-Date: 2026-08-30
-Issue: GitHub #40
+Date: 2026-08-30 Issue: GitHub #40
 
 ## Goal
 
-Show up to eight safe repository-relative paths after dirty-worktree
-preflight rejects a command.
+Show up to eight safe repository-relative paths after dirty-worktree preflight rejects a command.
 Keep the existing fail-closed authority boundary.
 
 ## Scope
@@ -18,8 +16,7 @@ Keep the existing fail-closed authority boundary.
 - Add focused integration tests for Git records, malformed input, path
   limits, terminal escaping, and phase-independent diagnostics.
 
-Do not modify the clean-worktree policy, Git process limits, coordinator
-behavior, dependencies, GitHub state, or release state.
+Do not modify the clean-worktree policy, Git process limits, coordinator behavior, dependencies, GitHub state, or release state.
 
 ## Sequence
 
@@ -65,5 +62,4 @@ git status --short
 
 ## Delivery boundary
 
-Do not stage, commit, push, close the issue, or open a pull request without a
-separate operator request.
+Do not stage, commit, push, close the issue, or open a pull request without a separate operator request.

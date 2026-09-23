@@ -1,12 +1,10 @@
 # Managed cache-boundary measurement plan
 
-Date: 2026-08-30
-Issue: GitHub #23
+Date: 2026-08-30 Issue: GitHub #23
 
 ## Goal
 
-Create an opt-in real App Server measurement that distinguishes the current
-writable-root policy from one narrow synthetic-cache candidate.
+Create an opt-in real App Server measurement that distinguishes the current writable-root policy from one narrow synthetic-cache candidate.
 
 ## Scope
 
@@ -66,5 +64,4 @@ Do not select a production cache policy from the skipped test path.
 
 Do not change the README from synthetic-cache assumptions.
 
-Do not close GitHub issue #23 until a real run returns the required evidence
-and a policy is selected.
+Do not close GitHub issue #23 until a real run returns the required evidence and a policy is selected.
