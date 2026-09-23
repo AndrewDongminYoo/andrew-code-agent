@@ -15,11 +15,11 @@ jobs:
   check:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version-file: .nvmrc
           cache: pnpm
@@ -42,15 +42,13 @@ jobs:
       # typecheck, then build and all four test layers.
       - run: pnpm check
 
-  # Not covered here, and not coverable on a hosted runner: the pinned-binary
-  # contract test (ANDREW_AGENT_PINNED_CODEX_BIN), live-manifest.test.mjs
-  # (ANDREW_AGENT_CODEX_SOURCE) and the two real smokes (ANDREW_AGENT_REAL_SMOKE
-  # plus ANDREW_AGENT_SMOKE_AUTH) all need a real pinned Codex and credentials.
+  # Hosted CI does not set the pinned-binary, live-manifest, real-smoke, cache-boundary-smoke, or Oracle-boundary inputs.
+  # Those opt-in checks skip.
   lint:
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: trunk-io/trunk-action@v2.0.0
+      - uses: trunk-io/trunk-action@e1234e67a86010d61ddac8d8ebf4b783e2ffd2fa # v2.0.0

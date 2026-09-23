@@ -1,7 +1,6 @@
 # Specification: Doctor version-causality diagnostics
 
-Date: 2026-08-30
-Status: approved implementation scope for GitHub issue #39
+Date: 2026-08-30 Status: approved implementation scope for GitHub issue #39
 
 ## Goal
 
@@ -10,30 +9,23 @@ Keep downstream checks visible without falsely calling them failures.
 
 ## Decision
 
-When a safe Codex version probe reports a different normal version,
-`CODEX_VERSION` remains a blocker.
-`SCHEMA_COMPATIBILITY` and `STRICT_CONFIG` remain in their existing report
-order as warnings.
-Their messages state that the checks were not evaluated because the pinned
-version was unavailable.
+When a safe Codex version probe reports a different normal version, `CODEX_VERSION` remains a blocker.
+`SCHEMA_COMPATIBILITY` and `STRICT_CONFIG` remain in their existing report order as warnings.
+Their messages state that the checks were not evaluated because the pinned version was unavailable.
 
 The Doctor must not run a schema or strict-config probe under the wrong binary.
 The existing strict-config classifier remains unchanged for a supported version.
-Malformed, unsafe, or unavailable version probes retain existing fail-closed
-blockers.
+Malformed, unsafe, or unavailable version probes retain existing fail-closed blockers.
 
 ## Behavior
 
-The wrong-version path returns a nonzero Doctor exit because
-`CODEX_VERSION` is a blocker.
+The wrong-version path returns a nonzero Doctor exit because `CODEX_VERSION` is a blocker.
 It must not add downstream checks to the blocker set.
 
-The `run` and prompted `resume` readiness diagnostic derives its list from
-blocker-severity findings.
+The `run` and prompted `resume` readiness diagnostic derives its list from blocker-severity findings.
 It therefore reports only `CODEX_VERSION` for this condition.
 
-An independently failing strict-config check under the supported version keeps
-its existing `STRICT_CONFIG` blocker.
+An independently failing strict-config check under the supported version keeps its existing `STRICT_CONFIG` blocker.
 
 ## Acceptance criteria
 
@@ -46,19 +38,14 @@ its existing `STRICT_CONFIG` blocker.
 
 ## Scope
 
-Modify `src/commands/doctor.ts`, `test/integration/doctor.test.mjs`, and
-`test/integration/cli.test.mjs`.
-Do not change strict-config error classification, timeout policy, schemas,
-dependencies, generated artifacts, GitHub state, or releases.
+Modify `src/commands/doctor.ts`, `test/integration/doctor.test.mjs`, and `test/integration/cli.test.mjs`.
+Do not change strict-config error classification, timeout policy, schemas, dependencies, generated artifacts, GitHub state, or releases.
 
 ## Consultation record
 
-Oracle confirmed that the pinned Codex version is a prerequisite for schema and
-strict-config evaluation.
-It also confirmed that an unobserved property must not be reported as passing
-or failing.
-Advisor required the guard before downstream work is scheduled, not a later
-filter of already-created blockers.
+Oracle confirmed that the pinned Codex version is a prerequisite for schema and strict-config evaluation.
+It also confirmed that an unobserved property must not be reported as passing or failing.
+Advisor required the guard before downstream work is scheduled, not a later filter of already-created blockers.
 
 The existing `warning` severity is the selected nonblocking representation.
 No Oracle precedent defines the exact severity label or message wording.

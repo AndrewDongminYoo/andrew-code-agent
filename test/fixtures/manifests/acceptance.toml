@@ -7,7 +7,16 @@
 # never surfaces against the fixture app server, so the acceptance profile
 # drops it to keep the opt-in live smoke meaningful.
 allowed_tokens = ["HOME", "CODEX_HOME", "WORKSPACE_ROOT", "LLM_WIKI_ROOT"]
-config_keys = ["model", "model_reasoning_effort", "personality", "service_tier", "agents.max_depth", "features.goals", "features.hooks", "features.multi_agent"]
+config_keys = [
+  "model",
+  "model_reasoning_effort",
+  "personality",
+  "service_tier",
+  "agents.max_depth",
+  "features.goals",
+  "features.hooks",
+  "features.multi_agent",
+]
 config_source = "config.toml"
 schema_version = 1
 
@@ -49,8 +58,21 @@ target = "rules/default.rules"
 
 [forbidden]
 literals = ["/Users/dongminyu", "/Volumes/dongminyu"]
-path_segments = ["auth\u002Ejson", "sessions", "logs", "cache", "rollout", "hooks.state", "desktop"]
-pattern_ids = ["private-key", "credential-assignment", "github-token", "openai-api-key"]
+path_segments = [
+  "auth\u002Ejson",
+  "sessions",
+  "logs",
+  "cache",
+  "rollout",
+  "hooks.state",
+  "desktop",
+]
+pattern_ids = [
+  "private-key",
+  "credential-assignment",
+  "github-token",
+  "openai-api-key",
+]
 
 [[hooks]]
 event = "PreToolUse"
