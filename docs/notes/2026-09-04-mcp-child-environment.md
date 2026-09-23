@@ -116,7 +116,7 @@ Of the five names the brief asked about:
   the CLI: two Codex-managed directories are prepended, and the CLI's own `PATH` follows unchanged.
   Shown literally below (it contains no secret; the two segments naming a `/Users/dongminyu` path are each held to a placeholder instead, since they are not the fact under measurement):
 
-  Segments joined by `:` in the actual value; one per line here to fit the 80-column limit:
+  Segments joined by `:` in the actual value; one per line here to fit the then-active 80-column limit:
 
   ```log
   PATH=
@@ -169,7 +169,7 @@ env -i \
   "Reply with the single word ACKNOWLEDGED and change nothing."
 ```
 
-`/tmp/mcp-probe/child.txt` afterward, `PATH` shown literally with the same `/Users/dongminyu` segments held to a placeholder as above (segments joined by `:` in the actual value; one per line here to fit the 80-column limit):
+`/tmp/mcp-probe/child.txt` afterward, `PATH` shown literally with the same `/Users/dongminyu` segments held to a placeholder as above (segments joined by `:` in the actual value; one per line here to fit the then-active 80-column limit):
 
 ```log
 PATH=

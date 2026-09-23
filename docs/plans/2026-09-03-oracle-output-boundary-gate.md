@@ -27,8 +27,7 @@ This is phase 4 of the sequence recorded on issue #25 on 2026-09-03.
   smoke's rule).
 - Prerequisites: andrew-code-agent's `[[mcp_servers]]` section, the bundle's
   MCP-only oracle agent, and the wiki's restricted-results plan (Tasks 1–4) are all merged.
-- Markdown here is hard-wrapped at 80 columns; test files are excluded from
-  prettier and may carry long lines.
+- Markdown prose follows the sentence-level line breaks in `AGENTS.md`; test files are excluded from prettier and may carry long lines.
 
 ---
 

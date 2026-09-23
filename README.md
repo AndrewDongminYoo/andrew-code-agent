@@ -368,7 +368,7 @@ pnpm check                  # typecheck plus every test layer
 trunk check --all --no-fix
 ```
 
-Two gates are opt-in and do not run by default:
+The generated-contract and real-Codex smoke gates below are opt-in and do not run by default:
 
 ```bash
 # Verify the generated trees byte-for-byte against a pinned Codex.

@@ -2,15 +2,14 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-`AGENTS.md` owns the repository boundaries and the Trunk verification gate; read it and do not restate it here.
-Markdownlint enforces an 80-column limit on every file except `AGENTS.md`, so hard-wrap prose in tracked Markdown files instead of using one line per sentence.
-That rule covers the files markdownlint reads and nothing else: PR bodies, issue comments, and review replies are not files, so write them one sentence per line and never hard-wrap them.
+`AGENTS.md` owns the repository boundaries, documentation formatting, and the Trunk verification gate; read it and do not restate it here.
+PR bodies, issue comments, and review replies are not files; write them one sentence per line and never hard-wrap them.
 GitHub copies a PR body verbatim into the merge commit message, and wrapped prose arrives ragged there with its inline formatting split across lines.
 
 ## Commands
 
-All 22 test files import the compiled output (`await import("../../dist/...")`), and the CLI integration suite additionally asserts that `dist/cli.js` exists.
-A bare `node --test` against a stale or missing `dist/` therefore fails in a way that looks like a product bug.
+Most test files import the compiled output (`await import("../../dist/...")`), and the CLI integration suite additionally asserts that `dist/cli.js` exists.
+A bare `node --test` against a stale or missing `dist/` can therefore fail in a way that looks like a product bug.
 Always build first.
 
 ```bash

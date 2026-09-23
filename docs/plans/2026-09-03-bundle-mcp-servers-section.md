@@ -26,8 +26,8 @@ This plan is phase 1 of the sequence recorded on issue #25 on 2026-09-03.
   rendered file (`assertDisabledCapabilityTokens`, `render.ts:619-642`).
   Capability filtering must happen before `createGeneratedConfig` serializes.
 - `src/generated/**` and `schemas/**` are generator-owned; do not touch them.
-- Every test file imports `dist/`; run `pnpm build` before any `node --test`.
-- Markdown in this repository is hard-wrapped at 80 columns.
+- Most test files import `dist/`; run `pnpm build` before any `node --test`.
+- Markdown prose follows the sentence-level line breaks in `AGENTS.md`.
 - No machine-specific path (for example `/opt/homebrew/bin/pnpm`) may be
   written into a fixture that ships; fixtures use `/bin/sh` and `/usr/bin`.
 
@@ -112,7 +112,7 @@ Expected: `/tmp/mcp-probe/child.txt` exists after the run.
 
 Write `docs/notes/2026-09-04-mcp-child-environment.md` with: the exact commands, the strict-config exit code and message, the full sorted `env` the child saw with values redacted to presence, the `cwd`, and the three named facts.
 State which of `HOME`, `PATH`, `CODEX_HOME`, `LLM_WIKI_ROOT` and `PROBE_PARENT` were present.
-Wrap at 80 columns.
+Use sentence-level line breaks.
 
 - \[ \] **Step 6: Commit**
 
@@ -729,7 +729,7 @@ Add a `### mcp_servers` subsection beside the `requirements` one, listing every 
 
 - \[ \] **Step 2: Lint**
 
-Run: `trunk check --no-fix README.md CLAUDE.md` Expected: clean at 80 columns.
+Run: `trunk check --no-fix README.md CLAUDE.md` Expected: clean.
 
 - \[ \] **Step 3: Commit**
 
