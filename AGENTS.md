@@ -1,6 +1,6 @@
 # andrew-code-agent
 
-This repository owns one private, macOS-first TypeScript CLI.
+This repository owns one private, macOS-only TypeScript CLI.
 Keep changes small, explicit, and covered by tests written before production code.
 
 ## Boundaries
