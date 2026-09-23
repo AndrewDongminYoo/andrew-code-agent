@@ -37,7 +37,7 @@ node --test \
 A missing or empty layer directory exits 0, so `pnpm check` can go green over a layer that contributes no coverage.
 Check that the directory holds the files you expect before reading a green aggregate as evidence.
 
-Four gates are opt-in, so a default green `pnpm check` does not cover them:
+Several gates are opt-in, so a default green `pnpm check` does not cover them:
 
 - `test/contract/client.test.mjs` verifies the generated trees byte-for-byte
   only when `ANDREW_AGENT_PINNED_CODEX_BIN` points at a `codex` binary whose version matches `REQUIRED_CODEX_VERSION`.
@@ -45,9 +45,10 @@ Four gates are opt-in, so a default green `pnpm check` does not cover them:
   This variable steers that one test, not the product runtime.
 - `test/integration/live-manifest.test.mjs` skips itself unless
   `ANDREW_AGENT_CODEX_SOURCE` is set; it is the only test that reads a real bundle source tree.
-- The two live smokes in `test/e2e/acceptance.test.mjs` skip unless
-  `ANDREW_AGENT_REAL_SMOKE` is set, and the two-run gate additionally needs `ANDREW_AGENT_SMOKE_AUTH`.
-  They are the only tests where a real Codex writes back into a managed home between two runs.
+- The configuration and two-run smokes in `test/e2e/acceptance.test.mjs` skip unless `ANDREW_AGENT_REAL_SMOKE` is set, and the two-run gate additionally needs `ANDREW_AGENT_SMOKE_AUTH`.
+  Its cache-boundary smoke instead needs `ANDREW_AGENT_CACHE_BOUNDARY_SMOKE` and `ANDREW_AGENT_SMOKE_AUTH`.
+  Every enabled smoke also needs `ANDREW_AGENT_SMOKE_CODEX_BIN`.
+  The two-run gate verifies that a second run survives the first run's managed-home config rewrite.
 - `test/e2e/oracle-boundary.test.mjs` needs
   `ANDREW_AGENT_WIKI_SERVER_ROOT` to build its synthetic vault.
   Its two real-Codex checks also need `ANDREW_AGENT_REAL_SMOKE`, `ANDREW_AGENT_SMOKE_AUTH`, and `ANDREW_AGENT_SMOKE_CODEX_BIN`.

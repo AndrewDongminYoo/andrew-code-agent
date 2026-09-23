@@ -42,10 +42,8 @@ jobs:
       # typecheck, then build and all four test layers.
       - run: pnpm check
 
-  # Not covered here, and not coverable on a hosted runner: the pinned-binary
-  # contract test (ANDREW_AGENT_PINNED_CODEX_BIN), live-manifest.test.mjs
-  # (ANDREW_AGENT_CODEX_SOURCE) and the two real smokes (ANDREW_AGENT_REAL_SMOKE
-  # plus ANDREW_AGENT_SMOKE_AUTH) all need a real pinned Codex and credentials.
+  # Hosted CI does not set the pinned-binary, live-manifest, real-smoke, cache-boundary-smoke, or Oracle-boundary inputs.
+  # Those opt-in checks skip.
   lint:
     runs-on: macos-latest
     steps:
