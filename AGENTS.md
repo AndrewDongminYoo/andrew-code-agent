@@ -12,7 +12,7 @@ Keep changes small, explicit, and covered by tests written before production cod
 ## Documentation
 
 - Put each prose sentence on its own line in Markdown files; do not hard-wrap sentences to a column width.
-- Preserve the structure of lists, tables, code blocks, and links when cleaning documents.
+- Preserve task lists, emphasis, tables, code blocks, and links when cleaning documents.
 
 ## Verification
 

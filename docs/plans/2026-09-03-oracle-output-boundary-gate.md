@@ -56,7 +56,7 @@ With `leakRestricted: true`, `hidden-page.md` is appended to `privateSourcePaths
 Symlinks:
 `mcp-server`, `artifact-kernel`, `node_modules`, `package.json`, `pnpm-lock.yaml` point into `wikiServerRoot`; they are gitignored inside the vault so the commit holds only pages, config and policy.
 
-- \[ \] **Step 1: Write the failing fixture test**
+- [ ] **Step 1: Write the failing fixture test**
 
 ```js
 import assert from "node:assert/strict";
@@ -106,7 +106,7 @@ test(
 );
 ```
 
-- \[ \] **Step 2: Run to verify it fails**
+- [ ] **Step 2: Run to verify it fails**
 
 Run:
 
@@ -119,7 +119,7 @@ ANDREW_AGENT_WIKI_SERVER_ROOT="$WIKI" \
 
 Expected: FAIL, helper missing.
 
-- \[ \] **Step 3: Implement the helper**
+- [ ] **Step 3: Implement the helper**
 
 Use `mkdtemp`, `git init --initial-branch=main`, the same `user.name`/ `user.email` config the wiki harness uses, `symlink` for the five links, `.gitignore` listing them, write the pages, run the two wiki scripts with
 
@@ -132,7 +132,7 @@ execFile(process.execPath, ["--import", "tsx", script], {
 
 apply `leakRestricted`, `git add -A && git commit -m "synthetic vault"`, return `sourceCommit` from `git rev-parse HEAD` and `restrictedIdHash` by reading the facet file's first hash.
 
-- \[ \] **Step 4: Run to verify it passes, then commit**
+- [ ] **Step 4: Run to verify it passes, then commit**
 
 ```bash
 git add test/helpers/synthetic-vault.mjs test/e2e/oracle-boundary.test.mjs
@@ -152,7 +152,7 @@ git commit -m "test(e2e): build a synthetic Oracle vault with five pages"
 - Consumes: `runCli`, `environmentFor`, `probeStrictConfig` and the
   fixture builder from `test/e2e/acceptance.test.mjs` (move the three into `test/helpers/live-smoke.mjs` so both files import them; do not copy).
 
-- \[ \] **Step 1: Write the two live tests**
+- [ ] **Step 1: Write the two live tests**
 
 ```js
 const liveRequested =
@@ -225,7 +225,7 @@ test(
 
 The third assertion in check 6 is the spec's own caveat: "a clean terminal alone could mean that the fixture never reached the model".
 
-- \[ \] **Step 2: Run both gates**
+- [ ] **Step 2: Run both gates**
 
 ```bash
 pnpm build
@@ -240,7 +240,7 @@ ANDREW_AGENT_WIKI_SERVER_ROOT="$WIKI" ANDREW_AGENT_CODEX_BIN="$CODEX" \
 Expected: both pass.
 Check `uptime` first; each turn is a real Codex run, so run this alone on the machine.
 
-- \[ \] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add test/e2e/oracle-boundary.test.mjs test/helpers/live-smoke.mjs \
@@ -261,11 +261,11 @@ git commit -m "test(e2e): gate the Oracle output boundary on a synthetic vault"
 - Modify: `docs/specs/2026-08-28-oracle-output-safety-boundary.md`
   (append a dated "Status" line: gate landed, omitted count is tag-scoped, see the wiki plan; do not rewrite the contract)
 
-- \[ \] **Step 1: Write the note**
+- [ ] **Step 1: Write the note**
 
 The note records the two runs' commands, exit codes, the three grep counts from each rollout (`search_precedent`, `PUBLIC_ORACLE_CANARY_7A42`, `SENSITIVE_ORACLE_CANARY_9C31`), and the omitted count observed.
 
-- \[ \] **Step 2: Lint and commit**
+- [ ] **Step 2: Lint and commit**
 
 ```bash
 trunk check --no-fix docs CLAUDE.md
@@ -274,7 +274,7 @@ git add docs/notes CLAUDE.md \
 git commit -m "docs: record the Oracle boundary gate run and its scope"
 ```
 
-- \[ \] **Step 3: Pull request**
+- [ ] **Step 3: Pull request**
 
 Load `responding-to-ai-pr-review`, run the local `codex-review` skill, open the PR with `Closes #25` in the body only if both live gates passed on the merged prerequisites; otherwise `Refs #25` and say what is outstanding.
 

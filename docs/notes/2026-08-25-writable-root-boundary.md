@@ -68,8 +68,9 @@ That is a reading of the policy, not an observation.
 
 - That the boundary is wrong. Denying writes outside the repository is what
   keeps a turn's blast radius equal to the thing under version control, and widening it to `$HOME` would give a turn write access to credentials, shell configuration, and every other repository on the machine.
-- That any ecosystem fails, Flutter included. \*\*No denied write has been
-  observed at all.\*\* The table above says which caches exist on one machine, not which commands would be refused.
+- That any ecosystem fails, Flutter included.
+  **No denied write has been observed at all.**
+  The table above says which caches exist on one machine, not which commands would be refused.
 
 ## What this note still supports
 

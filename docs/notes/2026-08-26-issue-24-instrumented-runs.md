@@ -114,8 +114,7 @@ The same Oracle prompt was then re-run with the notification tally still instrum
 
 - `Terminal status: completed`. The Oracle returned precedent for the first
   time, which is what "the adapter is reached" never reached before.
-- 1,538 notifications arrived on the parent's connection, and \*\*1,191 of them
-  named the sub-agent's thread\*\* across nine methods, `item/agentMessage/delta` alone accounting for 1,064.
+- 1,538 notifications arrived on the parent's connection, and **1,191 of them named the sub-agent's thread** across nine methods, `item/agentMessage/delta` alone accounting for 1,064.
   All were dropped and none reached an identity check.
 - No `failClosed()` call site fired, and `interruptActiveTurn` was never
   entered.

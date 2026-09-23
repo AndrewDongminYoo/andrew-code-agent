@@ -48,7 +48,7 @@ This task records the answer in a dated note and nothing else.
 - Produces: the facts Task 3 relies on, named `MCP_ENV_INHERITS_PARENT`
   (boolean), `MCP_ENV_VARS_KEY_ACCEPTED` (boolean, whether `mcp_servers.<name>.env_vars` passes `--strict-config`), and `MCP_CWD_DEFAULT` (the child's `pwd`).
 
-- \[ \] **Step 1: Write a recording MCP "server"**
+- [ ] **Step 1: Write a recording MCP "server"**
 
 Create `/tmp/mcp-probe/record.sh` (outside the repository):
 
@@ -63,7 +63,7 @@ exec cat
 
 Run `chmod 0755 /tmp/mcp-probe/record.sh`.
 
-- \[ \] **Step 2: Write a strict-config probe home**
+- [ ] **Step 2: Write a strict-config probe home**
 
 Create `/tmp/mcp-probe/home/config.toml`:
 
@@ -76,7 +76,7 @@ env_vars = ["PROBE_PARENT"]
 startup_timeout_sec = 5
 ```
 
-- \[ \] **Step 3: Check whether the key set passes strict config**
+- [ ] **Step 3: Check whether the key set passes strict config**
 
 Run:
 
@@ -89,7 +89,7 @@ CODEX_HOME=/tmp/mcp-probe/home PROBE_PARENT=from-parent \
 Expected: exit 0 means every key was accepted; a non-zero exit with a message naming `env_vars` means the key is unknown to 0.152.1.
 Record the verbatim message either way as `MCP_ENV_VARS_KEY_ACCEPTED`.
 
-- \[ \] **Step 4: Drive one thread so the MCP child is spawned**
+- [ ] **Step 4: Drive one thread so the MCP child is spawned**
 
 Codex spawns MCP servers when a thread starts, not when the app server starts.
 Use the live smoke's credentials (see the project memory `live-smoke-setup`) and the existing e2e harness:
@@ -108,13 +108,13 @@ Scalar keys only: this proves the spawn, not the array keys.
 
 Expected: `/tmp/mcp-probe/child.txt` exists after the run.
 
-- \[ \] **Step 5: Record the note**
+- [ ] **Step 5: Record the note**
 
 Write `docs/notes/2026-09-04-mcp-child-environment.md` with: the exact commands, the strict-config exit code and message, the full sorted `env` the child saw with values redacted to presence, the `cwd`, and the three named facts.
 State which of `HOME`, `PATH`, `CODEX_HOME`, `LLM_WIKI_ROOT` and `PROBE_PARENT` were present.
 Use sentence-level line breaks.
 
-- \[ \] **Step 6: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add docs/notes/2026-09-04-mcp-child-environment.md
@@ -155,7 +155,7 @@ export interface McpServerDefinition {
 and `BundleManifest.mcpServers: readonly McpServerDefinition[]`, sorted by `name`.
 New `ManifestErrorCode` members: `"INVALID_MCP_SERVER"` and `"DUPLICATE_MCP_SERVER"`.
 
-- \[ \] **Step 1: Extend the valid fixture and write the failing tests**
+- [ ] **Step 1: Extend the valid fixture and write the failing tests**
 
 Append to `test/fixtures/manifests/valid.toml`:
 
@@ -247,11 +247,11 @@ test("a manifest without mcp_servers parses to an empty list", async () => {
 });
 ```
 
-- \[ \] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Run the tests to verify they fail**
 
 Run: `pnpm build && node --test test/unit/manifest.test.mjs` Expected: the first assertion fails with `manifest.mcpServers` undefined; the duplicate test fails because `mcp_servers` is reported as `UNKNOWN_KEY`.
 
-- \[ \] **Step 3: Implement the reader**
+- [ ] **Step 3: Implement the reader**
 
 In `src/bundle/manifest.ts`:
 
@@ -384,11 +384,11 @@ mcpServers: hasOwn(root, "mcp_servers")
   : [],
 ```
 
-- \[ \] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm build && node --test test/unit/manifest.test.mjs` Expected: all pass, including the three new tests.
 
-- \[ \] **Step 5: Run the wider gates**
+- [ ] **Step 5: Run the wider gates**
 
 Run:
 
@@ -400,7 +400,7 @@ pnpm typecheck && pnpm test:unit && \
 Expected: clean.
 `test/unit/render.test.mjs` still passes because its inline `manifest()` object lacks `mcpServers`; Task 3 makes the renderer tolerate `undefined` only through the parser, so add `mcpServers: []` to that inline object now to keep the type honest.
 
-- \[ \] **Step 6: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/bundle/manifest.ts test/fixtures/manifests \
@@ -424,7 +424,7 @@ git commit -m "feat(bundle): parse a capability-gated mcp_servers section"
 - Produces: in the generated `config.toml`, one `[mcp_servers.<name>]`
   table per active server with keys `command`, `args`, `env` (as a nested `[mcp_servers.<name>.env]` table), `env_vars`, `enabled_tools`, `default_tools_approval_mode`, `startup_timeout_sec`, `tool_timeout_sec`, each present only when the manifest set it (arrays are written even when empty for `args`; `env_vars` and `enabled_tools` are omitted when empty).
 
-- \[ \] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing tests**
 
 Add to `test/unit/render.test.mjs`, next to the config tests near line 570.
 
@@ -507,7 +507,7 @@ test("renders an ungated MCP server with arrays intact", async () => {
 
 The `llmWikiRoot: repository` value reuses the fixture repository as the Oracle root so the literal-root scan has something to look for; the `doesNotMatch` assertion is what proves the root never reaches the config.
 
-- \[ \] **Step 2: Run the tests to verify they fail**
+- [ ] **Step 2: Run the tests to verify they fail**
 
 Run:
 
@@ -518,7 +518,7 @@ pnpm build && \
 
 Expected: both fail; `config.mcp_servers` is `undefined` in the enabled case.
 
-- \[ \] **Step 3: Implement rendering**
+- [ ] **Step 3: Implement rendering**
 
 In `src/bundle/render.ts`:
 
@@ -613,11 +613,11 @@ function setConfigTable(
    rendered config; because the filter above runs before serialization, a gated server's `${LLM_WIKI_ROOT}` never reaches a disabled build.
    No change there.
 
-- \[ \] **Step 4: Run the tests to verify they pass**
+- [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `pnpm build && node --test test/unit/render.test.mjs` Expected: all pass.
 
-- \[ \] **Step 5: Run the wider gates**
+- [ ] **Step 5: Run the wider gates**
 
 Run:
 
@@ -629,7 +629,7 @@ pnpm typecheck && pnpm test:unit && pnpm test:integration && \
 Expected: clean.
 The integration layer is included because `test/integration/install.test.mjs` and `doctor.test.mjs` render real bundles from `test/fixtures/manifests/acceptance.toml`; if that fixture has no `[[mcp_servers]]`, nothing changes for them.
 
-- \[ \] **Step 6: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/bundle/render.ts test/unit/render.test.mjs
@@ -650,7 +650,7 @@ The doctor probe already runs it against the installed home, so the contract tes
 - Test: `test/contract/client.test.mjs` (skip-gated on
   `ANDREW_AGENT_PINNED_CODEX_BIN`, like `regenerates stable artifacts`)
 
-- \[ \] **Step 1: Write the failing contract test**
+- [ ] **Step 1: Write the failing contract test**
 
 Add next to `regenerates stable artifacts byte-for-byte`:
 
@@ -689,7 +689,7 @@ test(
 
 `probeStrictConfig` exists in `test/e2e/acceptance.test.mjs`; move it to a shared helper `test/helpers/strict-config.mjs` and import it from both files rather than copying it.
 
-- \[ \] **Step 2: Run it against the pinned binary**
+- [ ] **Step 2: Run it against the pinned binary**
 
 Run:
 
@@ -704,7 +704,7 @@ ANDREW_AGENT_PINNED_CODEX_BIN="$CODEX" \
 Expected: PASS if every key is accepted.
 If it fails naming `env_vars`, remove `env_vars` from the manifest section (Task 2) and from the renderer (Task 3), and record in the Task 1 note that forwarding by name is not available in 0.152.1; the bundle then relies on `MCP_ENV_INHERITS_PARENT`.
 
-- \[ \] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add test/contract/client.test.mjs test/helpers/strict-config.mjs \
@@ -723,15 +723,15 @@ git commit -m "test(contract): pin the MCP server table under strict config"
 - Modify: `CLAUDE.md` "Architecture" step 3 (one sentence: config also
   carries capability-gated MCP servers)
 
-- \[ \] **Step 1: Write the reference**
+- [ ] **Step 1: Write the reference**
 
 Add a `### mcp_servers` subsection beside the `requirements` one, listing every key from Task 2 with its type and whether it is optional, the name pattern, the absolute-command rule, the capability filter, and this sentence verbatim: "The runtime Oracle root never appears in the rendered config; a server reaches it through `env_vars` forwarding or through a shell that reads `$LLM_WIKI_ROOT`."
 
-- \[ \] **Step 2: Lint**
+- [ ] **Step 2: Lint**
 
 Run: `trunk check --no-fix README.md CLAUDE.md` Expected: clean.
 
-- \[ \] **Step 3: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add README.md CLAUDE.md

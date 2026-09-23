@@ -52,8 +52,8 @@ Codex spawns MCP servers when a thread starts, not when the App Server starts, s
 
 Two changes from the brief's literal recipe, both discovered empirically and recorded here because they will recur for anyone repeating this measurement:
 
-- \*\*`test/e2e/acceptance.test.mjs` does not read `ANDREW_AGENT_CODEX_SOURCE`
-  from the outer process.\*\* Its "real Codex" test builds its own isolated fixture from `test/fixtures/source-codex/clean` and `test/fixtures/manifests/acceptance.toml`, and the comment at the top of the file says the child must never inherit `process.env` for exactly this reason.
+- **`test/e2e/acceptance.test.mjs` does not read `ANDREW_AGENT_CODEX_SOURCE` from the outer process.**
+  Its "real Codex" test builds its own isolated fixture from `test/fixtures/source-codex/clean` and `test/fixtures/manifests/acceptance.toml`, and the comment at the top of the file says the child must never inherit `process.env` for exactly this reason.
   Pointing the variable at a throwaway source before invoking that test has no effect on what the test's CLI child sees.
   The CLI itself (`dist/cli.js run <repository> <prompt>`) was invoked directly instead, with an explicit, fully-specified environment built the same way `environmentFor` in that test file builds one — this is not a product code change, only a different call site for the same public CLI entry point.
 - **`TMPDIR=/tmp` fails Doctor's scratch-parent safety check.** `/tmp`
