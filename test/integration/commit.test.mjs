@@ -533,6 +533,26 @@ test("commit says when a rejecting pre-commit hook printed nothing", async () =>
   });
 });
 
+test("commit does not claim silence when hook output exceeds the capture limit", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nhead -c 17000000 /dev/zero | tr '\\000' a >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.doesNotMatch(stderr, /printed no output/i);
+    assert.match(stderr, /output was not captured/i);
+  });
+});
+
 test("commit does not suggest a blind retry after post-commit verification fails", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {

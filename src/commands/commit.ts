@@ -253,6 +253,10 @@ async function reportFailedCommit(
       : "Git commit did not complete cleanly; a commit may exist. Inspect HEAD before retrying.",
   );
   const lines = gitFailureLines(error);
+  if (lines === undefined) {
+    await writeLine(io.stderr, "Git output was not captured.");
+    return;
+  }
   if (lines.length === 0) {
     await writeLine(io.stderr, "Git printed no output.");
     return;
@@ -263,14 +267,17 @@ async function reportFailedCommit(
 
 // Hooks such as Trunk's write progress redraws and colours; strip those
 // sequences so the message stays readable, then escape anything left over.
-function gitFailureLines(error: unknown): string[] {
+// Undefined means the streams were never captured (spawn failure, or the
+// output limit was exceeded), which is not the same as an empty hook.
+function gitFailureLines(error: unknown): string[] | undefined {
   const streams = ["stdout", "stderr"].map((name) => {
     const value =
       typeof error === "object" && error !== null && name in error
         ? (error as Record<string, unknown>)[name]
         : undefined;
-    return typeof value === "string" ? value : "";
+    return typeof value === "string" ? value : undefined;
   });
+  if (streams.every((stream) => stream === undefined)) return undefined;
   return streams
     .join("\n")
     .replace(TERMINAL_SEQUENCE_PATTERN, "")
