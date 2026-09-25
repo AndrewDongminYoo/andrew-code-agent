@@ -574,6 +574,28 @@ test("commit keeps only the final frame of a hook redrawn with cursor sequences"
   });
 });
 
+// Git runs commit hooks with stdout redirected to stderr, so a hook's summary
+// arrives in order on one stream and the tail bound keeps it.
+test("commit keeps a hook's final stdout line after long stderr output", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\ni=0\nwhile [ $i -lt 50 ]; do echo \"stderr line $i\" >&2; i=$((i+1)); done\necho 'stdout summary'\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, / {2}stderr line 49\n {2}stdout summary\n$/);
+    assert.doesNotMatch(stderr, /stderr line 9\n/);
+  });
+});
+
 test("commit keeps hook output that ends with a carriage return", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
