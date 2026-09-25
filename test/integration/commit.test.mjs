@@ -555,6 +555,25 @@ test("commit asks for a HEAD inspection when a rejecting hook switches branches"
   });
 });
 
+test("commit keeps only the final frame of a hook redrawn with cursor sequences", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\ni=0\nwhile [ $i -lt 100 ]; do printf '\\033[2K\\033[1Gchecking file %03d' $i >&2; i=$((i+1)); done\nprintf '\\033[2K\\033[1Glint failed' >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, /Git output:\n {2}lint failed\n$/);
+  });
+});
+
 test("commit keeps hook output that ends with a carriage return", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {

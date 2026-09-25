@@ -20,6 +20,9 @@ const MODEL_TIMEOUT_MS = 120_000;
 const MAX_FAILURE_LINES = 40;
 const MAX_FAILURE_LINE_BYTES = 512;
 const TRUNCATION_MARKER = " [truncated]";
+// Cursor-to-column (CHA) and erase-in-line (EL) start a redrawn frame, so
+// they become carriage returns before the remaining sequences are stripped.
+const LINE_REDRAW_PATTERN = /\u001b\[[0-9;]*[GK]/g;
 // CSI sequences (colours, cursor moves) and OSC sequences ended by BEL or ST.
 const TERMINAL_SEQUENCE_PATTERN =
   /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
@@ -287,6 +290,7 @@ function gitFailureLines(error: unknown): string[] | undefined {
   if (streams.every((stream) => stream === undefined)) return undefined;
   return streams
     .join("\n")
+    .replace(LINE_REDRAW_PATTERN, "\r")
     .replace(TERMINAL_SEQUENCE_PATTERN, "")
     .split(/\r?\n/)
     .map(
