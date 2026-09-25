@@ -288,24 +288,28 @@ function gitFailureLines(error: unknown): string[] | undefined {
     return typeof value === "string" ? value : undefined;
   });
   if (streams.every((stream) => stream === undefined)) return undefined;
-  return streams
+  const text = streams
     .join("\n")
     .replace(LINE_REDRAW_PATTERN, "\r")
-    .replace(TERMINAL_SEQUENCE_PATTERN, "")
-    .split(/\r?\n/)
-    .map(
-      (line) =>
-        line
-          .split("\r")
-          .filter((segment) => segment.trim().length > 0)
-          .at(-1)
-          ?.trimEnd() ?? "",
-    )
-    .filter((line) => line.trim().length > 0)
-    .slice(-MAX_FAILURE_LINES)
-    .map((line) =>
-      boundedTerminalText(line, MAX_FAILURE_LINE_BYTES, TRUNCATION_MARKER),
-    );
+    .replace(TERMINAL_SEQUENCE_PATTERN, "");
+  // Walk back from the end so a flood of short lines is never split whole.
+  const lines: string[] = [];
+  let end = text.length;
+  while (end > 0 && lines.length < MAX_FAILURE_LINES) {
+    const start = text.lastIndexOf("\n", end - 1);
+    const line = text
+      .slice(start + 1, end)
+      .split("\r")
+      .filter((segment) => segment.trim().length > 0)
+      .at(-1)
+      ?.trimEnd();
+    if (line !== undefined)
+      lines.unshift(
+        boundedTerminalText(line, MAX_FAILURE_LINE_BYTES, TRUNCATION_MARKER),
+      );
+    end = start;
+  }
+  return lines;
 }
 
 function formatCommitMessage(
