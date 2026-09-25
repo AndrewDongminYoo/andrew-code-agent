@@ -487,6 +487,155 @@ test("commit reports a body rewritten by a Git hook", async () => {
   });
 });
 
+test("commit shows the output of a rejecting pre-commit hook and says no commit was created", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const before = await git(root, "rev-parse", "HEAD");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nprintf '\\033[0G\\r\\033[2K\\033[1mprettier\\033[22m  tracked.txt  .trunk/out/abc.yaml\\r\\n\\033[91m\\342\\234\\226 1 failure\\033[0m\\n' >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    assert.equal(await git(root, "rev-parse", "HEAD"), before);
+    const { stderr } = io.read();
+    assert.match(stderr, /no commit was created/i);
+    assert.match(stderr, /hook/i);
+    assert.match(stderr, /prettier {2}tracked\.txt {2}\.trunk\/out\/abc\.yaml\n/);
+    assert.match(stderr, /✖ 1 failure\n/);
+    assert.doesNotMatch(stderr, /\x1b|\r|\\x1B/);
+    assert.doesNotMatch(stderr, /commit may exist/i);
+  });
+});
+
+test("commit says when a rejecting pre-commit hook printed nothing", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, /no commit was created/i);
+    assert.match(stderr, /printed no output/i);
+  });
+});
+
+test("commit asks for a HEAD inspection when a rejecting hook switches branches", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await git(root, "branch", "other");
+    await writeFile(hook, "#!/bin/sh\ngit symbolic-ref HEAD refs/heads/other\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    assert.equal(await git(root, "symbolic-ref", "HEAD"), "refs/heads/other");
+    const { stderr } = io.read();
+    assert.doesNotMatch(stderr, /no commit was created/i);
+    assert.match(stderr, /inspect HEAD/i);
+  });
+});
+
+test("commit keeps only the final frame of a hook redrawn with cursor sequences", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\ni=0\nwhile [ $i -lt 100 ]; do printf '\\033[2K\\033[1Gchecking file %03d' $i >&2; i=$((i+1)); done\nprintf '\\033[2K\\033[1Glint failed' >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, /Git output:\n {2}lint failed\n$/);
+  });
+});
+
+// Git runs commit hooks with stdout redirected to stderr, so a hook's summary
+// arrives in order on one stream and the tail bound keeps it.
+test("commit keeps a hook's final stdout line after long stderr output", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\ni=0\nwhile [ $i -lt 50 ]; do echo \"stderr line $i\" >&2; i=$((i+1)); done\necho 'stdout summary'\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, / {2}stderr line 49\n {2}stdout summary\n$/);
+    assert.doesNotMatch(stderr, /stderr line 9\n/);
+  });
+});
+
+test("commit keeps hook output that ends with a carriage return", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nprintf 'lint failed\\r' >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, / {2}lint failed\n/);
+    assert.doesNotMatch(stderr, /printed no output/i);
+  });
+});
+
+test("commit does not claim silence when hook output exceeds the capture limit", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nhead -c 17000000 /dev/zero | tr '\\000' a >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.doesNotMatch(stderr, /printed no output/i);
+    assert.match(stderr, /output was not captured/i);
+  });
+});
+
 test("commit does not suggest a blind retry after post-commit verification fails", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
