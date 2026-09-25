@@ -533,6 +533,28 @@ test("commit says when a rejecting pre-commit hook printed nothing", async () =>
   });
 });
 
+test("commit asks for a HEAD inspection when a rejecting hook switches branches", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await git(root, "branch", "other");
+    await writeFile(hook, "#!/bin/sh\ngit symbolic-ref HEAD refs/heads/other\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    assert.equal(await git(root, "symbolic-ref", "HEAD"), "refs/heads/other");
+    const { stderr } = io.read();
+    assert.doesNotMatch(stderr, /no commit was created/i);
+    assert.match(stderr, /inspect HEAD/i);
+  });
+});
+
 test("commit keeps hook output that ends with a carriage return", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {

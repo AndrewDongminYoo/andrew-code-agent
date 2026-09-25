@@ -242,7 +242,14 @@ async function reportFailedCommit(
     headUnchanged =
       (
         await executeGit(snapshot.repositoryRoot, ["rev-parse", "HEAD"])
-      ).trim() === snapshot.head;
+      ).trim() === snapshot.head &&
+      (
+        await executeGit(snapshot.repositoryRoot, [
+          "rev-parse",
+          "--symbolic-full-name",
+          "HEAD",
+        ])
+      ).trim() === snapshot.headRef;
   } catch {
     headUnchanged = false;
   }
