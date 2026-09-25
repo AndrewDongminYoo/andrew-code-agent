@@ -282,7 +282,14 @@ function gitFailureLines(error: unknown): string[] | undefined {
     .join("\n")
     .replace(TERMINAL_SEQUENCE_PATTERN, "")
     .split(/\r?\n/)
-    .map((line) => line.slice(line.lastIndexOf("\r") + 1).trimEnd())
+    .map(
+      (line) =>
+        line
+          .split("\r")
+          .filter((segment) => segment.trim().length > 0)
+          .at(-1)
+          ?.trimEnd() ?? "",
+    )
     .filter((line) => line.trim().length > 0)
     .slice(-MAX_FAILURE_LINES)
     .map((line) =>

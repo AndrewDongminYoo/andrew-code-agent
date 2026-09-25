@@ -533,6 +533,26 @@ test("commit says when a rejecting pre-commit hook printed nothing", async () =>
   });
 });
 
+test("commit keeps hook output that ends with a carriage return", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nprintf 'lint failed\\r' >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, / {2}lint failed\n/);
+    assert.doesNotMatch(stderr, /printed no output/i);
+  });
+});
+
 test("commit does not claim silence when hook output exceeds the capture limit", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
