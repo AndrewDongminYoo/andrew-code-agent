@@ -5,6 +5,7 @@ import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { boundedTerminalText } from "../app-server/terminal.js";
 import { runCodexExec } from "../codex/exec.js";
 import { executeGit } from "../git/process.js";
 import { resolveRepositoryRoot } from "../runtime/git.js";
@@ -16,6 +17,12 @@ import { writeLine, type CommandIO } from "./run.js";
 
 const MAX_PATCH_BYTES = 256 * 1024;
 const MODEL_TIMEOUT_MS = 120_000;
+const MAX_FAILURE_LINES = 40;
+const MAX_FAILURE_LINE_BYTES = 512;
+const TRUNCATION_MARKER = " [truncated]";
+// CSI sequences (colours, cursor moves) and OSC sequences ended by BEL or ST.
+const TERMINAL_SEQUENCE_PATTERN =
+  /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 
 class CommitError extends Error {}
 
@@ -208,19 +215,72 @@ export async function commitCommand(
     await writeLine(io.stdout, `Committed ${committedHead}.`);
     return 0;
   } catch (error) {
+    if (commitAttempted && !commitCompleted) {
+      await reportFailedCommit(snapshot, error, io);
+      return 3;
+    }
     await writeLine(
       io.stderr,
       commitCompleted
         ? "Git reported a successful commit, but verification failed. Inspect HEAD before retrying."
-        : commitAttempted
-          ? "Git commit did not complete cleanly; a commit may exist. Inspect HEAD before retrying."
-          : errorMessage(
-              error,
-              "Git commit failed; inspect the staged changes and hooks.",
-            ),
+        : errorMessage(
+            error,
+            "Git commit failed; inspect the staged changes and hooks.",
+          ),
     );
     return 3;
   }
+}
+
+async function reportFailedCommit(
+  snapshot: StagedSnapshot,
+  error: unknown,
+  io: CommandIO,
+): Promise<void> {
+  let headUnchanged = false;
+  try {
+    headUnchanged =
+      (
+        await executeGit(snapshot.repositoryRoot, ["rev-parse", "HEAD"])
+      ).trim() === snapshot.head;
+  } catch {
+    headUnchanged = false;
+  }
+  await writeLine(
+    io.stderr,
+    headUnchanged
+      ? "Git commit failed; no commit was created. A pre-commit or commit-msg hook may have rejected it."
+      : "Git commit did not complete cleanly; a commit may exist. Inspect HEAD before retrying.",
+  );
+  const lines = gitFailureLines(error);
+  if (lines.length === 0) {
+    await writeLine(io.stderr, "Git printed no output.");
+    return;
+  }
+  await writeLine(io.stderr, "Git output:");
+  for (const line of lines) await writeLine(io.stderr, `  ${line}`);
+}
+
+// Hooks such as Trunk's write progress redraws and colours; strip those
+// sequences so the message stays readable, then escape anything left over.
+function gitFailureLines(error: unknown): string[] {
+  const streams = ["stdout", "stderr"].map((name) => {
+    const value =
+      typeof error === "object" && error !== null && name in error
+        ? (error as Record<string, unknown>)[name]
+        : undefined;
+    return typeof value === "string" ? value : "";
+  });
+  return streams
+    .join("\n")
+    .replace(TERMINAL_SEQUENCE_PATTERN, "")
+    .split(/\r?\n/)
+    .map((line) => line.slice(line.lastIndexOf("\r") + 1).trimEnd())
+    .filter((line) => line.trim().length > 0)
+    .slice(-MAX_FAILURE_LINES)
+    .map((line) =>
+      boundedTerminalText(line, MAX_FAILURE_LINE_BYTES, TRUNCATION_MARKER),
+    );
 }
 
 function formatCommitMessage(

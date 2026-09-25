@@ -487,6 +487,52 @@ test("commit reports a body rewritten by a Git hook", async () => {
   });
 });
 
+test("commit shows the output of a rejecting pre-commit hook and says no commit was created", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const before = await git(root, "rev-parse", "HEAD");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nprintf '\\033[0G\\r\\033[2K\\033[1mprettier\\033[22m  tracked.txt  .trunk/out/abc.yaml\\r\\n\\033[91m\\342\\234\\226 1 failure\\033[0m\\n' >&2\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    assert.equal(await git(root, "rev-parse", "HEAD"), before);
+    const { stderr } = io.read();
+    assert.match(stderr, /no commit was created/i);
+    assert.match(stderr, /hook/i);
+    assert.match(stderr, /prettier {2}tracked\.txt {2}\.trunk\/out\/abc\.yaml\n/);
+    assert.match(stderr, /✖ 1 failure\n/);
+    assert.doesNotMatch(stderr, /\x1b|\r|\\x1B/);
+    assert.doesNotMatch(stderr, /commit may exist/i);
+  });
+});
+
+test("commit says when a rejecting pre-commit hook printed nothing", async () => {
+  assert.notEqual(commitModule, null);
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const hook = join(root, ".git", "hooks", "pre-commit");
+    await writeFile(hook, "#!/bin/sh\nexit 1\n");
+    await chmod(hook, 0o700);
+    const io = output();
+    const code = await commitModule.commitCommand(root, io, {
+      async propose() { return { subject: "fix: update fixture", summary: "Updates the fixture." }; },
+      async authorize() { return true; },
+    });
+    assert.equal(code, 3);
+    const { stderr } = io.read();
+    assert.match(stderr, /no commit was created/i);
+    assert.match(stderr, /printed no output/i);
+  });
+});
+
 test("commit does not suggest a blind retry after post-commit verification fails", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
