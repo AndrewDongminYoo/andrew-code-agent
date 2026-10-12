@@ -141,8 +141,7 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
   blocker.
 - `andrew-agent pr [base]` drafts a Markdown pull-request body from committed
   current-branch changes against an explicit base or the default `origin/HEAD` base.
-- `andrew-agent review [--staged | base]` reviews committed current-branch
-  changes against an explicit base or the default `origin/HEAD` base, or, with `--staged`, only the staged changes against HEAD.
+- `andrew-agent review [--staged | base]` reviews committed current-branch changes against an explicit base or the default `origin/HEAD` base, or, with `--staged`, only the staged changes against HEAD.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
 - `andrew-agent resume <thread-id> [prompt]` prints a stored thread, or
   continues it.
