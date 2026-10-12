@@ -153,6 +153,46 @@ test("the staged checkout applies a quoted path with a space and a non-ASCII cha
   });
 });
 
+test("the staged checkout applies a case-only rename", async () => {
+  assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
+  await withRepository(async (root) => {
+    await writeFile(join(root, "Foo.txt"), "case\n");
+    await git(root, "add", "Foo.txt");
+    await git(root, "commit", "--quiet", "-m", "chore: add mixed-case file");
+    await git(root, "mv", "Foo.txt", "foo.txt");
+    await withStateRoot(async (stateRoot) => {
+      const identity = await sourceIdentity(root);
+      const checkout = await stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity);
+      assert.equal(await rawGit(checkout, "ls-files", "--stage", "-z"), identity.index);
+      assert.ok((await readdir(checkout)).includes("foo.txt"));
+      assert.equal(await readFile(join(checkout, "foo.txt"), "utf8"), "case\n");
+    });
+  });
+});
+
+test("a path name that is not UTF-8 never reaches review renamed", async () => {
+  assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
+  await withRepository(async (root) => {
+    await git(root, "config", "core.quotePath", "false");
+    await writeFile(join(root, "blob.txt"), "latin1 path\n");
+    const blob = await git(root, "hash-object", "-w", "blob.txt");
+    await execFile("sh", ["-c", `printf '100644 ${blob} 0\\tcaf\\351.txt\\n' | git -C "$1" update-index --index-info`, "sh", root]);
+    await withStateRoot(async (stateRoot) => {
+      const identity = await sourceIdentity(root);
+      let checkout;
+      try {
+        checkout = await stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity);
+      } catch (error) {
+        assert.ok(error instanceof stagedReviewModule.StagedCheckoutMismatchError, String(error));
+        return;
+      }
+      const source = (await execFile("git", ["-C", root, "ls-files", "--stage", "-z"], { encoding: "buffer" })).stdout;
+      const copied = (await execFile("git", ["-C", checkout, "ls-files", "--stage", "-z"], { encoding: "buffer" })).stdout;
+      assert.ok(source.equals(copied), "the checkout listing must equal the source listing byte for byte");
+    });
+  });
+});
+
 test("a staged text file that is not UTF-8 never reaches review altered", async () => {
   assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
   await withRepository(async (root) => {

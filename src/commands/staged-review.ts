@@ -285,8 +285,12 @@ export interface StagedCheckoutInput {
 
 // The source repository's diff configuration can drop the a/ and b/ prefixes
 // or add colour, and `git apply` rejects both, so the output format is pinned.
+// Quoting keeps a path that is not UTF-8 as octal escapes, which survive the
+// UTF-8 decoding of Git output; unquoted, such a path is silently renamed.
 export async function readApplyPatch(repositoryRoot: string): Promise<string> {
   return await executeGit(repositoryRoot, [
+    "-c",
+    "core.quotePath=true",
     "diff",
     "--cached",
     "--no-color",
@@ -316,11 +320,15 @@ export async function createStagedReviewCheckout(
     await fetchReviewCommits(sourceRepository, checkout, [
       `${input.head}:refs/heads/review-head`,
     ]);
+    // HEAD goes into the index only, and the worktree is written once from
+    // the patched index, so an old path never exists on disk. A case-only
+    // rename would otherwise collide on a case-insensitive file system.
     await executeGit(
       checkout,
-      ["switch", "--quiet", "--detach", "review-head"],
+      ["update-ref", "--no-deref", "HEAD", input.head],
       isolated,
     );
+    await executeGit(checkout, ["read-tree", "review-head"], isolated);
     const patchPath = join(checkout, ".git", "andrew-agent-staged.patch");
     await writeFile(patchPath, input.applyPatch, {
       encoding: "utf8",
@@ -330,9 +338,10 @@ export async function createStagedReviewCheckout(
     try {
       await executeGit(
         checkout,
-        ["apply", "--index", "--binary", patchPath],
+        ["apply", "--cached", "--binary", patchPath],
         isolated,
       );
+      await executeGit(checkout, ["checkout-index", "--all"], isolated);
     } catch (error) {
       throw new StagedCheckoutMismatchError(error);
     } finally {
