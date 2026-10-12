@@ -612,6 +612,61 @@ test("the default staged review path runs Codex outside the source and removes i
   });
 });
 
+// The snapshot itself must not write to the source: a plain `git status` can
+// refresh and rewrite the index, so every read here disables optional locks.
+async function readOnlyGit(root, ...args) {
+  return (await execFile("git", ["-C", root, ...args], { encoding: "utf8", env: { ...process.env, GIT_OPTIONAL_LOCKS: "0" } })).stdout;
+}
+
+async function listFiles(directory, prefix = "") {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const relative = prefix === "" ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...(await listFiles(join(directory, entry.name), relative)));
+    else files.push(relative);
+  }
+  return files.sort();
+}
+
+async function sourceRepositoryState(root) {
+  const gitDirectory = join(root, ".git");
+  return {
+    refs: await readOnlyGit(root, "for-each-ref", "--format=%(refname) %(objectname)"),
+    headFile: await readFile(join(gitDirectory, "HEAD"), "utf8"),
+    packedRefs: await readFile(join(gitDirectory, "packed-refs"), "utf8"),
+    objectFiles: await listFiles(join(gitDirectory, "objects")),
+    objects: await readOnlyGit(root, "cat-file", "--batch-check", "--batch-all-objects"),
+    index: (await readFile(join(gitDirectory, "index"))).toString("base64"),
+    status: await readOnlyGit(root, "status", "--porcelain=v2", "-z", "--untracked-files=all"),
+  };
+}
+
+test("the default staged review path leaves the source refs, objects, index, and worktree unchanged", async () => {
+  assert.equal(typeof stagedReviewModule?.stagedReviewCommand, "function");
+  await withRepository(async (root) => {
+    await writeFile(join(root, "other.txt"), "other\n");
+    await git(root, "add", "other.txt");
+    await git(root, "commit", "--quiet", "-m", "chore: add other");
+    await git(root, "branch", "side");
+    await git(root, "repack", "-a", "-d", "-q");
+    await git(root, "pack-refs", "--all");
+    await stageTrackedChange(root);
+    await writeFile(join(root, "other.txt"), "other\nunstaged\n");
+    await writeFile(join(root, "untracked.txt"), "u\n");
+    const before = await sourceRepositoryState(root);
+    assert.ok(before.objectFiles.some((file) => /^pack\/.+\.pack$/.test(file)), "the fixture must hold a pack");
+    assert.ok(before.objectFiles.some((file) => /^[0-9a-f]{2}\/[0-9a-f]+$/.test(file)), "the fixture must hold a loose object");
+    assert.match(before.packedRefs, /refs\/heads\/side/);
+    assert.match(before.status, /untracked\.txt/);
+    await withFakeCodex(root, async ({ record }) => {
+      const io = output();
+      assert.equal(await stagedReviewModule.stagedReviewCommand(root, io), 0, io.read().stderr);
+      assert.ok(JSON.parse(await readFile(record, "utf8")).input.length > 0, "the fake Codex must have run");
+    });
+    assert.deepEqual(await sourceRepositoryState(root), before);
+  });
+});
+
 test("the default staged review path stops at an intent-to-add mismatch before Codex", async () => {
   assert.equal(typeof stagedReviewModule?.stagedReviewCommand, "function");
   await withRepository(async (root) => {
