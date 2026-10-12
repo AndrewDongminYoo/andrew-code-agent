@@ -15,8 +15,10 @@ import { join } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
 
-import { parse } from "smol-toml";
+import { parse as parseToml } from "smol-toml";
 
+// smol-toml 1.9 returns null-prototype tables; strict deepEqual compares prototypes.
+const parse = (text) => structuredClone(parseToml(text));
 const execFile = promisify(execFileCallback);
 const renderModule = await import("../../dist/bundle/render.js").catch(
   () => null,
