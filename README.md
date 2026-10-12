@@ -141,8 +141,8 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
   blocker.
 - `andrew-agent pr [base]` drafts a Markdown pull-request body from committed
   current-branch changes against an explicit base or the default `origin/HEAD` base.
-- `andrew-agent review [base]` reviews committed current-branch changes against
-  an explicit base or the default `origin/HEAD` base.
+- `andrew-agent review [--staged | base]` reviews committed current-branch
+  changes against an explicit base or the default `origin/HEAD` base, or, with `--staged`, only the staged changes against HEAD.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
 - `andrew-agent resume <thread-id> [prompt]` prints a stored thread, or
   continues it.
@@ -168,7 +168,7 @@ If another writer changes HEAD or the index after that check, Git may create a d
 The model is asked to recommend splitting unrelated changes; the command does not split, push, or publish.
 Diffs larger than 256 KiB are refused instead of being truncated.
 
-`review` requires a named branch and a clean worktree because its first version reviews committed branch changes only.
+Without `--staged`, `review` requires a named branch and a clean worktree because it reviews committed branch changes only.
 With no argument, it resolves the symbolic `origin/HEAD` remote-tracking ref; one positional ref selects another base.
 The command resolves and displays the exact HEAD, base commit, and merge base for a three-dot comparison.
 It copies the exact committed comparison into a temporary standalone repository under managed runtime state, without retaining a remote to the source worktree.
@@ -181,6 +181,15 @@ It discards a stale response if any reviewed input changed and never edits, comm
 If temporary-checkout cleanup fails, it emits a redacted warning without discarding the review response or replacing the original review failure.
 If the operator interrupts the review, it terminates the Codex process group and attempts checkout cleanup before returning a failure.
 An empty comparison exits successfully without invoking Codex.
+
+`review --staged` reviews only the staged changes against HEAD, so it can run before `commit`.
+It needs an existing HEAD but not a named branch or a clean worktree, because unstaged and untracked content never reaches the review.
+It fetches the HEAD commit into the same kind of isolated checkout and applies the staged patch there, then requires the checkout's index listing to match the source index byte for byte.
+An intent-to-add entry from `git add -N` breaks that match, so the command stops with exit `3` before Codex runs.
+A merge in progress, an unresolved conflict, or a staged submodule is refused, and nothing staged exits successfully without invoking Codex.
+If HEAD or the index changes during the review, the command discards the response; an unstaged edit does not.
+The review rules, cleanup warnings, and interrupt handling are the same as for the branch review.
+`--staged` cannot be combined with a base ref.
 
 `pr` uses the same named-branch, clean-worktree, exact-comparison, isolated-checkout, race-recheck, cleanup, and interruption boundaries as `review`.
 Before drafting, it runs `git diff --check` against the resolved base and HEAD commits.
