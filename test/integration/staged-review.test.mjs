@@ -146,6 +146,28 @@ test("the staged checkout ignores source diff prefix and color settings", async 
   });
 });
 
+test("the staged checkout ignores source diff context, rename, and blank-line settings", async () => {
+  assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
+  await withRepository(async (root) => {
+    await writeFile(join(root, "lines.txt"), "one\n\ntwo\nthree\nfour\nfive\nsix\n");
+    await git(root, "add", "lines.txt");
+    await git(root, "commit", "--quiet", "-m", "chore: add lines");
+    await git(root, "config", "diff.context", "0");
+    await git(root, "config", "diff.interHunkContext", "0");
+    await git(root, "config", "diff.suppressBlankEmpty", "true");
+    await git(root, "config", "diff.renames", "copies");
+    await git(root, "config", "diff.mnemonicPrefix", "true");
+    await writeFile(join(root, "lines.txt"), "one\n\nTWO\nthree\nfour\nFIVE\nsix\n");
+    await git(root, "add", "lines.txt");
+    await git(root, "mv", "tracked.txt", "renamed.txt");
+    await withStateRoot(async (stateRoot) => {
+      const identity = await sourceIdentity(root);
+      const checkout = await stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity);
+      assert.equal(await rawGit(checkout, "ls-files", "--stage", "-z"), identity.index);
+    });
+  });
+});
+
 test("the staged checkout applies a quoted path with a space and a non-ASCII character", async () => {
   assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
   await withRepository(async (root) => {

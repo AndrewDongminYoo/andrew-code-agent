@@ -283,10 +283,13 @@ export interface StagedCheckoutInput {
   readonly applyPatch: string;
 }
 
-// The source repository's diff configuration can drop the a/ and b/ prefixes
-// or add colour, and `git apply` rejects both, so the output format is pinned.
-// Quoting keeps a path that is not UTF-8 as octal escapes, which survive the
-// UTF-8 decoding of Git output; unquoted, such a path is silently renamed.
+// The source repository's diff configuration can drop the a/ and b/ prefixes,
+// add colour, or remove context lines, and `git apply` rejects all three, so
+// the output format is pinned. Plumbing `diff-index` would ignore that
+// configuration, but it also emits intent-to-add entries as empty new files,
+// which would turn the intent-to-add refusal into a review of a file the
+// commit will not contain. Quoting keeps a path that is not UTF-8 as octal
+// escapes, which survive the UTF-8 decoding of Git output.
 export async function readApplyPatch(repositoryRoot: string): Promise<string> {
   return await executeGit(repositoryRoot, [
     "-c",
@@ -294,6 +297,7 @@ export async function readApplyPatch(repositoryRoot: string): Promise<string> {
     "diff",
     "--cached",
     "--no-color",
+    "--unified=3",
     "--src-prefix=a/",
     "--dst-prefix=b/",
     "--no-ext-diff",
