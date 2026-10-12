@@ -32,32 +32,59 @@ export async function executeGit(
       encoding: "utf8",
       // v0.1 bounds each captured stream; larger output requires future streaming support.
       maxBuffer: maxGitOutputBytes,
-      env: {
-        HOME: process.env.HOME,
-        PATH: process.env.PATH,
-        TMPDIR: process.env.TMPDIR,
-        GIT_OPTIONAL_LOCKS: "0",
-        GIT_NO_REPLACE_OBJECTS: "1",
-        ...(options.isolateConfig
-          ? {
-              GIT_CONFIG_GLOBAL: "/dev/null",
-              GIT_CONFIG_NOSYSTEM: "1",
-            }
-          : {}),
-        LANG: "C",
-        LC_ALL: "C",
-      },
+      env: gitEnvironment(options),
     });
     return stdout;
   } catch (error) {
-    if (isMaxBufferError(error)) {
-      throw new GitProcessError(
-        "GIT_OUTPUT_TOO_LARGE",
-        "Git command output exceeds the v0.1 limit.",
-      );
-    }
-    throw error;
+    throw boundedOutputError(error);
   }
+}
+
+// Returns stdout as raw bytes, for output that must round-trip unchanged
+// (a patch whose content is not UTF-8), under the same bound and environment.
+export async function executeGitBytes(
+  repositoryRoot: string,
+  args: readonly string[],
+  options: GitProcessOptions = {},
+): Promise<Buffer> {
+  try {
+    const { stdout } = await execFile("git", ["-C", repositoryRoot, ...args], {
+      encoding: "buffer",
+      maxBuffer: maxGitOutputBytes,
+      env: gitEnvironment(options),
+    });
+    return stdout;
+  } catch (error) {
+    throw boundedOutputError(error);
+  }
+}
+
+function gitEnvironment(options: GitProcessOptions): NodeJS.ProcessEnv {
+  return {
+    HOME: process.env.HOME,
+    PATH: process.env.PATH,
+    TMPDIR: process.env.TMPDIR,
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_NO_REPLACE_OBJECTS: "1",
+    ...(options.isolateConfig
+      ? {
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+        }
+      : {}),
+    LANG: "C",
+    LC_ALL: "C",
+  };
+}
+
+function boundedOutputError(error: unknown): unknown {
+  if (isMaxBufferError(error)) {
+    return new GitProcessError(
+      "GIT_OUTPUT_TOO_LARGE",
+      "Git command output exceeds the v0.1 limit.",
+    );
+  }
+  return error;
 }
 
 function isMaxBufferError(error: unknown): boolean {

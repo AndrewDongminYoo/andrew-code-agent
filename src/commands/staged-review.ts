@@ -3,7 +3,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { executeGit } from "../git/process.js";
+import { executeGit, executeGitBytes } from "../git/process.js";
 import {
   readStagedChanges,
   StagedInputError,
@@ -46,7 +46,7 @@ export interface StagedReviewInput {
   readonly headRef: string;
   readonly index: string;
   readonly patch: string;
-  readonly applyPatch: string;
+  readonly applyPatch: Buffer;
   readonly paths: readonly string[];
   readonly additions: number;
   readonly deletions: number;
@@ -158,7 +158,7 @@ export async function readStagedReviewInput(
   if (staged.patch.length === 0)
     return {
       ...base,
-      applyPatch: "",
+      applyPatch: Buffer.alloc(0),
       additions: 0,
       deletions: 0,
       binaryFiles: 0,
@@ -280,7 +280,7 @@ export class StagedCheckoutMismatchError extends Error {
 export interface StagedCheckoutInput {
   readonly head: string;
   readonly index: string;
-  readonly applyPatch: string;
+  readonly applyPatch: Buffer;
 }
 
 // The source repository's diff configuration can drop the a/ and b/ prefixes,
@@ -288,10 +288,11 @@ export interface StagedCheckoutInput {
 // the output format is pinned. Plumbing `diff-index` would ignore that
 // configuration, but it also emits intent-to-add entries as empty new files,
 // which would turn the intent-to-add refusal into a review of a file the
-// commit will not contain. Quoting keeps a path that is not UTF-8 as octal
-// escapes, which survive the UTF-8 decoding of Git output.
-export async function readApplyPatch(repositoryRoot: string): Promise<string> {
-  return await executeGit(repositoryRoot, [
+// commit will not contain. The patch is kept as raw bytes, so content that is
+// not UTF-8 (a legacy-encoded text file, or a binary file a diff driver forces
+// to a text diff) applies unchanged; quoting keeps such a path as escapes.
+export async function readApplyPatch(repositoryRoot: string): Promise<Buffer> {
+  return await executeGitBytes(repositoryRoot, [
     "-c",
     "core.quotePath=true",
     "diff",
@@ -337,11 +338,7 @@ export async function createStagedReviewCheckout(
     await executeGit(checkout, ["config", "core.symlinks", "false"], isolated);
     await executeGit(checkout, ["read-tree", "review-head"], isolated);
     const patchPath = join(checkout, ".git", "andrew-agent-staged.patch");
-    await writeFile(patchPath, input.applyPatch, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600,
-    });
+    await writeFile(patchPath, input.applyPatch, { flag: "wx", mode: 0o600 });
     try {
       await executeGit(
         checkout,

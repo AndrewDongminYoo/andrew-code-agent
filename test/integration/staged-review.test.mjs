@@ -245,13 +245,37 @@ test("a path name that is not UTF-8 never reaches review renamed", async () => {
   });
 });
 
-test("a staged text file that is not UTF-8 never reaches review altered", async () => {
+test("a staged text file that is not UTF-8 is reviewed with its exact bytes", async () => {
   assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
   await withRepository(async (root) => {
-    await writeFile(join(root, "latin1.txt"), Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]));
+    const content = Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]);
+    await writeFile(join(root, "latin1.txt"), content);
     await git(root, "add", "latin1.txt");
     await withStateRoot(async (stateRoot) => {
-      await assertMatchOrMismatch(root, stateRoot);
+      const identity = await sourceIdentity(root);
+      const checkout = await stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity);
+      assert.equal(await rawGit(checkout, "ls-files", "--stage", "-z"), identity.index);
+      assert.ok((await readFile(join(checkout, "latin1.txt"))).equals(content));
+    });
+  });
+});
+
+test("a binary file forced to a text diff is reviewed with its exact bytes", async () => {
+  assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
+  await withRepository(async (root) => {
+    await writeFile(join(root, ".gitattributes"), "*.bin diff=raw\n");
+    await writeFile(join(root, "data.bin"), binaryContent());
+    await git(root, "add", ".gitattributes", "data.bin");
+    await git(root, "commit", "--quiet", "-m", "chore: add forced-text binary");
+    await git(root, "config", "diff.raw.binary", "false");
+    const content = Buffer.concat([Buffer.from([0xff, 0xfe, 0x00]), randomBytes(200)]);
+    await writeFile(join(root, "data.bin"), content);
+    await git(root, "add", "data.bin");
+    await withStateRoot(async (stateRoot) => {
+      const identity = await sourceIdentity(root);
+      const checkout = await stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity);
+      assert.equal(await rawGit(checkout, "ls-files", "--stage", "-z"), identity.index);
+      assert.ok((await readFile(join(checkout, "data.bin"))).equals(content));
     });
   });
 });
