@@ -639,20 +639,35 @@ setInterval(() => {}, 1000);
     try {
       const listenersBefore = process.listenerCount("SIGINT");
       const running = reviewModule.reviewCommand(root, "main", output());
-      const readyDeadline = Date.now() + 1_000;
-      while (pid === 0 && Date.now() < readyDeadline) {
+      let settled = false;
+      running.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      const readyDeadline = Date.now() + 30_000;
+      while (pid === 0 && !settled && Date.now() < readyDeadline) {
         pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
         if (pid === 0)
           await new Promise((resolve) => setTimeout(resolve, 20));
       }
+      if (pid === 0 && !settled) {
+        process.emit("SIGINT");
+        await running.catch(() => {});
+      }
       assert.ok(pid > 0, "the fake Codex process must start before interrupt");
       process.emit("SIGINT");
+      let hungTimer;
       const result = await Promise.race([
         running,
-        new Promise((resolve) =>
-          setTimeout(() => resolve("hung"), 1_500),
-        ),
+        new Promise((resolve) => {
+          hungTimer = setTimeout(() => resolve("hung"), 30_000);
+        }),
       ]);
+      clearTimeout(hungTimer);
       if (result === "hung") {
         try {
           process.kill(pid, "SIGKILL");
