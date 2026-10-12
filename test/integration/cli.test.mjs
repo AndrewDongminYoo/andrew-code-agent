@@ -460,12 +460,14 @@ test("run rejects tracked and untracked dirt before runtime mutation", async (t)
   await writeFile(join(repositoryRoot, "tracked.txt"), "after\n");
   await writeFile(join(repositoryRoot, "untracked.txt"), "new\n");
   const beforeTracked = await readFile(join(repositoryRoot, "tracked.txt"));
+  const beforeUntracked = await readFile(join(repositoryRoot, "untracked.txt"));
   const beforeStatus = (await execFile("git", ["-C", repositoryRoot, "status", "--porcelain=v2", "--untracked-files=all"])).stdout;
   const stateRoot = join(repositoryRoot, "state-canary");
   const harness = operationHarness(repositoryRoot, { stateRoot });
   assert.equal(await runModule.runCommand(repositoryRoot, "prompt", capture(), harness.dependencies), 3);
   assert.deepEqual(harness.order, ["paths", "snapshot", "clean"]);
   assert.deepEqual(await readFile(join(repositoryRoot, "tracked.txt")), beforeTracked);
+  assert.deepEqual(await readFile(join(repositoryRoot, "untracked.txt")), beforeUntracked);
   assert.equal((await execFile("git", ["-C", repositoryRoot, "status", "--porcelain=v2", "--untracked-files=all"])).stdout, beforeStatus);
   await assert.rejects(readFile(stateRoot), { code: "ENOENT" });
 });
