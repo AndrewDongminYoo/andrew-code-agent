@@ -328,6 +328,9 @@ export async function createStagedReviewCheckout(
       ["update-ref", "--no-deref", "HEAD", input.head],
       isolated,
     );
+    // A tracked symlink is written as a plain file holding its target, so the
+    // review cannot follow it out of the checkout into source-worktree dirt.
+    await executeGit(checkout, ["config", "core.symlinks", "false"], isolated);
     await executeGit(checkout, ["read-tree", "review-head"], isolated);
     const patchPath = join(checkout, ".git", "andrew-agent-staged.patch");
     await writeFile(patchPath, input.applyPatch, {

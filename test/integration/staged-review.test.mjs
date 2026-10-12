@@ -3,12 +3,14 @@ import { execFile as execFileCallback } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -59,6 +61,12 @@ async function sourceIdentity(root) {
   };
 }
 
+// Git treats a file as binary only when it holds a NUL byte, so random bytes
+// alone are diffed as text about a third of the time.
+function binaryContent() {
+  return Buffer.concat([Buffer.from([0]), randomBytes(299)]);
+}
+
 // Either the checkout reproduces the source index exactly, or the build is
 // refused as a mismatch. Reviewing altered content is the one forbidden outcome.
 async function assertMatchOrMismatch(root, stateRoot) {
@@ -80,14 +88,14 @@ test("the staged checkout carries staged content only", async () => {
     await writeFile(join(root, "gone.txt"), "x\n");
     await writeFile(join(root, "old.txt"), "r\nr\nr\nr\n");
     await writeFile(join(root, "run.sh"), "s\n");
-    await writeFile(join(root, "bin.dat"), randomBytes(300));
+    await writeFile(join(root, "bin.dat"), binaryContent());
     await git(root, "add", ".");
     await git(root, "commit", "--quiet", "-m", "chore: add boundary fixture");
     await writeFile(join(root, "keep.txt"), "a\nB\n");
     await git(root, "rm", "--quiet", "gone.txt");
     await git(root, "mv", "old.txt", "new.txt");
     await chmod(join(root, "run.sh"), 0o755);
-    await writeFile(join(root, "bin.dat"), randomBytes(300));
+    await writeFile(join(root, "bin.dat"), binaryContent());
     await writeFile(join(root, "added.txt"), "n\n");
     await git(root, "add", "-A");
     await writeFile(join(root, "keep.txt"), "a\nB\nunstaged\n");
@@ -149,6 +157,28 @@ test("the staged checkout applies a quoted path with a space and a non-ASCII cha
       const checkout = await stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity);
       assert.equal(await rawGit(checkout, "ls-files", "--stage", "-z"), identity.index);
       assert.equal(await readFile(join(checkout, "dir", "ä b.txt"), "utf8"), "quoted\n");
+    });
+  });
+});
+
+test("the staged checkout never materializes a followable symlink", async () => {
+  assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
+  await withRepository(async (root) => {
+    await writeFile(join(root, "untracked-secret.txt"), "source-only\n");
+    await symlink(join(root, "untracked-secret.txt"), join(root, "committed-link"));
+    await git(root, "add", "committed-link");
+    await git(root, "commit", "--quiet", "-m", "chore: add absolute symlink");
+    await symlink("../outside.txt", join(root, "staged-link"));
+    await git(root, "add", "staged-link");
+    await withStateRoot(async (stateRoot) => {
+      const identity = await sourceIdentity(root);
+      const checkout = await stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity);
+      assert.equal(await rawGit(checkout, "ls-files", "--stage", "-z"), identity.index);
+      for (const name of ["committed-link", "staged-link"]) {
+        const entry = await lstat(join(checkout, name));
+        assert.equal(entry.isSymbolicLink(), false, `${name} must not be a symlink`);
+      }
+      assert.notEqual(await readFile(join(checkout, "committed-link"), "utf8"), "source-only\n");
     });
   });
 });
