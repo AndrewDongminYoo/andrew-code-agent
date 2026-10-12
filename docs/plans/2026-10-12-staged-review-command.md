@@ -2,11 +2,14 @@
 
 Date: 2026-10-12 Status: approved by the operator on 2026-10-12 (issue #74); see the reconciliation section
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
+> Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add `andrew-agent review --staged`, which reviews only the staged changes in an isolated checkout before `andrew-agent commit`.
 
-**Architecture:** A shared reader in `src/git/staged.ts` captures HEAD, the index listing, and the staged patch for both `commit` and the staged review. `src/commands/staged-review.ts` fetches HEAD into a temporary repository, applies a pinned-format staged patch with `git apply --index --binary`, verifies the index listing byte-for-byte, and runs the existing read-only `codex exec` review there. The command rechecks the staged snapshot before it prints the response.
+**Architecture:** A shared reader in `src/git/staged.ts` captures HEAD, the index listing, and the staged patch for both `commit` and the staged review.
+`src/commands/staged-review.ts` fetches HEAD into a temporary repository, applies a pinned-format staged patch with `git apply --index --binary`, verifies the index listing byte-for-byte, and runs the existing read-only `codex exec` review there.
+The command rechecks the staged snapshot before it prints the response.
 
 **Tech Stack:** TypeScript 7 (strict), Node 24.20.0, `node:test`, Git CLI through `src/git/process.ts`.
 
@@ -34,11 +37,17 @@ Date: 2026-10-12 Status: approved by the operator on 2026-10-12 (issue #74); see
 These conditions are implied by the spec but no acceptance criterion names them.
 Each line names the expected behavior and the task that pins it with a test.
 
-1. A staged text file that is not valid UTF-8: Git output is decoded as UTF-8, so the applied content can differ. The checkout must either match the source listing or stop with the mismatch error, never review altered content. Task 2.
-2. A staged path with a space and a non-ASCII character, quoted by `core.quotePath`: the patch must apply and the listing must match. Task 2.
-3. A source repository with `.gitattributes` `* text=auto eol=crlf`: the same either-match-or-mismatch invariant as line 1. Task 2.
-4. More than 512 staged paths: the prompt carries 512 paths and `omittedPathCount`. Task 3.
-5. An unborn HEAD (no commit yet) with staged files: exit `3` before Codex runs. Task 3.
+1. A staged text file that is not valid UTF-8: Git output is decoded as UTF-8, so the applied content can differ.
+   The checkout must either match the source listing or stop with the mismatch error, never review altered content.
+   Task 2.
+2. A staged path with a space and a non-ASCII character, quoted by `core.quotePath`: the patch must apply and the listing must match.
+   Task 2.
+3. A source repository with `.gitattributes` `* text=auto eol=crlf`: the same either-match-or-mismatch invariant as line 1.
+   Task 2.
+4. More than 512 staged paths: the prompt carries 512 paths and `omittedPathCount`.
+   Task 3.
+5. An unborn HEAD (no commit yet) with staged files: exit `3` before Codex runs.
+   Task 3.
 
 ## Owned paths
 
@@ -162,7 +171,8 @@ git commit -m "refactor(commit): read staged input through a shared reader"
 
 **Interfaces:**
 
-- Consumes: nothing from Task 1 at runtime. The tests build their own fixtures.
+- Consumes: nothing from Task 1 at runtime.
+  The tests build their own fixtures.
 - Produces:
 
 ```ts
@@ -194,19 +204,29 @@ export async function createStagedReviewCheckout(
 - [ ] **Step 1: Write the failing checkout tests** in `test/integration/staged-review.test.mjs`.
       Each test calls `readApplyPatch(root)` and `git ls-files --stage -z` on the source, then `createStagedReviewCheckout(root, stateRoot, { head, index, applyPatch })`, and removes the checkout and state root in `finally`.
       Cases:
-  - Boundary (spec criterion 1): the fixture commits `keep.txt`, `gone.txt`, `old.txt` (four lines), `run.sh`, and a 300-byte random `bin.dat`. It stages a modification of `keep.txt`, `git rm gone.txt`, `git mv old.txt new.txt`, `chmod +x run.sh`, a new random `bin.dat`, and a new `added.txt`. Then it makes an unstaged edit to `keep.txt` and writes an untracked `untracked.txt`.
+  - Boundary (spec criterion 1): the fixture commits `keep.txt`, `gone.txt`, `old.txt` (four lines), `run.sh`, and a 300-byte random `bin.dat`.
+    It stages a modification of `keep.txt`, `git rm gone.txt`, `git mv old.txt new.txt`, `chmod +x run.sh`, a new random `bin.dat`, and a new `added.txt`.
+    Then it makes an unstaged edit to `keep.txt` and writes an untracked `untracked.txt`.
     Assert:
     - the checkout listing equals the source listing
     - `keep.txt` has the staged content, not the unstaged edit
     - `untracked.txt` and `gone.txt` are absent
     - `new.txt` exists
     - `git -C <checkout> diff --quiet` exits `0`
-  - Intent-to-add (spec criterion 2): stage a modification, then `git add -N ita.txt`. Expect a rejection with `StagedCheckoutMismatchError` and `message === STAGED_MISMATCH_MESSAGE`. Also expect that `stateRoot` holds no `review-` entry afterwards.
-  - Hostile diff configuration (spec criterion 3): `git config diff.noprefix true` and `git config color.ui always` in the source repository before `readApplyPatch`. The checkout listing equals the source listing.
-  - Quoted path (Review Focus 2): stage `dir/ä b.txt`. The listing matches.
-  - Not UTF-8 (Review Focus 1): stage `latin1.txt` with the bytes `caf\xe9\n` (write a `Buffer`). The call either resolves with a checkout whose listing equals the source listing, or rejects with `StagedCheckoutMismatchError`. Any other outcome fails.
-  - Line-ending attributes (Review Focus 3): commit `.gitattributes` with `* text=auto eol=crlf`, then stage a modification of a text file. Assert the same either-match-or-mismatch invariant.
-  - Shallow source: `git clone --depth 1 file://<fixture>` into a second directory, stage a change there, and build the checkout from the clone. The listing matches.
+  - Intent-to-add (spec criterion 2): stage a modification, then `git add -N ita.txt`.
+    Expect a rejection with `StagedCheckoutMismatchError` and `message === STAGED_MISMATCH_MESSAGE`.
+    Also expect that `stateRoot` holds no `review-` entry afterwards.
+  - Hostile diff configuration (spec criterion 3): `git config diff.noprefix true` and `git config color.ui always` in the source repository before `readApplyPatch`.
+    The checkout listing equals the source listing.
+  - Quoted path (Review Focus 2): stage `dir/ä b.txt`.
+    The listing matches.
+  - Not UTF-8 (Review Focus 1): stage `latin1.txt` with the bytes `caf\xe9\n` (write a `Buffer`).
+    The call either resolves with a checkout whose listing equals the source listing, or rejects with `StagedCheckoutMismatchError`.
+    Any other outcome fails.
+  - Line-ending attributes (Review Focus 3): commit `.gitattributes` with `* text=auto eol=crlf`, then stage a modification of a text file.
+    Assert the same either-match-or-mismatch invariant.
+  - Shallow source: `git clone --depth 1 file://<fixture>` into a second directory, stage a change there, and build the checkout from the clone.
+    The listing matches.
 
 - [ ] **Step 2: Run and confirm failure.**
       Run: `pnpm build && node --test test/integration/staged-review.test.mjs`
@@ -325,7 +345,8 @@ export async function createStagedReviewCheckout(
 - [ ] **Step 5: Run the checkout and existing review tests.**
       Run: `pnpm build && node --test test/integration/staged-review.test.mjs test/integration/review.test.mjs`
       Expected: PASS.
-      If the not-UTF-8 or attribute case resolves with a different listing, the code has a defect, because the listing check must reject that case. Do not relax the test.
+      If the not-UTF-8 or attribute case resolves with a different listing, the code has a defect, because the listing check must reject that case.
+      Do not relax the test.
 
 - [ ] **Step 6: Commit.**
 
@@ -344,7 +365,9 @@ git commit -m "feat(review): build an isolated checkout from the staged index"
 
 **Interfaces:**
 
-- Consumes: `readStagedChanges`, `StagedInputError`, and `StagedRefusalReason` (Task 1). `createStagedReviewCheckout`, `readApplyPatch`, `StagedCheckoutMismatchError`, and `STAGED_MISMATCH_MESSAGE` (Task 2). `runPreparedReview`, `runCodexReview`, `ReviewExecutionError`, `ReviewPreparationError`, and `ReviewExecutionResult` from `review.ts`.
+- Consumes: `readStagedChanges`, `StagedInputError`, and `StagedRefusalReason` (Task 1).
+  `createStagedReviewCheckout`, `readApplyPatch`, `StagedCheckoutMismatchError`, and `STAGED_MISMATCH_MESSAGE` (Task 2).
+  `runPreparedReview`, `runCodexReview`, `ReviewExecutionError`, `ReviewPreparationError`, and `ReviewExecutionResult` from `review.ts`.
 - Produces:
 
 ```ts
@@ -408,21 +431,34 @@ export const REVIEW_RULES: readonly string[] = [
 - [ ] **Step 1: Write the failing command tests** in `test/integration/staged-review.test.mjs`.
       Use a fixture with one committed `tracked.txt` and an injected `review` dependency unless the case says otherwise.
       Cases:
-  - Happy path: stage a modification. The dependency receives `paths` `["tracked.txt"]`, `headRef` `refs/heads/main`, and a prompt that contains `git diff --cached`, `changed path and line`, and the HEAD SHA. Stdout equals `Reviewing staged changes on refs/heads/main (<sha>).\n` followed by the response lines. Stderr is empty. Exit `0`.
-  - Dirty worktree allowed: stage a change, then make an unstaged edit and add an untracked file. Exit `0`.
-  - Empty (spec criterion 4): nothing staged, or only `git add -N ita.txt`. Stdout is `No staged changes to review.\n`, the dependency is never called, and exit is `0`.
-  - Refusals (spec criterion 6): `MERGE_HEAD` present, a conflict entry, and a staged gitlink (the fixtures from Task 1). The dependency is never called, and exit is `3`. Stderr is `Complete or abort the merge before reviewing staged changes.`, `Resolve merge conflicts before reviewing staged changes.`, or `Staged submodules are unsupported.`.
-  - Changed inputs (spec criterion 7): for each race of `head` (commit inside the dependency), `index` (stage another file), and `patch` (re-stage `tracked.txt` with new content), the response is not printed, stderr has `Review inputs changed; run review again.`, and exit is `3`. For `unstaged` (edit a tracked file without staging), exit is `0` and the response is printed.
-  - Detached HEAD (spec criterion 8): `git switch --detach`, then stage a change. Exit `0`, and the identity line names `HEAD`.
-  - Unborn HEAD (Review Focus 5): `git init`, stage a file, no commit. Exit `3`, the dependency is never called, and stderr is `Unable to prepare staged review.`.
+  - Happy path: stage a modification.
+    The dependency receives `paths` `["tracked.txt"]`, `headRef` `refs/heads/main`, and a prompt that contains `git diff --cached`, `changed path and line`, and the HEAD SHA.
+    Stdout equals `Reviewing staged changes on refs/heads/main (<sha>).\n` followed by the response lines.
+    Stderr is empty.
+    Exit `0`.
+  - Dirty worktree allowed: stage a change, then make an unstaged edit and add an untracked file.
+    Exit `0`.
+  - Empty (spec criterion 4): nothing staged, or only `git add -N ita.txt`.
+    Stdout is `No staged changes to review.\n`, the dependency is never called, and exit is `0`.
+  - Refusals (spec criterion 6): `MERGE_HEAD` present, a conflict entry, and a staged gitlink (the fixtures from Task 1).
+    The dependency is never called, and exit is `3`.
+    Stderr is `Complete or abort the merge before reviewing staged changes.`, `Resolve merge conflicts before reviewing staged changes.`, or `Staged submodules are unsupported.`.
+  - Changed inputs (spec criterion 7): for each race of `head` (commit inside the dependency), `index` (stage another file), and `patch` (re-stage `tracked.txt` with new content), the response is not printed, stderr has `Review inputs changed; run review again.`, and exit is `3`.
+    For `unstaged` (edit a tracked file without staging), exit is `0` and the response is printed.
+  - Detached HEAD (spec criterion 8): `git switch --detach`, then stage a change.
+    Exit `0`, and the identity line names `HEAD`.
+  - Unborn HEAD (Review Focus 5): `git init`, stage a file, no commit.
+    Exit `3`, the dependency is never called, and stderr is `Unable to prepare staged review.`.
   - 513 staged files (Review Focus 4): the prompt's JSON metadata has 512 `paths` and `omittedPathCount` `1`.
-  - Default path with fake Codex: copy the environment-swap pattern from the review test `the default review path excludes ignored source content and removes its checkout`. The fake records `cwd`, whether `untracked.txt` exists, and stdin.
+  - Default path with fake Codex: copy the environment-swap pattern from the review test `the default review path excludes ignored source content and removes its checkout`.
+    The fake records `cwd`, whether `untracked.txt` exists, and stdin.
     Assert:
     - `cwd` is not the source root
     - the untracked file is not visible
     - stdout has `No findings.`
     - no `review-` entry remains in the state root
-  - Default path with intent-to-add (spec criterion 2, command level): stage a change and run `git add -N ita.txt`, with the same fake Codex. Exit `3`, stderr equals the mismatch message plus a newline, and the record file does not exist.
+  - Default path with intent-to-add (spec criterion 2, command level): stage a change and run `git add -N ita.txt`, with the same fake Codex.
+    Exit `3`, stderr equals the mismatch message plus a newline, and the record file does not exist.
 
 - [ ] **Step 2: Run and confirm failure.**
       Run: `pnpm build && node --test test/integration/staged-review.test.mjs`
@@ -453,7 +489,8 @@ const REVIEW_REFUSALS: Readonly<Record<StagedRefusalReason, string>> = {
 1. Call `readStagedChanges`.
 2. If the patch is empty, return the input with empty `applyPatch`, zero statistics, and an empty prompt.
 3. Read `readApplyPatch(root)` and `git diff --cached --numstat --no-ext-diff --no-textconv --`, and parse the numstat with `parseNumstat`.
-4. Re-read `git rev-parse HEAD` and `git ls-files --stage -z`. If either differs from the reader's values, throw `new StagedInputError("CHANGED_WHILE_READ")`.
+4. Re-read `git rev-parse HEAD` and `git ls-files --stage -z`.
+   If either differs from the reader's values, throw `new StagedInputError("CHANGED_WHILE_READ")`.
 5. Build the prompt:
 
 ```ts
@@ -479,7 +516,9 @@ function stagedReviewPrompt(input: Omit<StagedReviewInput, "prompt">): string {
 
 `stagedReviewCommand(repositoryInput, io, dependencies)` follows `reviewCommand` line for line, with these differences:
 
-- A preflight `StagedInputError` writes `REVIEW_REFUSALS[reason]`. Any other preflight error writes `Unable to prepare staged review.`. Both exit `3`.
+- A preflight `StagedInputError` writes `REVIEW_REFUSALS[reason]`.
+  Any other preflight error writes `Unable to prepare staged review.`.
+  Both exit `3`.
 - An empty patch writes `No staged changes to review.` and exits `0`.
 - In the review `catch`, unwrap the primary error of a `ReviewExecutionError` first.
   - If the primary error is a `StagedCheckoutMismatchError`, write the cleanup warning if present, then `STAGED_MISMATCH_MESSAGE`, and exit `3`.
@@ -490,7 +529,8 @@ function stagedReviewPrompt(input: Omit<StagedReviewInput, "prompt">): string {
 `reviewStagedWithCodex(input)` mirrors `reviewWithCodex`:
 
 - Resolve the runtime paths and initialize the runtime state.
-- Call `runPreparedReview` with `createStagedReviewCheckout(input.repositoryRoot, paths.stateRoot, input)` as the preparation. Wrap any preparation error except `StagedCheckoutMismatchError` in `ReviewPreparationError`, as `reviewWithCodex` does.
+- Call `runPreparedReview` with `createStagedReviewCheckout(input.repositoryRoot, paths.stateRoot, input)` as the preparation.
+  Wrap any preparation error except `StagedCheckoutMismatchError` in `ReviewPreparationError`, as `reviewWithCodex` does.
 - Run `runCodexReview(paths.codexBin, paths.codexHome, checkout, input.prompt)`, and remove the checkout recursively afterwards.
 
 - [ ] **Step 5: Run the staged, review, and commit tests.**
@@ -550,7 +590,8 @@ if (
 
 - [ ] **Step 4: Document the command in `README.md` `## Commands`.**
       Change the `review` list item to the new usage.
-      Add one paragraph after the existing `review` paragraphs. The paragraph says these things:
+      Add one paragraph after the existing `review` paragraphs.
+      The paragraph says these things:
   - `--staged` reviews only the staged changes against HEAD in an isolated checkout.
   - Unstaged and untracked content does not reach the review, and the worktree does not need to be clean.
   - An intent-to-add entry stops the review with the mismatch message.
@@ -576,7 +617,9 @@ git commit -m "feat(cli): accept review --staged"
 - [ ] **Step 2: Run a manual real Codex check** in a scratch repository with one staged change: `node <repo>/dist/cli.js review --staged`.
       Expected: an identity line and a review response, or a reported environment failure with its message.
 - [ ] **Step 3: Run the local review drain.** Run the `codex-review` skill on the branch diff, fix the confirmed findings, and rerun Step 1.
-- [ ] **Step 4: Open the PR.** Load the `responding-to-ai-pr-review` skill before `gh pr create`. Write the body one sentence per line, with `Closes #74`. Arm the watch.
+- [ ] **Step 4: Open the PR.** Load the `responding-to-ai-pr-review` skill before `gh pr create`.
+      Write the body one sentence per line, with `Closes #74`.
+      Arm the watch.
 
 ## Reconciliation (2026-10-12, final branch review)
 

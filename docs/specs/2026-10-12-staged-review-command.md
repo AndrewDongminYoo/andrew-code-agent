@@ -120,7 +120,8 @@ It does not guarantee that Codex ran every relevant test.
 ## Acceptance criteria
 
 1. Only staged content reaches the isolated checkout: a staged modification, deletion, rename, mode change, and binary file are present, and an unstaged modification and an untracked file are absent.
-2. The checkout index listing equals the source index listing. An intent-to-add entry next to a staged change makes the listings differ, and the review stops with exit `3` and the mismatch message before Codex runs.
+2. The checkout index listing equals the source index listing.
+   An intent-to-add entry next to a staged change makes the listings differ, and the review stops with exit `3` and the mismatch message before Codex runs.
 3. The isolated checkout is built correctly when the source repository sets `diff.noprefix=true` and `color.ui=always`.
 4. An empty staged patch exits `0` without invoking Codex.
 5. `--staged` with a base ref exits `2` with the review usage line, and `--staged` with any command other than `review` exits `2` with that command's usage line.
@@ -138,7 +139,8 @@ The resulting index listing was byte-for-byte equal to the source listing, and t
 
 A second probe on 2026-10-12, with Git 2.54.0, exercised conditions that the first probe did not:
 
-- A source-side patch read under `diff.noprefix=true` or `color.ui=always` failed in `git apply`. The same patch read with `--no-color --src-prefix=a/ --dst-prefix=b/ --no-ext-diff --no-textconv` applied under those settings.
+- A source-side patch read under `diff.noprefix=true` or `color.ui=always` failed in `git apply`.
+  The same patch read with `--no-color --src-prefix=a/ --dst-prefix=b/ --no-ext-diff --no-textconv` applied under those settings.
 - An intent-to-add entry appeared in `git ls-files --stage` with the empty blob object ID and was absent from `git diff --cached`, so the applied checkout listing differed from the source listing.
 - With only an intent-to-add entry and no other staged change, `git diff --cached` printed nothing.
 
@@ -149,7 +151,12 @@ An independent review before operator review asked for the pinned apply patch, t
 The shipped code in `src/commands/staged-review.ts` is the authority where it differs from the "Isolated staged checkout" section above.
 The final whole-branch review found two defects in the approved construction, and both were fixed:
 
-- **Case-only rename.** `git apply --index` failed on a case-insensitive file system for `git mv Foo.txt foo.txt`, because the old path still existed in the worktree. The checkout now sets HEAD with `git update-ref --no-deref`, reads the HEAD tree into the index with `git read-tree`, applies the patch with `git apply --cached --binary`, and writes the worktree once with `git checkout-index --all`. The test `the staged checkout applies a case-only rename` covers it.
-- **Path names that are not UTF-8.** The apply patch did not pin `core.quotePath`. With `core.quotePath=false`, such a path reached the patch unquoted and was renamed by the UTF-8 decoding of Git output, while the string comparison of the listings still passed. `readApplyPatch` now passes `-c core.quotePath=true` in addition to the pinned flags above. The test `a path name that is not UTF-8 never reaches review renamed` covers it.
+- **Case-only rename.** `git apply --index` failed on a case-insensitive file system for `git mv Foo.txt foo.txt`, because the old path still existed in the worktree.
+  The checkout now sets HEAD with `git update-ref --no-deref`, reads the HEAD tree into the index with `git read-tree`, applies the patch with `git apply --cached --binary`, and writes the worktree once with `git checkout-index --all`.
+  The test `the staged checkout applies a case-only rename` covers it.
+- **Path names that are not UTF-8.** The apply patch did not pin `core.quotePath`.
+  With `core.quotePath=false`, such a path reached the patch unquoted and was renamed by the UTF-8 decoding of Git output, while the string comparison of the listings still passed.
+  `readApplyPatch` now passes `-c core.quotePath=true` in addition to the pinned flags above.
+  The test `a path name that is not UTF-8 never reaches review renamed` covers it.
 
 The index-listing check, the worktree checks, and the mismatch message are unchanged.
