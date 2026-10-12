@@ -1,14 +1,18 @@
 /// <reference types="node" />
 
-import { createHash } from "node:crypto";
-import { lstat, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 
 import { boundedTerminalText } from "../app-server/terminal.js";
 import { runCodexExec } from "../codex/exec.js";
 import { executeGit } from "../git/process.js";
-import { resolveRepositoryRoot } from "../runtime/git.js";
+import {
+  readStagedChanges,
+  StagedInputError,
+  type StagedChanges,
+  type StagedRefusalReason,
+} from "../git/staged.js";
 import {
   initializeRuntimeState,
   resolveRuntimePaths,
@@ -28,6 +32,15 @@ const TERMINAL_SEQUENCE_PATTERN =
   /\u001b\[[0-?]*[ -/]*[@-~]|\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g;
 
 class CommitError extends Error {}
+
+const COMMIT_REFUSALS: Readonly<Record<StagedRefusalReason, string>> = {
+  MERGE_IN_PROGRESS: "Complete or abort the merge before using commit.",
+  UNRESOLVED_CONFLICT: "Resolve merge conflicts before committing.",
+  STAGED_SUBMODULE: "Staged submodules are unsupported.",
+  STAGED_PATHS_UNREADABLE: "Unable to identify staged paths.",
+  CHANGED_WHILE_READ:
+    "HEAD or staged content changed while it was read; retry.",
+};
 
 export interface CommitProposalInput {
   readonly patch: string;
@@ -323,77 +336,18 @@ function formatCommitMessage(
 }
 
 async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
-  const repositoryRoot = await resolveRepositoryRoot(input);
-  await assertNoMergeHead(repositoryRoot);
-  const head = (await executeGit(repositoryRoot, ["rev-parse", "HEAD"])).trim();
-  const headRef = (
-    await executeGit(repositoryRoot, [
-      "rev-parse",
-      "--symbolic-full-name",
-      "HEAD",
-    ])
-  ).trim();
-  const index = await executeGit(repositoryRoot, ["ls-files", "--stage", "-z"]);
-  if (index.split("\0").some((entry) => /^\d+ [0-9a-f]+ [123]\t/.test(entry)))
-    throw new CommitError("Resolve merge conflicts before committing.");
-  const patch = await executeGit(repositoryRoot, [
-    "diff",
-    "--cached",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--binary",
-    "--full-index",
-    "--",
-  ]);
+  let staged: StagedChanges;
+  try {
+    staged = await readStagedChanges(input);
+  } catch (error) {
+    if (error instanceof StagedInputError)
+      throw new CommitError(COMMIT_REFUSALS[error.reason]);
+    throw error;
+  }
+  const { repositoryRoot, head, headRef, indexDigest, patch, paths } = staged;
   if (patch.length === 0) throw new CommitError("No staged changes to commit.");
   if (Buffer.byteLength(patch, "utf8") > MAX_PATCH_BYTES)
     throw new CommitError("Staged diff exceeds the commit proposal limit.");
-  const rawPaths = await executeGit(repositoryRoot, [
-    "diff",
-    "--cached",
-    "--name-only",
-    "-z",
-    "--",
-  ]);
-  const paths = rawPaths.endsWith("\0")
-    ? rawPaths.slice(0, -1).split("\0")
-    : [];
-  if (paths.length === 0)
-    throw new CommitError("Unable to identify staged paths.");
-  const rawModes = await executeGit(repositoryRoot, [
-    "diff",
-    "--cached",
-    "--raw",
-    "-z",
-    "--no-ext-diff",
-    "--no-textconv",
-    "--",
-  ]);
-  if (
-    rawModes
-      .split("\0")
-      .some((entry) => /^:(?:160000 \d{6}|\d{6} 160000) /.test(entry))
-  )
-    throw new CommitError("Staged submodules are unsupported.");
-  const secondHead = (
-    await executeGit(repositoryRoot, ["rev-parse", "HEAD"])
-  ).trim();
-  const secondHeadRef = (
-    await executeGit(repositoryRoot, [
-      "rev-parse",
-      "--symbolic-full-name",
-      "HEAD",
-    ])
-  ).trim();
-  const secondIndex = await executeGit(repositoryRoot, [
-    "ls-files",
-    "--stage",
-    "-z",
-  ]);
-  if (head !== secondHead || headRef !== secondHeadRef || index !== secondIndex)
-    throw new CommitError(
-      "HEAD or staged content changed while it was read; retry.",
-    );
   let rules = "";
   if (
     (
@@ -424,31 +378,12 @@ async function readStagedSnapshot(input: string): Promise<StagedSnapshot> {
     repositoryRoot,
     head,
     headRef,
-    indexDigest: createHash("sha256").update(index).digest("hex"),
+    indexDigest,
     patch,
     paths,
     rules,
     recentSubjects,
   };
-}
-
-async function assertNoMergeHead(repositoryRoot: string): Promise<void> {
-  const mergeHead = (
-    await executeGit(repositoryRoot, ["rev-parse", "--git-path", "MERGE_HEAD"])
-  ).trim();
-  try {
-    await lstat(resolve(repositoryRoot, mergeHead));
-  } catch (error) {
-    if (
-      typeof error === "object" &&
-      error !== null &&
-      "code" in error &&
-      error.code === "ENOENT"
-    )
-      return;
-    throw error;
-  }
-  throw new CommitError("Complete or abort the merge before using commit.");
 }
 
 function assertProposal(value: CommitProposal): void {

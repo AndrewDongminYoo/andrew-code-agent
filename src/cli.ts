@@ -16,6 +16,7 @@ import { runDoctor } from "./commands/doctor.js";
 import { prCommand } from "./commands/pr.js";
 import { reviewCommand } from "./commands/review.js";
 import { resumeCommand } from "./commands/resume.js";
+import { stagedReviewCommand } from "./commands/staged-review.js";
 import {
   runCommand,
   writeLine,
@@ -29,7 +30,7 @@ const usage = {
   commit: "andrew-agent commit [--long | --short]",
   doctor: "andrew-agent doctor",
   pr: "andrew-agent pr [base]",
-  review: "andrew-agent review [base]",
+  review: "andrew-agent review [--staged | base]",
   run: "andrew-agent run <repository> <prompt>",
   resume: "andrew-agent resume <thread-id> [prompt]",
   status: "andrew-agent status [thread-id]",
@@ -64,6 +65,7 @@ interface CommandHandlers {
   readonly review: (
     baseRef: string | undefined,
     io: CommandIO,
+    staged: boolean,
   ) => Promise<ExitCode>;
   readonly run: (
     repository: string,
@@ -95,7 +97,10 @@ const defaultHandlers: CommandHandlers = {
     commitCommand(process.cwd(), io, undefined, messageFormat),
   doctor: doctorCommand,
   pr: (baseRef, io) => prCommand(process.cwd(), baseRef, io),
-  review: (baseRef, io) => reviewCommand(process.cwd(), baseRef, io),
+  review: (baseRef, io, staged) =>
+    staged
+      ? stagedReviewCommand(process.cwd(), io)
+      : reviewCommand(process.cwd(), baseRef, io),
   run: runCommand,
   resume: resumeCommand,
   status: statusCommand,
@@ -142,6 +147,7 @@ export async function main(
           capability: { type: "string", multiple: true },
           long: { type: "boolean" },
           short: { type: "boolean" },
+          staged: { type: "boolean" },
         },
       });
     } catch {
@@ -155,6 +161,12 @@ export async function main(
     }
     const positionals = parsed.positionals;
     if (!validPositionals(command, positionals))
+      return await usageFailure(io, command);
+    // `--staged` replaces the base ref, so the two never combine.
+    if (
+      parsed.values.staged !== undefined &&
+      (command !== "review" || positionals.length !== 0)
+    )
       return await usageFailure(io, command);
     const capabilities = readCapabilities(command, parsed.values.capability);
     if (capabilities === undefined) return await usageFailure(io, command);
@@ -177,7 +189,12 @@ export async function main(
       return await handlers.commit(io, commitMessageFormat);
     if (command === "doctor") return await handlers.doctor(io, env);
     if (command === "pr") return await handlers.pr(positionals[0], io);
-    if (command === "review") return await handlers.review(positionals[0], io);
+    if (command === "review")
+      return await handlers.review(
+        positionals[0],
+        io,
+        parsed.values.staged === true,
+      );
     // ponytail: the requested set reaches the handler and is ignored there
     // until step 2 of docs/plans/2026-08-25-v0.2-oracle-capability.md threads
     // it into prepareCandidate. Parsing it is not yet enabling it.
@@ -293,6 +310,7 @@ function isAllowedOption(argument: string): boolean {
     argument === "--help" ||
     argument === "--long" ||
     argument === "--short" ||
+    argument === "--staged" ||
     argument === CAPABILITY_FLAG ||
     argument.startsWith(CAPABILITY_ASSIGNMENT)
   );

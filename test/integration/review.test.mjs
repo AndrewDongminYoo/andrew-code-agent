@@ -163,6 +163,21 @@ test("review preserves a successful response when checkout cleanup warns", async
   });
 });
 
+test("review reports a cleanup warning when it rejects an empty response", async () => {
+  assert.notEqual(reviewModule, null);
+  await withRepository(async (root) => {
+    const io = output();
+    const code = await reviewModule.reviewCommand(root, undefined, io, {
+      async review() {
+        return { response: "  \n", cleanupWarning: "Temporary review checkout cleanup failed." };
+      },
+    });
+    assert.equal(code, 1);
+    assert.equal(io.read().stdout, "");
+    assert.equal(io.read().stderr, "Temporary review checkout cleanup failed.\nUnable to review changes. Check the managed Codex login and runtime paths.\n");
+  });
+});
+
 test("review settlement preserves the primary failure when cleanup also fails", async () => {
   assert.equal(typeof reviewModule?.settleReviewExecution, "function");
   const primary = new Error("primary review failure");
