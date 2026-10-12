@@ -135,18 +135,13 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
 
 ## Commands
 
-- `andrew-agent commit [--long | --short]` proposes one subject and body for the
-  staged changes in the current repository, then commits automatically when invoked from a terminal.
-- `andrew-agent doctor` reports readiness and exits 0 only when nothing is a
-  blocker.
-- `andrew-agent pr [base]` drafts a Markdown pull-request body from committed
-  current-branch changes against an explicit base or the default `origin/HEAD` base.
+- `andrew-agent commit [--long | --short]` proposes one subject and body for the staged changes in the current repository, then commits automatically when invoked from a terminal.
+- `andrew-agent doctor` reports readiness and exits 0 only when nothing is a blocker.
+- `andrew-agent pr [base]` drafts a Markdown pull-request body from committed current-branch changes against an explicit base or the default `origin/HEAD` base.
 - `andrew-agent review [--staged | base]` reviews committed current-branch changes against an explicit base or the default `origin/HEAD` base, or, with `--staged`, only the staged changes against HEAD.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
-- `andrew-agent resume <thread-id> [prompt]` prints a stored thread, or
-  continues it.
-- `andrew-agent status [thread-id]` prints the stored record, and live status
-  when given an id.
+- `andrew-agent resume <thread-id> [prompt]` prints a stored thread, or continues it.
+- `andrew-agent status [thread-id]` prints the stored record, and live status when given an id.
 
 `status` with no argument resolves the latest thread for the repository you are standing in.
 `resume` with no prompt prints the stored record and starts no turn.
@@ -206,11 +201,9 @@ The command does not write a file, generate a title, contact GitHub, open or upd
 Exit codes:
 
 - `0` succeeded, or the turn completed.
-- `1` the turn, review, or PR draft failed, the thread was not found, or output
-  could not be written.
+- `1` the turn, review, or PR draft failed, the thread was not found, or output could not be written.
 - `2` invalid command usage.
-- `3` repository, comparison, preflight, or runtime preparation failed,
-  including a failed Doctor check.
+- `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check.
 - `4` the App Server failed.
 - `130` the turn was interrupted.
 
