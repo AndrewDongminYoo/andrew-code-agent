@@ -185,7 +185,9 @@ An empty comparison exits successfully without invoking Codex.
 `review --staged` reviews only the staged changes against HEAD, so it can run before `commit`.
 It needs an existing HEAD but not a named branch or a clean worktree, because unstaged and untracked content never reaches the review.
 It fetches the HEAD commit into the same kind of isolated checkout and applies the staged patch there, then requires the checkout's index listing to match the source index byte for byte.
-An intent-to-add entry from `git add -N` breaks that match, so the command stops with exit `3` before Codex runs.
+An intent-to-add entry from `git add -N` next to another staged change breaks that match, so the command stops with exit `3` before Codex runs.
+An intent-to-add entry alone leaves the staged patch empty, so the command exits successfully without invoking Codex.
+Tracked symlinks are written into the checkout as plain files that hold their target, so the review cannot follow one out of the checkout.
 A merge in progress, an unresolved conflict, or a staged submodule is refused, and nothing staged exits successfully without invoking Codex.
 If HEAD or the index changes during the review, the command discards the response; an unstaged edit does not.
 The review rules, cleanup warnings, and interrupt handling are the same as for the branch review.
