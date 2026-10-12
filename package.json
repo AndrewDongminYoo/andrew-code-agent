@@ -22,10 +22,10 @@
     "check": "pnpm typecheck && pnpm test"
   },
   "dependencies": {
-    "smol-toml": "1.8.0"
+    "smol-toml": "1.9.1"
   },
   "devDependencies": {
-    "@types/node": "24.13.3",
+    "@types/node": "26.6.5",
     "typescript": "7.0.2"
   }
 }
