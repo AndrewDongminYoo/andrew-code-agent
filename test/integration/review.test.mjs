@@ -2,12 +2,14 @@ import assert from "node:assert/strict";
 import { execFile as execFileCallback } from "node:child_process";
 import {
   chmod,
+  lstat,
   mkdir,
   mkdtemp,
   readdir,
   readFile,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -417,6 +419,28 @@ test("the isolated review checkout contains committed content but no source work
     } finally {
       if (checkout !== undefined)
         await rm(checkout, { recursive: true, force: true });
+      await rm(stateRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+test("the isolated review checkout never materializes a followable symlink", async () => {
+  assert.equal(typeof reviewModule?.createReviewCheckout, "function");
+  await withRepository(async (root, base) => {
+    const stateRoot = await realpath(await mkdtemp(join(tmpdir(), "andrew-agent-review-state-")));
+    let checkout;
+    try {
+      await writeFile(join(root, "untracked-secret.txt"), "source-only\n");
+      await symlink(join(root, "untracked-secret.txt"), join(root, "committed-link"));
+      await git(root, "add", "committed-link");
+      await git(root, "commit", "--quiet", "-m", "chore: add absolute symlink");
+      const head = await git(root, "rev-parse", "HEAD");
+      checkout = await reviewModule.createReviewCheckout(root, stateRoot, base, head);
+      const entry = await lstat(join(checkout, "committed-link"));
+      assert.equal(entry.isSymbolicLink(), false, "committed-link must not be a symlink");
+      assert.equal(await readFile(join(checkout, "committed-link"), "utf8"), join(root, "untracked-secret.txt"));
+    } finally {
+      if (checkout !== undefined) await rm(checkout, { recursive: true, force: true });
       await rm(stateRoot, { recursive: true, force: true });
     }
   });
