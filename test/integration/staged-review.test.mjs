@@ -316,6 +316,26 @@ test("the staged checkout builds from a shallow source", async () => {
   });
 });
 
+test("a patch file that cannot be removed never replaces the staged checkout mismatch", async () => {
+  assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "after\n");
+    await git(root, "add", "tracked.txt");
+    await withStateRoot(async (stateRoot) => {
+      const identity = { ...(await sourceIdentity(root)), applyPatch: Buffer.from("not a patch\n") };
+      const removed = [];
+      const removePatch = async (path) => {
+        removed.push(path);
+        throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+      };
+      await assert.rejects(stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity, undefined, removePatch), (error) => error instanceof stagedReviewModule.StagedCheckoutMismatchError && error.message === stagedReviewModule.STAGED_MISMATCH_MESSAGE && error.cause?.code !== "EACCES");
+      assert.equal(removed.length, 1);
+      assert.match(removed[0], /andrew-agent-staged\.patch$/);
+      assert.deepEqual((await readdir(stateRoot)).filter((entry) => entry.startsWith("review-")), []);
+    });
+  });
+});
+
 function output() {
   let stdout = "";
   let stderr = "";
