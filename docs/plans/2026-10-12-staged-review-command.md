@@ -627,3 +627,6 @@ The shipped `createStagedReviewCheckout` and `readApplyPatch` in `src/commands/s
 The checkout no longer runs `git switch --detach` and `git apply --index`: it sets HEAD with `git update-ref --no-deref`, runs `git read-tree review-head`, applies with `git apply --cached --binary`, and writes the worktree with `git checkout-index --all`, because a case-only rename failed on a case-insensitive file system.
 `readApplyPatch` also passes `-c core.quotePath=true`, because an unquoted path that is not UTF-8 was renamed by output decoding without failing the listing check.
 `docs/specs/2026-10-12-staged-review-command.md` (Reconciliation) records the defects and names the covering tests.
+
+The PR #86 hosted review changed Review Focus 1: a staged text file that is not UTF-8 is now reviewed with its exact bytes instead of being allowed to stop with the mismatch error, because the apply patch is read as raw bytes.
+The spec's second reconciliation section lists that change and the symlink, context-line, and gitlink fixes.

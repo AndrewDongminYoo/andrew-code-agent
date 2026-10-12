@@ -160,3 +160,18 @@ The final whole-branch review found two defects in the approved construction, an
   The test `a path name that is not UTF-8 never reaches review renamed` covers it.
 
 The index-listing check, the worktree checks, and the mismatch message are unchanged.
+
+## Reconciliation (2026-10-12, hosted review of PR #86)
+
+Hosted review rounds and the local drain before each push found four more gaps, all fixed with a test that failed first:
+
+- **Symlinks.** `checkout-index` materialized a tracked absolute symlink, and the review could follow it into source-worktree content.
+  The checkout now sets `core.symlinks=false`, so a link is written as a plain file holding its target (`973686d`).
+- **Context lines.** A source repository with `diff.context=0` produced zero-context hunks that `git apply` rejects.
+  The apply patch now also passes `--unified=3` (`4add5cc`).
+  Plumbing `git diff-index` was rejected, because it emits intent-to-add entries as empty new files and would replace the intent-to-add refusal with a review.
+- **Hidden gitlinks.** `diff.ignoreSubmodules=all` hid a staged gitlink from the submodule scan in `src/git/staged.ts`, so the scan now passes `--ignore-submodules=none` (`5b18335`).
+  This also applies to `commit`, which shares the reader.
+- **Content that is not UTF-8.** The apply patch was decoded as UTF-8, so a legacy-encoded text file, a binary file without a NUL byte, or a binary file that a diff driver forces to a text diff stopped with the mismatch error.
+  `readApplyPatch` now reads the patch as raw bytes through `executeGitBytes` in `src/git/process.ts`, and such a file is reviewed with its exact bytes.
+  A path name that is not UTF-8 still stops with exit `3`, because APFS refuses to create it.
