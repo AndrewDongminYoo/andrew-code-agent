@@ -172,6 +172,7 @@ With no argument, it resolves the symbolic `origin/HEAD` remote-tracking ref; on
 The command resolves and displays the exact HEAD, base commit, and merge base for a three-dot comparison.
 It copies the exact committed comparison into a temporary standalone repository under managed runtime state, without retaining a remote to the source worktree.
 Checkout construction ignores system and global Git configuration and preserves shallow source boundaries.
+Tracked symlinks are written into the checkout as plain files that hold their target, so the review cannot follow one out of the checkout.
 It invokes the managed Codex login through `codex exec` in that isolated checkout with an ephemeral read-only sandbox and user configuration disabled.
 The sandbox restricts writes but is not a universal filesystem read boundary; the isolated checkout keeps normal repository inspection away from transient source-worktree content.
 The review must tie defects to changed paths and lines, explain their failure mechanism, and list missing verification separately from correctness findings.
