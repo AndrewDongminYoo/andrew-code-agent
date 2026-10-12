@@ -655,8 +655,23 @@ setInterval(() => {}, 1000);
           await new Promise((resolve) => setTimeout(resolve, 20));
       }
       if (pid === 0 && !settled) {
-        process.emit("SIGINT");
-        await running.catch(() => {});
+        // Before the review installs its SIGINT listener an emitted signal is
+        // lost, so keep interrupting until it settles, within a bound.
+        const stopDeadline = Date.now() + 30_000;
+        while (!settled && Date.now() < stopDeadline) {
+          process.emit("SIGINT");
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const latePid = Number(
+          await readFile(pidFile, "utf8").catch(() => "0"),
+        );
+        if (latePid > 0) {
+          try {
+            process.kill(latePid, "SIGKILL");
+          } catch (error) {
+            if (error.code !== "ESRCH") throw error;
+          }
+        }
       }
       assert.ok(pid > 0, "the fake Codex process must start before interrupt");
       process.emit("SIGINT");
