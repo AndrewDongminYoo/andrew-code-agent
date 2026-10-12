@@ -507,6 +507,9 @@ export async function createReviewCheckout(
       `${head}:refs/heads/review-head`,
       `${base}:refs/heads/review-base`,
     ]);
+    // A tracked symlink is written as a plain file holding its target, so the
+    // review cannot follow it out of the checkout into source-worktree dirt.
+    await executeGit(checkout, ["config", "core.symlinks", "false"], isolated);
     await executeGit(
       checkout,
       ["switch", "--quiet", "--detach", "review-head"],
