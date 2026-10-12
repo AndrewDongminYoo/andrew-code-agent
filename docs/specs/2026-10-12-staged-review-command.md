@@ -1,6 +1,6 @@
 # Specification: Staged review command
 
-Date: 2026-10-12 Status: draft for operator review (issue #74)
+Date: 2026-10-12 Status: approved by the operator on 2026-10-12 (issue #74); see the reconciliation section
 
 ## Goal
 
@@ -143,3 +143,13 @@ A second probe on 2026-10-12, with Git 2.54.0, exercised conditions that the fir
 - With only an intent-to-add entry and no other staged change, `git diff --cached` printed nothing.
 
 An independent review before operator review asked for the pinned apply patch, the reachable mismatch fixture, the explicit worktree checks, and typed refusal reasons in the shared reader.
+
+## Reconciliation (2026-10-12, final branch review)
+
+The shipped code in `src/commands/staged-review.ts` is the authority where it differs from the "Isolated staged checkout" section above.
+The final whole-branch review found two defects in the approved construction, and both were fixed:
+
+- **Case-only rename.** `git apply --index` failed on a case-insensitive file system for `git mv Foo.txt foo.txt`, because the old path still existed in the worktree. The checkout now sets HEAD with `git update-ref --no-deref`, reads the HEAD tree into the index with `git read-tree`, applies the patch with `git apply --cached --binary`, and writes the worktree once with `git checkout-index --all`. The test `the staged checkout applies a case-only rename` covers it.
+- **Path names that are not UTF-8.** The apply patch did not pin `core.quotePath`. With `core.quotePath=false`, such a path reached the patch unquoted and was renamed by the UTF-8 decoding of Git output, while the string comparison of the listings still passed. `readApplyPatch` now passes `-c core.quotePath=true` in addition to the pinned flags above. The test `a path name that is not UTF-8 never reaches review renamed` covers it.
+
+The index-listing check, the worktree checks, and the mismatch message are unchanged.

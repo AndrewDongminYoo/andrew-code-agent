@@ -1,6 +1,6 @@
 # Staged Review Command Implementation Plan
 
-Date: 2026-10-12 Status: draft for operator review (issue #74)
+Date: 2026-10-12 Status: approved by the operator on 2026-10-12 (issue #74); see the reconciliation section
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -577,3 +577,10 @@ git commit -m "feat(cli): accept review --staged"
       Expected: an identity line and a review response, or a reported environment failure with its message.
 - [ ] **Step 3: Run the local review drain.** Run the `codex-review` skill on the branch diff, fix the confirmed findings, and rerun Step 1.
 - [ ] **Step 4: Open the PR.** Load the `responding-to-ai-pr-review` skill before `gh pr create`. Write the body one sentence per line, with `Closes #74`. Arm the watch.
+
+## Reconciliation (2026-10-12, final branch review)
+
+The shipped `createStagedReviewCheckout` and `readApplyPatch` in `src/commands/staged-review.ts` are the authority over the Task 2 Step 4 code above.
+The checkout no longer runs `git switch --detach` and `git apply --index`: it sets HEAD with `git update-ref --no-deref`, runs `git read-tree review-head`, applies with `git apply --cached --binary`, and writes the worktree with `git checkout-index --all`, because a case-only rename failed on a case-insensitive file system.
+`readApplyPatch` also passes `-c core.quotePath=true`, because an unquoted path that is not UTF-8 was renamed by output decoding without failing the listing check.
+`docs/specs/2026-10-12-staged-review-command.md` (Reconciliation) records the defects and names the covering tests.
