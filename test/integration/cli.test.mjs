@@ -1220,7 +1220,8 @@ test("active fake-server exit persists failure before cleanup for run and resume
         (value) => ({ kind: "resolved", value }),
         (error) => ({ kind: "rejected", error }),
       );
-      let result = await settleWithin(settlement, 1_000);
+      // The signals below interrupt a live turn and settle at 130, so they must fire only on a real hang, never on a slow run.
+      let result = await settleWithin(settlement, 30_000);
       if (result.kind === "timeout") {
         process.emit("SIGINT");
         process.emit("SIGINT");
