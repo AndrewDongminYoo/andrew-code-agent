@@ -135,13 +135,19 @@ export async function stagedReviewCommand(
     return 3;
   }
 
-  await writeLine(
-    io.stdout,
-    `Reviewing staged changes on ${snapshot.headRef} (${snapshot.head}).`,
-  );
-  for (const line of response.trimEnd().split("\n"))
-    await writeLine(io.stdout, line);
-  if (cleanupWarning !== undefined) await writeLine(io.stderr, cleanupWarning);
+  // The warning goes out even when a stdout write fails, so a leftover
+  // checkout holding staged content is never left behind silently.
+  try {
+    await writeLine(
+      io.stdout,
+      `Reviewing staged changes on ${snapshot.headRef} (${snapshot.head}).`,
+    );
+    for (const line of response.trimEnd().split("\n"))
+      await writeLine(io.stdout, line);
+  } finally {
+    if (cleanupWarning !== undefined)
+      await writeLine(io.stderr, cleanupWarning);
+  }
   return 0;
 }
 

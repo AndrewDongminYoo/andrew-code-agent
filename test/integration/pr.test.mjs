@@ -413,6 +413,24 @@ test("pr preserves a valid body when temporary checkout cleanup warns", async ()
   });
 });
 
+test("pr reports a cleanup warning when a stdout write fails", async () => {
+  assert.notEqual(prModule, null);
+  await withRepository(async ({ root }) => {
+    const capture = output();
+    capture.io.stdout.write = () => {
+      throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    };
+    await assert.rejects(
+      prModule.prCommand(root, undefined, capture.io, {
+        async draft() {
+          return { response: validBody, cleanupWarning: "sensitive cleanup detail" };
+        },
+      }),
+    );
+    assert.equal(capture.read().stderr, "Temporary PR checkout cleanup failed.\n");
+  });
+});
+
 test("pr preserves a cleanup warning when returned body validation fails", async () => {
   assert.notEqual(prModule, null);
   await withRepository(async ({ root }) => {
