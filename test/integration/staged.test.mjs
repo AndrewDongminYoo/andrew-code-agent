@@ -88,6 +88,16 @@ test("the staged reader refuses an unresolved conflict entry with a typed reason
   });
 });
 
+test("the staged reader refuses a staged gitlink that diff.ignoreSubmodules would hide", async () => {
+  assert.notEqual(stagedModule, null);
+  await withRepository(async (root) => {
+    await git(root, "config", "diff.ignoreSubmodules", "all");
+    const head = await git(root, "rev-parse", "HEAD");
+    await git(root, "update-index", "--add", "--cacheinfo", `160000,${head},module`);
+    await assert.rejects(stagedModule.readStagedChanges(root), (error) => error instanceof stagedModule.StagedInputError && error.reason === "STAGED_SUBMODULE");
+  });
+});
+
 test("the staged reader refuses a staged gitlink with a typed reason", async () => {
   assert.notEqual(stagedModule, null);
   await withRepository(async (root) => {

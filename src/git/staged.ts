@@ -72,11 +72,13 @@ export async function readStagedChanges(input: string): Promise<StagedChanges> {
     : [];
   if (patch.length > 0 && paths.length === 0)
     throw new StagedInputError("STAGED_PATHS_UNREADABLE");
+  // `diff.ignoreSubmodules=all` would hide a staged gitlink from this scan.
   const rawModes = await executeGit(repositoryRoot, [
     "diff",
     "--cached",
     "--raw",
     "-z",
+    "--ignore-submodules=none",
     "--no-ext-diff",
     "--no-textconv",
     "--",
