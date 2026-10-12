@@ -628,6 +628,19 @@ async function listFiles(directory, prefix = "") {
   return files.sort();
 }
 
+// Porcelain status carries no worktree hash, so an overwritten modified or
+// untracked file keeps the same entry; record each worktree file's mode and bytes.
+async function worktreeContents(root) {
+  const contents = {};
+  for (const file of await listFiles(root)) {
+    if (file === ".git" || file.startsWith(".git/")) continue;
+    const path = join(root, file);
+    const stats = await lstat(path);
+    contents[file] = { mode: stats.mode, bytes: stats.isFile() ? (await readFile(path)).toString("base64") : null };
+  }
+  return contents;
+}
+
 async function sourceRepositoryState(root) {
   const gitDirectory = join(root, ".git");
   return {
@@ -638,6 +651,7 @@ async function sourceRepositoryState(root) {
     objects: await readOnlyGit(root, "cat-file", "--batch-check", "--batch-all-objects"),
     index: (await readFile(join(gitDirectory, "index"))).toString("base64"),
     status: await readOnlyGit(root, "status", "--porcelain=v2", "-z", "--untracked-files=all"),
+    worktree: await worktreeContents(root),
   };
 }
 
@@ -658,6 +672,7 @@ test("the default staged review path leaves the source refs, objects, index, and
     assert.ok(before.objectFiles.some((file) => /^[0-9a-f]{2}\/[0-9a-f]+$/.test(file)), "the fixture must hold a loose object");
     assert.match(before.packedRefs, /refs\/heads\/side/);
     assert.match(before.status, /untracked\.txt/);
+    assert.deepEqual(Object.keys(before.worktree), ["other.txt", "tracked.txt", "untracked.txt"]);
     await withFakeCodex(root, async ({ record }) => {
       const io = output();
       assert.equal(await stagedReviewModule.stagedReviewCommand(root, io), 0, io.read().stderr);
