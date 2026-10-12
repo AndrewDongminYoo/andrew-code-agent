@@ -661,13 +661,17 @@ setInterval(() => {}, 1000);
       assert.ok(pid > 0, "the fake Codex process must start before interrupt");
       process.emit("SIGINT");
       let hungTimer;
-      const result = await Promise.race([
-        running,
-        new Promise((resolve) => {
-          hungTimer = setTimeout(() => resolve("hung"), 30_000);
-        }),
-      ]);
-      clearTimeout(hungTimer);
+      let result;
+      try {
+        result = await Promise.race([
+          running,
+          new Promise((resolve) => {
+            hungTimer = setTimeout(() => resolve("hung"), 30_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(hungTimer);
+      }
       if (result === "hung") {
         try {
           process.kill(pid, "SIGKILL");
