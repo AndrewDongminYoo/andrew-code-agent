@@ -23,8 +23,9 @@ The command reads these values from the source repository:
 
 - the HEAD commit and the symbolic name of HEAD
 - the full index listing from `git ls-files --stage -z`
-- the staged patch from `git diff --cached --binary --full-index`
+- the staged patch from `git diff --cached --no-ext-diff --no-textconv --binary --full-index`, the same patch that `andrew-agent commit` reads today
 - the staged paths and the staged line statistics
+- a separate apply patch for the isolated checkout, described in the next section
 
 The command refuses the review with exit `3` when any of these conditions is true:
 
@@ -37,6 +38,8 @@ If the staged patch is empty, the command prints `No staged changes to review.`,
 
 `src/git/staged.ts` owns the shared staged-input reader.
 `andrew-agent commit` uses the same reader, so both commands apply the same refusal rules.
+The reader returns typed refusal reasons, and each command maps a reason to its own message.
+The reader's staged patch stays byte-identical to the patch that `commit` reads today, because `commit` compares it with an unflagged `git diff` of the created commit.
 The commit-specific limits stay in `src/commands/commit.ts`: the 256 KiB patch limit, the repository rules, the recent subjects, and the commit error messages.
 The staged review adds no patch limit beyond the 16 MiB bound on captured Git output.
 
@@ -47,18 +50,32 @@ Every Git command in that repository ignores the system and global Git configura
 The command fetches only the exact HEAD commit into that repository, with the same shallow-boundary handling as the branch review checkout.
 It detaches the temporary worktree at that commit.
 
-The command writes the staged patch to a file inside the temporary repository's `.git` directory.
+The source repository's Git configuration can change the text of a porcelain diff.
+For example, `diff.noprefix=true` removes the `a/` and `b/` path prefixes, and `color.ui=always` adds color sequences, and `git apply` rejects both outputs.
+So the command reads a separate apply patch with pinned output flags:
+
+```plaintext
+git diff --cached --no-color --src-prefix=a/ --dst-prefix=b/ --no-ext-diff --no-textconv --binary --full-index --
+```
+
+The command writes the apply patch to a file inside the temporary repository's `.git` directory.
 It applies the patch to the temporary index and worktree with `git apply --index --binary`, and then deletes the patch file.
 
 After the patch is applied, the checkout is valid only when all of these conditions are true:
 
 - The temporary HEAD is the source HEAD commit.
 - The temporary `git ls-files --stage -z` output is byte-for-byte equal to the source index listing.
-- The temporary worktree has no unstaged change and no untracked file.
+- `git diff --quiet` in the temporary repository exits `0`, so the worktree has no change compared with the index.
+- `git ls-files --others` in the temporary repository prints nothing, so the worktree has no untracked file.
 
+The branch review's empty `git status --porcelain` check is not used here, because status lists the applied staged entries.
 The index listing is the identity check because it records the mode, blob object ID, and path of every entry.
 A patch text comparison is not used, because rename detection and other user Git configuration can change the patch text for identical content.
-If a check fails, for example because an attribute filter changes the applied content, the command removes the checkout and reports a runtime preparation failure with exit `3`.
+
+An intent-to-add entry from `git add -N` makes the listings differ.
+The source listing shows the entry with the empty blob object ID, but `git diff --cached` omits it, so the applied checkout does not contain it.
+If `git apply` fails or any check fails, the command removes the checkout, prints `Staged checkout does not match the index. Intent-to-add entries from git add -N are one known cause.`, and exits `3` before Codex runs.
+The command does not detect intent-to-add entries separately, because the listing comparison already stops the review for them.
 
 ## Review behavior
 
@@ -103,17 +120,26 @@ It does not guarantee that Codex ran every relevant test.
 ## Acceptance criteria
 
 1. Only staged content reaches the isolated checkout: a staged modification, deletion, rename, mode change, and binary file are present, and an unstaged modification and an untracked file are absent.
-2. The checkout index listing equals the source index listing, and a mismatch stops the review with exit `3` before Codex runs.
-3. An empty staged patch exits `0` without invoking Codex.
-4. `--staged` with a base ref exits `2` with the review usage line, and `--staged` with any command other than `review` exits `2` with that command's usage line.
-5. A merge in progress, a conflict entry, and a staged submodule exit `3` before Codex runs.
-6. A change to HEAD or the index during the review discards the response with exit `3`, and an unstaged edit during the review does not.
-7. A detached HEAD with staged changes is reviewed.
-8. The existing `commit` tests pass unchanged after the shared reader moves to `src/git/staged.ts`.
-9. README, the CLI usage line, scoped tests, `pnpm check`, and `trunk check --all --no-fix` cover the command.
+2. The checkout index listing equals the source index listing. An intent-to-add entry next to a staged change makes the listings differ, and the review stops with exit `3` and the mismatch message before Codex runs.
+3. The isolated checkout is built correctly when the source repository sets `diff.noprefix=true` and `color.ui=always`.
+4. An empty staged patch exits `0` without invoking Codex.
+5. `--staged` with a base ref exits `2` with the review usage line, and `--staged` with any command other than `review` exits `2` with that command's usage line.
+6. A merge in progress, a conflict entry, and a staged submodule exit `3` before Codex runs.
+7. A change to HEAD or the index during the review discards the response with exit `3`, and an unstaged edit during the review does not.
+8. A detached HEAD with staged changes is reviewed.
+9. The existing `commit` tests pass unchanged after the shared reader moves to `src/git/staged.ts`.
+10. README, the CLI usage line, scoped tests, `pnpm check`, and `trunk check --all --no-fix` cover the command.
 
 ## Consultation record
 
 The issue #74 brief and the operator's design approval on 2026-10-12 fixed the isolated-checkout approach, the dirty-worktree allowance, and the shared reader.
 A probe on 2026-10-12 applied a staged patch with a modification, a deletion, a rename, a mode change, and a binary file to a fresh repository with `git apply --index --binary`.
 The resulting index listing was byte-for-byte equal to the source listing, and the unstaged edit and the untracked file did not appear.
+
+A second probe on 2026-10-12, with Git 2.54.0, exercised conditions that the first probe did not:
+
+- A source-side patch read under `diff.noprefix=true` or `color.ui=always` failed in `git apply`. The same patch read with `--no-color --src-prefix=a/ --dst-prefix=b/ --no-ext-diff --no-textconv` applied under those settings.
+- An intent-to-add entry appeared in `git ls-files --stage` with the empty blob object ID and was absent from `git diff --cached`, so the applied checkout listing differed from the source listing.
+- With only an intent-to-add entry and no other staged change, `git diff --cached` printed nothing.
+
+An independent review before operator review asked for the pinned apply patch, the reachable mismatch fixture, the explicit worktree checks, and typed refusal reasons in the shared reader.
