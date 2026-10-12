@@ -326,6 +326,8 @@ export async function createStagedReviewCheckout(
   input: StagedCheckoutInput,
   removeCheckout: (path: string) => Promise<void> = async (path) =>
     await rm(path, { recursive: true, force: true }),
+  removePatch: (path: string) => Promise<void> = async (path) =>
+    await rm(path, { force: true }),
 ): Promise<string> {
   const checkout = await mkdtemp(join(stateRoot, "review-"));
   const isolated = { isolateConfig: true } as const;
@@ -347,6 +349,7 @@ export async function createStagedReviewCheckout(
     await executeGit(checkout, ["read-tree", "review-head"], isolated);
     const patchPath = join(checkout, ".git", "andrew-agent-staged.patch");
     await writeFile(patchPath, input.applyPatch, { flag: "wx", mode: 0o600 });
+    let mismatch: StagedCheckoutMismatchError | undefined;
     try {
       await executeGit(
         checkout,
@@ -355,10 +358,16 @@ export async function createStagedReviewCheckout(
       );
       await executeGit(checkout, ["checkout-index", "--all"], isolated);
     } catch (error) {
-      throw new StagedCheckoutMismatchError(error);
-    } finally {
-      await rm(patchPath, { force: true });
+      mismatch = new StagedCheckoutMismatchError(error);
     }
+    // A removal failure must not replace the mismatch. The patch sits inside
+    // the checkout, so the checkout cleanup below still removes it.
+    try {
+      await removePatch(patchPath);
+    } catch (error) {
+      if (mismatch === undefined) throw error;
+    }
+    if (mismatch !== undefined) throw mismatch;
     const checkoutHead = (
       await executeGit(
         checkout,
