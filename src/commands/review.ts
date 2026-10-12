@@ -21,7 +21,7 @@ const MODEL_TIMEOUT_MS = 300_000;
 const DEFAULT_BASE_SYMBOLIC_REF = "refs/remotes/origin/HEAD";
 const MAX_PROMPT_PATHS = 512;
 const MAX_PROMPT_COMMITS = 50;
-const CLEANUP_WARNING = "Temporary review checkout cleanup failed.";
+export const CLEANUP_WARNING = "Temporary review checkout cleanup failed.";
 
 class ReviewError extends Error {}
 export class ReviewPreparationError extends Error {
@@ -488,40 +488,10 @@ export async function createReviewCheckout(
   const checkout = await mkdtemp(join(stateRoot, "review-"));
   const isolated = { isolateConfig: true } as const;
   try {
-    const objectFormat = (
-      await executeGit(sourceRepository, ["rev-parse", "--show-object-format"])
-    ).trim();
-    if (objectFormat !== "sha1" && objectFormat !== "sha256")
-      throw new ReviewError("Unsupported Git object format.");
-    await executeGit(
-      checkout,
-      [
-        "init",
-        "--quiet",
-        `--object-format=${objectFormat}`,
-        "--initial-branch=scratch",
-      ],
-      isolated,
-    );
-    await executeGit(
-      checkout,
-      ["config", "core.logAllRefUpdates", "false"],
-      isolated,
-    );
-    await executeGit(
-      checkout,
-      [
-        "fetch",
-        "--quiet",
-        "--no-tags",
-        "--no-write-fetch-head",
-        "--update-shallow",
-        sourceRepository,
-        `${head}:refs/heads/review-head`,
-        `${base}:refs/heads/review-base`,
-      ],
-      isolated,
-    );
+    await fetchReviewCommits(sourceRepository, checkout, [
+      `${head}:refs/heads/review-head`,
+      `${base}:refs/heads/review-base`,
+    ]);
     await executeGit(
       checkout,
       ["switch", "--quiet", "--detach", "review-head"],
@@ -557,6 +527,50 @@ export async function createReviewCheckout(
     }
     throw error;
   }
+}
+
+// Initializes `checkout` as a standalone repository that ignores system and
+// global Git configuration, then fetches only the exact source commits named
+// by `refspecs`, preserving a shallow source boundary.
+export async function fetchReviewCommits(
+  sourceRepository: string,
+  checkout: string,
+  refspecs: readonly string[],
+): Promise<void> {
+  const isolated = { isolateConfig: true } as const;
+  const objectFormat = (
+    await executeGit(sourceRepository, ["rev-parse", "--show-object-format"])
+  ).trim();
+  if (objectFormat !== "sha1" && objectFormat !== "sha256")
+    throw new ReviewError("Unsupported Git object format.");
+  await executeGit(
+    checkout,
+    [
+      "init",
+      "--quiet",
+      `--object-format=${objectFormat}`,
+      "--initial-branch=scratch",
+    ],
+    isolated,
+  );
+  await executeGit(
+    checkout,
+    ["config", "core.logAllRefUpdates", "false"],
+    isolated,
+  );
+  await executeGit(
+    checkout,
+    [
+      "fetch",
+      "--quiet",
+      "--no-tags",
+      "--no-write-fetch-head",
+      "--update-shallow",
+      sourceRepository,
+      ...refspecs,
+    ],
+    isolated,
+  );
 }
 
 export async function runCodexReview(
