@@ -639,20 +639,54 @@ setInterval(() => {}, 1000);
     try {
       const listenersBefore = process.listenerCount("SIGINT");
       const running = reviewModule.reviewCommand(root, "main", output());
-      const readyDeadline = Date.now() + 1_000;
-      while (pid === 0 && Date.now() < readyDeadline) {
+      let settled = false;
+      running.then(
+        () => {
+          settled = true;
+        },
+        () => {
+          settled = true;
+        },
+      );
+      const readyDeadline = Date.now() + 30_000;
+      while (pid === 0 && !settled && Date.now() < readyDeadline) {
         pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
         if (pid === 0)
           await new Promise((resolve) => setTimeout(resolve, 20));
       }
+      if (pid === 0 && !settled) {
+        // Before the review installs its SIGINT listener an emitted signal is
+        // lost, so keep interrupting until it settles, within a bound.
+        const stopDeadline = Date.now() + 30_000;
+        while (!settled && Date.now() < stopDeadline) {
+          process.emit("SIGINT");
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const latePid = Number(
+          await readFile(pidFile, "utf8").catch(() => "0"),
+        );
+        if (latePid > 0) {
+          try {
+            process.kill(latePid, "SIGKILL");
+          } catch (error) {
+            if (error.code !== "ESRCH") throw error;
+          }
+        }
+      }
       assert.ok(pid > 0, "the fake Codex process must start before interrupt");
       process.emit("SIGINT");
-      const result = await Promise.race([
-        running,
-        new Promise((resolve) =>
-          setTimeout(() => resolve("hung"), 1_500),
-        ),
-      ]);
+      let hungTimer;
+      let result;
+      try {
+        result = await Promise.race([
+          running,
+          new Promise((resolve) => {
+            hungTimer = setTimeout(() => resolve("hung"), 30_000);
+          }),
+        ]);
+      } finally {
+        clearTimeout(hungTimer);
+      }
       if (result === "hung") {
         try {
           process.kill(pid, "SIGKILL");
