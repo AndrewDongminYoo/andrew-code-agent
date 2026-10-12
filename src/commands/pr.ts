@@ -99,8 +99,14 @@ export async function prCommand(
     return 3;
   }
 
-  for (const line of body.split("\n")) await writeLine(io.stdout, line);
-  if (cleanupWarning !== undefined) await writeLine(io.stderr, CLEANUP_WARNING);
+  // The warning goes out even when a stdout write fails, so a leftover
+  // checkout holding source content is never left behind silently.
+  try {
+    for (const line of body.split("\n")) await writeLine(io.stdout, line);
+  } finally {
+    if (cleanupWarning !== undefined)
+      await writeLine(io.stderr, CLEANUP_WARNING);
+  }
   return 0;
 }
 

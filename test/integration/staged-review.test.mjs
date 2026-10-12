@@ -401,6 +401,25 @@ test("staged review reports the staged identity and the review response", async 
   });
 });
 
+test("staged review reports a cleanup warning when a stdout write fails", async () => {
+  assert.equal(typeof stagedReviewModule?.stagedReviewCommand, "function");
+  await withRepository(async (root) => {
+    await stageTrackedChange(root);
+    const io = output();
+    io.stdout.write = () => {
+      throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    };
+    await assert.rejects(
+      stagedReviewModule.stagedReviewCommand(root, io, {
+        async review() {
+          return { response: "No findings.", cleanupWarning: "Temporary review checkout cleanup failed." };
+        },
+      }),
+    );
+    assert.equal(io.read().stderr, "Temporary review checkout cleanup failed.\n");
+  });
+});
+
 test("staged review reports a cleanup warning when it rejects an empty response", async () => {
   assert.equal(typeof stagedReviewModule?.stagedReviewCommand, "function");
   await withRepository(async (root) => {

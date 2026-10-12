@@ -137,14 +137,20 @@ export async function reviewCommand(
     return 3;
   }
 
-  await writeLine(
-    io.stdout,
-    `Reviewing ${snapshot.headRef} (${snapshot.head}) against ${snapshot.baseRef} (${snapshot.base}).`,
-  );
-  await writeLine(io.stdout, `Merge base: ${snapshot.mergeBase}.`);
-  for (const line of response.trimEnd().split("\n"))
-    await writeLine(io.stdout, line);
-  if (cleanupWarning !== undefined) await writeLine(io.stderr, cleanupWarning);
+  // The warning goes out even when a stdout write fails, so a leftover
+  // checkout holding reviewed content is never left behind silently.
+  try {
+    await writeLine(
+      io.stdout,
+      `Reviewing ${snapshot.headRef} (${snapshot.head}) against ${snapshot.baseRef} (${snapshot.base}).`,
+    );
+    await writeLine(io.stdout, `Merge base: ${snapshot.mergeBase}.`);
+    for (const line of response.trimEnd().split("\n"))
+      await writeLine(io.stdout, line);
+  } finally {
+    if (cleanupWarning !== undefined)
+      await writeLine(io.stderr, cleanupWarning);
+  }
   return 0;
 }
 

@@ -165,6 +165,24 @@ test("review preserves a successful response when checkout cleanup warns", async
   });
 });
 
+test("review reports a cleanup warning when a stdout write fails", async () => {
+  assert.notEqual(reviewModule, null);
+  await withRepository(async (root) => {
+    const io = output();
+    io.stdout.write = () => {
+      throw Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+    };
+    await assert.rejects(
+      reviewModule.reviewCommand(root, undefined, io, {
+        async review() {
+          return { response: "No findings.", cleanupWarning: "Temporary review checkout cleanup failed." };
+        },
+      }),
+    );
+    assert.equal(io.read().stderr, "Temporary review checkout cleanup failed.\n");
+  });
+});
+
 test("review reports a cleanup warning when it rejects an empty response", async () => {
   assert.notEqual(reviewModule, null);
   await withRepository(async (root) => {
