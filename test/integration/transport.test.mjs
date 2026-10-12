@@ -262,9 +262,10 @@ test("measures the 16 MiB protocol line limit in UTF-8 wire bytes", async () => 
   await withProtocolChild(
     `process.stdout.write("é".repeat(8 * 1024 * 1024 + 1)); setInterval(() => {}, 1000);`,
     async (child) => {
+      // This test exercises the line limit, not the request timeout, so the timeout must outlast a slow child start-up and write.
       const transport = new (requireTransport().StdioJsonRpcTransport)(
         child,
-        300,
+        30_000,
       );
       await assert.rejects(
         transport.request("initialize", {}),
