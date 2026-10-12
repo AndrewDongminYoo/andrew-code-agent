@@ -401,6 +401,22 @@ test("staged review reports the staged identity and the review response", async 
   });
 });
 
+test("staged review reports a cleanup warning when it rejects an empty response", async () => {
+  assert.equal(typeof stagedReviewModule?.stagedReviewCommand, "function");
+  await withRepository(async (root) => {
+    await stageTrackedChange(root);
+    const io = output();
+    const code = await stagedReviewModule.stagedReviewCommand(root, io, {
+      async review() {
+        return { response: "  \n", cleanupWarning: "Temporary review checkout cleanup failed." };
+      },
+    });
+    assert.equal(code, 1);
+    assert.equal(io.read().stdout, "");
+    assert.equal(io.read().stderr, "Temporary review checkout cleanup failed.\nUnable to review changes. Check the managed Codex login and runtime paths.\n");
+  });
+});
+
 test("staged review runs with unstaged and untracked content present", async () => {
   assert.equal(typeof stagedReviewModule?.stagedReviewCommand, "function");
   await withRepository(async (root) => {

@@ -101,6 +101,8 @@ export async function stagedReviewCommand(
       error instanceof ReviewExecutionError ? error.primaryError : error;
     if (error instanceof ReviewExecutionError)
       await writeLine(io.stderr, error.cleanupWarning);
+    else if (cleanupWarning !== undefined)
+      await writeLine(io.stderr, cleanupWarning);
     if (primaryError instanceof StagedCheckoutMismatchError) {
       await writeLine(io.stderr, STAGED_MISMATCH_MESSAGE);
       return 3;

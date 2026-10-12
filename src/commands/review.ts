@@ -107,6 +107,8 @@ export async function reviewCommand(
       error instanceof ReviewExecutionError ? error.primaryError : error;
     if (error instanceof ReviewExecutionError)
       await writeLine(io.stderr, error.cleanupWarning);
+    else if (cleanupWarning !== undefined)
+      await writeLine(io.stderr, cleanupWarning);
     const preparationFailure = runtimePreparationMessage(primaryError);
     if (preparationFailure !== undefined) {
       await writeLine(io.stderr, preparationFailure);
