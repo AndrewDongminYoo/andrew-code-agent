@@ -744,6 +744,24 @@ test("the shared Codex runner preserves the commit tool-use refusal", async () =
   }
 });
 
+// The proposal timer starts at spawn, so the timeout tests pass a value far above fake Codex start-up (Node started in at most 0.07 s at load 77) that load cannot reach; the properties they check do not depend on it.
+const PROPOSAL_TIMEOUT_MS = 5_000;
+
+// Polls for the fake's readiness while the proposal is pending; a proposal that settles first fails at once, so a slow start can never pass vacuously.
+async function waitForFakeReady(read, proposal) {
+  let settled = false;
+  void proposal.then(() => { settled = true; });
+  const deadline = Date.now() + 30_000;
+  for (;;) {
+    const settledBeforeRead = settled;
+    const ready = await read();
+    if (settledBeforeRead) assert.fail("the fake Codex did not start before the product timeout settled the proposal");
+    if (ready !== undefined) return ready;
+    if (Date.now() >= deadline) assert.fail("the fake Codex did not start within 30 s");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
 test("a proposal timeout terminates a Codex process that ignores SIGTERM", async () => {
   assert.equal(typeof commitModule?.runCodex, "function");
   const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-timeout-"));
@@ -752,17 +770,14 @@ test("a proposal timeout terminates a Codex process that ignores SIGTERM", async
   await writeFile(binary, `#!${process.execPath}\nconst fs = require("node:fs");\nfs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nprocess.on("SIGTERM", () => {});\nsetInterval(() => {}, 1000);\n`);
   await chmod(binary, 0o700);
   try {
-    const proposal = commitModule.runCodex(binary, runtime, runtime, "test prompt", 1_200).then(
+    const proposal = commitModule.runCodex(binary, runtime, runtime, "test prompt", PROPOSAL_TIMEOUT_MS).then(
       () => ({ kind: "resolved" }),
       (error) => ({ kind: "rejected", message: error.message }),
     );
-    const readyDeadline = Date.now() + 1_000;
-    let pid = 0;
-    while (pid === 0 && Date.now() < readyDeadline) {
-      pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
-      if (pid === 0) await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.ok(pid > 0, "the fake Codex process must start before timeout");
+    const pid = await waitForFakeReady(async () => {
+      const value = Number(await readFile(pidFile, "utf8").catch(() => ""));
+      return Number.isSafeInteger(value) && value > 0 ? value : undefined;
+    }, proposal);
     assert.doesNotThrow(() => process.kill(pid, 0));
     let hungTimer;
     let result;
@@ -795,16 +810,18 @@ test("a proposal timeout closes output pipes held by a Codex descendant", async 
   await chmod(binary, 0o700);
   let pids = { parent: 0, descendant: 0 };
   try {
-    const proposal = commitModule.runCodex(binary, runtime, runtime, "test prompt", 1_200).then(
+    const proposal = commitModule.runCodex(binary, runtime, runtime, "test prompt", PROPOSAL_TIMEOUT_MS).then(
       () => ({ kind: "resolved" }),
       (error) => ({ kind: "rejected", message: error.message }),
     );
-    const readyDeadline = Date.now() + 1_000;
-    while (pids.descendant === 0 && Date.now() < readyDeadline) {
-      pids = JSON.parse(await readFile(pidFile, "utf8").catch(() => '{"parent":0,"descendant":0}'));
-      if (pids.descendant === 0) await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-    assert.ok(pids.parent > 0 && pids.descendant > 0, "the descendant must start before timeout");
+    pids = await waitForFakeReady(async () => {
+      try {
+        const value = JSON.parse(await readFile(pidFile, "utf8"));
+        return value.parent > 0 && value.descendant > 0 ? value : undefined;
+      } catch {
+        return undefined;
+      }
+    }, proposal);
     assert.doesNotThrow(() => process.kill(pids.descendant, 0));
     let hungTimer;
     let result;

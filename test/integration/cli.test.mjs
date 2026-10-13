@@ -1084,7 +1084,8 @@ function observeClientCloseBeforeUnlock(fixture) {
   return () => assert.equal(closeCalls, 1);
 }
 
-async function waitFor(check, timeoutMs = 2_000) {
+// Every caller waits for a positive readiness or exit signal, so the cap only bounds how long a real failure takes to report; keep it far above observed load.
+async function waitFor(check, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     try {

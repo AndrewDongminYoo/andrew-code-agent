@@ -84,17 +84,19 @@ async function waitForChildExit(child, timeoutMs = 1000) {
   });
 }
 
-async function readPositivePid(path) {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
+// Returns undefined when no positive pid appears before the deadline or once `stop()` holds; an empty file is not a pid, because Number("") is 0.
+async function readPositivePid(path, { timeoutMs = 30_000, stop = () => false } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
     try {
       const pid = Number(await readFile(path, "utf8"));
       if (Number.isSafeInteger(pid) && pid > 0) return pid;
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
+    if (stop() || Date.now() >= deadline) return undefined;
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  return undefined;
 }
 
 function errorCode(code) {
@@ -863,16 +865,26 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
     codexBinary: binary,
     codexHome: join(root, "home"),
     productVersion: "0.1.0",
-    handshakeTimeoutMs: 500,
+    // The handshake timer starts at spawn, so this value sits far above the fake's start-up (Node started in at most 0.07 s at load 77) that load cannot reach; the property checked here does not depend on it.
+    handshakeTimeoutMs: 5_000,
     requestTimeoutMs: 300,
   });
   const observed = startup.then(
     () => ({ value: "resolved" }),
     (error) => ({ error }),
   );
+  let startupSettled = false;
+  void observed.then(() => {
+    startupSettled = true;
+  });
   let pid;
   try {
-    pid = await readPositivePid(descendantPid);
+    pid = await readPositivePid(descendantPid, { stop: () => startupSettled });
+    assert.equal(
+      startupSettled,
+      false,
+      "the descendant did not start before the handshake timeout settled startup",
+    );
     assert.equal(Number.isSafeInteger(pid) && pid > 0, true);
     let hungTimer;
     let outcome;
@@ -894,7 +906,7 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
     const cleanupPid =
       Number.isSafeInteger(pid) && pid > 0
         ? pid
-        : await readPositivePid(descendantPid);
+        : await readPositivePid(descendantPid, { timeoutMs: 500 });
     if (cleanupPid !== undefined) {
       try {
         process.kill(cleanupPid, "SIGKILL");
