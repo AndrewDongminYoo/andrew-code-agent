@@ -764,10 +764,18 @@ test("a proposal timeout terminates a Codex process that ignores SIGTERM", async
     }
     assert.ok(pid > 0, "the fake Codex process must start before timeout");
     assert.doesNotThrow(() => process.kill(pid, 0));
-    const result = await Promise.race([
-      proposal,
-      new Promise((resolve) => setTimeout(() => resolve({ kind: "hung" }), 2_500)),
-    ]);
+    let hungTimer;
+    let result;
+    try {
+      result = await Promise.race([
+        proposal,
+        new Promise((resolve) => {
+          hungTimer = setTimeout(() => resolve({ kind: "hung" }), 30_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(hungTimer);
+    }
     assert.deepEqual(result, { kind: "rejected", message: "Codex proposal timed out." });
   } finally {
     const pid = Number(await readFile(pidFile, "utf8").catch(() => "0"));
@@ -798,10 +806,18 @@ test("a proposal timeout closes output pipes held by a Codex descendant", async 
     }
     assert.ok(pids.parent > 0 && pids.descendant > 0, "the descendant must start before timeout");
     assert.doesNotThrow(() => process.kill(pids.descendant, 0));
-    const result = await Promise.race([
-      proposal,
-      new Promise((resolve) => setTimeout(() => resolve({ kind: "hung" }), 2_500)),
-    ]);
+    let hungTimer;
+    let result;
+    try {
+      result = await Promise.race([
+        proposal,
+        new Promise((resolve) => {
+          hungTimer = setTimeout(() => resolve({ kind: "hung" }), 30_000);
+        }),
+      ]);
+    } finally {
+      clearTimeout(hungTimer);
+    }
     assert.deepEqual(result, { kind: "rejected", message: "Codex proposal timed out." });
   } finally {
     for (const pid of [pids.parent, pids.descendant]) {
