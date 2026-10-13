@@ -725,6 +725,9 @@ test("an early Codex exit reports a proposal failure without an unhandled stdin 
   });
 });
 
+// The proposal timer starts at spawn, so the tests that call runCodex directly pass a value far above fake Codex start-up (Node started in at most 0.07 s at load 77) that load cannot reach; the properties they check do not depend on it.
+const PROPOSAL_TIMEOUT_MS = 5_000;
+
 test("the shared Codex runner preserves the commit tool-use refusal", async () => {
   assert.equal(typeof commitModule?.runCodex, "function");
   const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-tool-refusal-"));
@@ -736,16 +739,13 @@ test("the shared Codex runner preserves the commit tool-use refusal", async () =
   await chmod(binary, 0o700);
   try {
     await assert.rejects(
-      commitModule.runCodex(binary, runtime, runtime, "test prompt", 1_200),
+      commitModule.runCodex(binary, runtime, runtime, "test prompt", PROPOSAL_TIMEOUT_MS),
       /Codex attempted to use a tool during commit proposal/,
     );
   } finally {
     await rm(runtime, { recursive: true, force: true });
   }
 });
-
-// The proposal timer starts at spawn, so the timeout tests pass a value far above fake Codex start-up (Node started in at most 0.07 s at load 77) that load cannot reach; the properties they check do not depend on it.
-const PROPOSAL_TIMEOUT_MS = 5_000;
 
 // Polls for the fake's readiness while the proposal is pending; a proposal that settles first fails at once, so a slow start can never pass vacuously.
 async function waitForFakeReady(read, proposal) {
