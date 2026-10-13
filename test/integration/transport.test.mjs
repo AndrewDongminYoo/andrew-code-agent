@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { promisify } from "node:util";
 
 const transportModule = await import(
   "../../dist/app-server/transport.js"
@@ -96,6 +97,34 @@ async function readPositivePid(path, { timeoutMs = 30_000, stop = () => false } 
     }
     if (stop() || Date.now() >= deadline) return undefined;
     await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+const execFileAsync = promisify(execFile);
+
+// SIGKILLs every live process whose command line carries the marker, and repeats until one snapshot shows none, so a process spawned between a snapshot and its kill is caught by the next snapshot.
+// The marker must be unique to one test run, such as its mkdtemp root.
+async function reapProcessesCarrying(marker, { timeoutMs = 2_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    // Full command lines on a busy machine already reach a quarter of execFile's default 1 MiB buffer.
+    const { stdout } = await execFileAsync("ps", ["-A", "-ww", "-o", "pid=,stat=,command="], { maxBuffer: 64 * 1024 * 1024 });
+    const pids = stdout
+      .split("\n")
+      .map((line) => /^\s*(\d+)\s+(\S+)\s+(.*)$/.exec(line))
+      .filter((match) => match !== null && !match[2].startsWith("Z") && match[3].includes(marker))
+      .map((match) => Number(match[1]))
+      .filter((pid) => pid !== process.pid);
+    if (pids.length === 0) return;
+    if (Date.now() >= deadline) throw new Error(`processes carrying ${marker} survived reaping: ${pids.join(", ")}`);
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
 
@@ -859,7 +888,7 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
   );
   await writeFile(
     server,
-    `import { spawn } from "node:child_process"; import { writeFile } from "node:fs/promises"; const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "inherit" }); await new Promise((resolve) => setTimeout(resolve, 100)); await writeFile(${JSON.stringify(descendantPid)}, String(descendant.pid)); setInterval(() => {}, 1000);`,
+    `import { spawn } from "node:child_process"; import { writeFile } from "node:fs/promises"; const descendant = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)", ${JSON.stringify(root)}], { stdio: "inherit" }); await new Promise((resolve) => setTimeout(resolve, 100)); await writeFile(${JSON.stringify(descendantPid)}, String(descendant.pid)); setInterval(() => {}, 1000);`,
   );
   const startup = requireClient().startAppServer({
     codexBinary: binary,
@@ -878,6 +907,7 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
     startupSettled = true;
   });
   let pid;
+  let completed = false;
   try {
     pid = await readPositivePid(descendantPid, { stop: () => startupSettled });
     assert.equal(
@@ -902,7 +932,13 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
       clearTimeout(hungTimer);
     }
     assert.equal(outcome.error?.code, "APP_SERVER_HANDSHAKE_TIMEOUT");
+    completed = true;
   } finally {
+    // The descendant's command line and the fake server's script path both carry root, so this reaps them even when the pid file was never written, before any wait that descendant-held stdio could block.
+    const reapError = await reapProcessesCarrying(root).then(
+      () => undefined,
+      (error) => error,
+    );
     const cleanupPid =
       Number.isSafeInteger(pid) && pid > 0
         ? pid
@@ -914,8 +950,22 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
         if (error.code !== "ESRCH") throw error;
       }
     }
-    await observed;
+    // Bounded above the 5 s handshake timeout plus the transport's 250 ms SIGTERM-to-SIGKILL grace.
+    // Startup is only unsettled here when the body already failed, so the body's own assertion is the reported failure and this wait only keeps cleanup from hanging.
+    let settleTimer;
+    await Promise.race([
+      observed,
+      new Promise((resolve) => {
+        settleTimer = setTimeout(resolve, 15_000);
+      }),
+    ]);
+    clearTimeout(settleTimer);
     await rm(root, { recursive: true, force: true });
+    if (reapError !== undefined) {
+      // Throwing here would replace a failure the body already raised, which carries the test's message.
+      if (completed) throw reapError;
+      console.error(reapError);
+    }
   }
 });
 
