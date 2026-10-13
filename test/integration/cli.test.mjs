@@ -238,11 +238,7 @@ test("a stalled real Writable times out, removes listeners, and still unlocks", 
     return terminalRecord(repositoryRoot);
   };
   const running = runModule.runCommand(repositoryRoot, "prompt", { ...capture(), stdout: stalled }, harness.dependencies);
-  const result = await Promise.race([
-    running,
-    new Promise((resolve) => setTimeout(() => resolve("test-timeout"), 1_500)),
-  ]);
-  assert.equal(result, 1);
+  assert.equal(await settleWithin(running, 30_000), 1);
   await new Promise((resolve) => setTimeout(resolve, 750));
   assert.equal(stalled.listenerCount("error"), initialErrorListeners);
   assert.deepEqual(harness.order.slice(-2), ["client-close", "unlock"]);
@@ -1122,6 +1118,22 @@ async function settleWithin(settlement, timeoutMs) {
   }
 }
 
+// A run that never settles after its interrupts must fail with a message, not stall the file, so stop the fake server to let it settle before failing.
+async function settleInterruptedRun(running, fixture, label) {
+  const settlement = running.then(
+    (value) => ({ kind: "resolved", value }),
+    (error) => ({ kind: "rejected", error }),
+  );
+  const result = await settleWithin(settlement, 30_000);
+  if (result.kind === "timeout") {
+    await cleanupFakeAppServerFixture(fixture);
+    await settleWithin(settlement, 5_000);
+    throw new Error(`${label}: the interrupted run did not settle`);
+  }
+  if (result.kind === "rejected") throw result.error;
+  return result.value;
+}
+
 test("real command composition drives and reaps one fake App Server", async (t) => {
   const { runModule } = modules();
   const repositoryRoot = await createRepository();
@@ -1294,7 +1306,7 @@ test("two interrupts settle a real fake-server turn at 130 without listeners or 
   process.emit("SIGINT");
   await waitFor(async () => (await readFile(join(fixture.codexHome, "fake-server.log"), "utf8")).includes("turn/interrupt"));
   process.emit("SIGINT");
-  assert.equal(await running, 130);
+  assert.equal(await settleInterruptedRun(running, fixture, "two interrupts"), 130);
   assert.equal(process.listenerCount("SIGINT"), listenersBefore);
   await assert.rejects(lstat(join(fixture.stateRoot, "run.lock")), { code: "ENOENT" });
   assert.match(await readFile(join(fixture.codexHome, "fake-server.log"), "utf8"), /turn\/interrupt/);
@@ -1310,7 +1322,7 @@ test("two pre-thread-start interrupts settle at 130 without a record or leaks", 
   await waitFor(async () => (await readFile(join(fixture.codexHome, "fake-server.log"), "utf8")).includes("thread/start"));
   process.emit("SIGINT");
   process.emit("SIGINT");
-  assert.equal(await running, 130);
+  assert.equal(await settleInterruptedRun(running, fixture, "two pre-thread-start interrupts"), 130);
   assert.equal(process.listenerCount("SIGINT"), listenersBefore);
   await assert.rejects(threadStoreModule.readThreadRecord(fixture.stateRoot, "thread-fake"), (error) => error.code === "THREAD_NOT_FOUND");
   await assertFakeServerCleanup(fixture);

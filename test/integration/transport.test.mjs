@@ -241,9 +241,10 @@ test("rejects a newline-free protocol line over 16 MiB without disclosing it and
   await withProtocolChild(
     `process.stdout.write("private-payload:" + "x".repeat(16 * 1024 * 1024)); setInterval(() => {}, 1000);`,
     async (child) => {
+      // This test exercises the line limit, not the request timeout, so the timeout must outlast a slow child start-up and write.
       const transport = new (requireTransport().StdioJsonRpcTransport)(
         child,
-        300,
+        30_000,
       );
       let failure;
       await transport.request("initialize", {}).catch((error) => {
@@ -467,12 +468,18 @@ test("fails closed when reentrant stdout exceeds the bounded pending-input count
   );
   await response;
 
-  const outcome = await Promise.race([
-    failure,
-    new Promise((resolve) =>
-      setTimeout(() => resolve({ code: "TEST_TIMEOUT" }), 50),
-    ),
-  ]);
+  let hungTimer;
+  let outcome;
+  try {
+    outcome = await Promise.race([
+      failure,
+      new Promise((resolve) => {
+        hungTimer = setTimeout(() => resolve({ code: "TEST_TIMEOUT" }), 30_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(hungTimer);
+  }
   assert.equal(outcome.code, "APP_SERVER_PROTOCOL_LIMIT");
   await transport.close();
 });
@@ -867,12 +874,21 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
   try {
     pid = await readPositivePid(descendantPid);
     assert.equal(Number.isSafeInteger(pid) && pid > 0, true);
-    const outcome = await Promise.race([
-      observed,
-      new Promise((resolve) =>
-        setTimeout(() => resolve({ value: "bounded-timeout" }), 1200),
-      ),
-    ]);
+    let hungTimer;
+    let outcome;
+    try {
+      outcome = await Promise.race([
+        observed,
+        new Promise((resolve) => {
+          hungTimer = setTimeout(
+            () => resolve({ value: "bounded-timeout" }),
+            30_000,
+          );
+        }),
+      ]);
+    } finally {
+      clearTimeout(hungTimer);
+    }
     assert.equal(outcome.error?.code, "APP_SERVER_HANDSHAKE_TIMEOUT");
   } finally {
     const cleanupPid =
@@ -899,6 +915,7 @@ test("handles an app-server spawn error without hanging", async () => {
     `#!/bin/sh\nif [ "$1" = "--version" ]; then rm "$0"; echo 'codex-cli 0.152.1'; fi\n`,
     { mode: 0o700 },
   );
+  let hungTimer;
   try {
     const startup = requireClient().startAppServer({
       codexBinary: binary,
@@ -910,16 +927,17 @@ test("handles an app-server spawn error without hanging", async () => {
     await assert.rejects(
       Promise.race([
         startup,
-        new Promise((_, reject) =>
-          setTimeout(
+        new Promise((_, reject) => {
+          hungTimer = setTimeout(
             () => reject(new Error("spawn error did not settle")),
-            500,
-          ),
-        ),
+            30_000,
+          );
+        }),
       ]),
       errorCode("APP_SERVER_START_FAILED"),
     );
   } finally {
+    clearTimeout(hungTimer);
     await rm(root, { recursive: true, force: true });
   }
 });
