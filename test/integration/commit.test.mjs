@@ -753,9 +753,8 @@ async function waitForFakeReady(read, proposal) {
   void proposal.then(() => { settled = true; });
   const deadline = Date.now() + 30_000;
   for (;;) {
-    const settledBeforeRead = settled;
     const ready = await read();
-    if (settledBeforeRead) assert.fail("the fake Codex did not start before the product timeout settled the proposal");
+    if (settled) assert.fail("the fake Codex did not start before the product timeout settled the proposal");
     if (ready !== undefined) return ready;
     if (Date.now() >= deadline) assert.fail("the fake Codex did not start within 30 s");
     await new Promise((resolve) => setTimeout(resolve, 20));
