@@ -25,6 +25,7 @@ import {
   type CommandIO,
 } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
+import { triageCommand } from "./commands/triage.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime/paths.js";
 
 const usage = {
@@ -36,6 +37,7 @@ const usage = {
   run: "andrew-agent run <repository> <prompt>",
   resume: "andrew-agent resume <thread-id> [prompt]",
   status: "andrew-agent status [thread-id]",
+  triage: "andrew-agent triage <pr>",
 } as const;
 
 type PublicCommand = keyof typeof usage;
@@ -88,6 +90,7 @@ interface CommandHandlers {
     threadId: string | undefined,
     io: CommandIO,
   ) => Promise<ExitCode>;
+  readonly triage: (pullRequest: number, io: CommandIO) => Promise<ExitCode>;
 }
 
 interface MainOptions extends CommandIO {
@@ -108,6 +111,7 @@ const defaultHandlers: CommandHandlers = {
   run: runCommand,
   resume: resumeCommand,
   status: statusCommand,
+  triage: (pullRequest, io) => triageCommand(process.cwd(), pullRequest, io),
 };
 
 export async function main(
@@ -216,6 +220,8 @@ export async function main(
         undefined,
         capabilities,
       );
+    if (command === "triage")
+      return await handlers.triage(Number(positionals[0]), io);
     return await handlers.status(positionals[0], io);
   } catch {
     try {
@@ -380,6 +386,13 @@ function validPositionals(
   if (command === "run") return positionals.length === 2;
   if (command === "resume")
     return positionals.length === 1 || positionals.length === 2;
+  if (command === "triage")
+    // GitHub's GraphQL `Int` is 32-bit signed.
+    return (
+      positionals.length === 1 &&
+      /^[1-9]\d{0,9}$/.test(positionals[0]!) &&
+      Number(positionals[0]) <= 2_147_483_647
+    );
   return positionals.length <= 1;
 }
 
@@ -417,6 +430,7 @@ async function writeUsage(
   await writeLine(output, usage.run);
   await writeLine(output, usage.resume);
   await writeLine(output, usage.status);
+  await writeLine(output, usage.triage);
 }
 
 const invokedPath = process.argv[1];

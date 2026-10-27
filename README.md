@@ -143,6 +143,7 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
 - `andrew-agent resume <thread-id> [prompt]` prints a stored thread, or continues it.
 - `andrew-agent status [thread-id]` prints the stored record, and live status when given an id.
+- `andrew-agent triage <pr>` reads the unresolved bot review threads of one pull request through the `gh` login and has Codex classify each finding as valid, invalid, or already fixed at the checked-out PR head; it never writes to GitHub.
 
 `status` with no argument resolves the latest thread for the repository you are standing in.
 `resume` with no prompt prints the stored record and starts no turn.
@@ -210,12 +211,21 @@ The generation prompt tells Codex not to put validation results in Summary; the 
 Successful output contains only the body so it can be redirected or passed to another command.
 The command does not write a file, generate a title, contact GitHub, open or update a pull request, commit, or push.
 
+`triage <pr>` requires a named branch, a clean worktree, and a local HEAD equal to the pull request's head commit on GitHub.
+It reads that head commit and every page of the review threads through `gh api graphql`, using the existing `gh` login; `GH_TOKEN` and the other token variables are removed from the `gh` environment.
+It selects an unresolved thread only when GitHub reports the author of its first comment as a `Bot` actor, never by the author's login.
+More than 50 selected threads, or a selected comment above 8 KiB of UTF-8, is refused with exit `3` rather than truncated.
+Codex runs in the same isolated checkout and read-only sandbox as `review`, receives the thread text inside a delimited data block that it must treat as data, and must classify every thread exactly once as valid, invalid, or already fixed with repository evidence.
+After Codex finishes, the command reads the local HEAD and the pull request head again and discards the output with exit `3` if either moved.
+It never replies, reacts, resolves a thread, edits a pull request, or pushes.
+`docs/specs/2026-10-27-triage-command.md` owns the full contract.
+
 Exit codes:
 
 - `0` succeeded, or the turn completed.
-- `1` the turn, review, or PR draft failed, a `clean-gone` worktree removal or branch deletion failed, the thread was not found, or output could not be written.
+- `1` the turn, review, PR draft, or triage failed, a `clean-gone` worktree removal or branch deletion failed, the thread was not found, or output could not be written.
 - `2` invalid command usage.
-- `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check.
+- `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check, or a triage GitHub read, size bound, or head check refused the run.
 - `4` the App Server failed.
 - `130` the turn was interrupted.
 
