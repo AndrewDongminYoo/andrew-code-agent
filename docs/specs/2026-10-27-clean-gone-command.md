@@ -27,13 +27,16 @@ The command keeps a candidate and reports one reason when any of these holds:
 
 - `CURRENT_BRANCH`: the branch is checked out in the worktree where the command runs.
 - `MAIN_WORKTREE`: the branch is checked out in the main worktree, which cannot be removed.
-- `WORKTREE_IN_PROGRESS`: a rebase or bisect in some worktree will return to the branch. That worktree is detached meanwhile, so `git worktree list` does not name the branch.
-- `WORKTREE_DIRTY`: its worktree has staged, unstaged, or untracked changes, or an index entry marked assume-unchanged or skip-worktree, whose edits `git status` does not report. The check pins `--untracked-files=normal`, and the worktree removal pins `status.showUntrackedFiles=normal`, so a repository or global `status.showUntrackedFiles=no` cannot hide untracked files from either.
+- `WORKTREE_IN_PROGRESS`: a rebase or bisect in some worktree will return to the branch.
+  That worktree is detached meanwhile, so `git worktree list` does not name the branch.
+- `WORKTREE_DIRTY`: its worktree has staged, unstaged, or untracked changes, or an index entry marked assume-unchanged or skip-worktree, whose edits `git status` does not report.
+  The check pins `--untracked-files=normal`, and the worktree removal pins `status.showUntrackedFiles=normal`, so a repository or global `status.showUntrackedFiles=no` cannot hide untracked files from either.
 - `WORKTREE_LOCKED`: its worktree is locked.
 - `WORKTREE_MISSING`: its worktree directory does not exist (Git reports it as prunable).
 - `WORKTREE_UNREADABLE`: the status of its worktree cannot be read.
 - `NOT_ON_DEFAULT`: the branch tip is not reachable from the default branch.
-- `NOT_MERGED`: the branch tip is not reachable from HEAD of the worktree where the command runs. For a branch whose upstream is gone, `git branch -d` checks against that HEAD, so it would reject the branch; the command refuses it before removing any worktree.
+- `NOT_MERGED`: the branch tip is not reachable from HEAD of the worktree where the command runs.
+  For a branch whose upstream is gone, `git branch -d` checks against that HEAD, so it would reject the branch; the command refuses it before removing any worktree.
 - `CHANGED_SINCE_PREVIEW`: the branch tip, its worktree, its ignored entries, or its refusal state changed between the preview and the deletion.
 
 A refusal applies to that candidate only; the command still deletes the other candidates.
