@@ -135,6 +135,7 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
 
 ## Commands
 
+- `andrew-agent clean-gone` removes local branches whose upstream is gone, together with their worktrees, when invoked from a terminal, after printing a preview.
 - `andrew-agent commit [--long | --short]` proposes one subject and body for the staged changes in the current repository, then commits automatically when invoked from a terminal.
 - `andrew-agent doctor` reports readiness and exits 0 only when nothing is a blocker.
 - `andrew-agent pr [base]` drafts a Markdown pull-request body from committed current-branch changes against an explicit base or the default `origin/HEAD` base.
@@ -145,6 +146,17 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
 
 `status` with no argument resolves the latest thread for the repository you are standing in.
 `resume` with no prompt prints the stored record and starts no turn.
+
+`clean-gone` reads the `[gone]` upstream state that already exists in the repository; it does not fetch, invoke Codex, or contact GitHub.
+It prints a preview of every candidate branch, its worktree if any, and either the action or the reason it is kept.
+A direct terminal invocation authorizes the deletion without another prompt; piped or other non-interactive input prints the preview and deletes nothing.
+It keeps the current branch, a branch checked out in the main worktree, a branch a rebase or bisect in some worktree will return to, a branch whose worktree is dirty (untracked files included, whatever `status.showUntrackedFiles` says), locked, missing, or unreadable, a branch whose tip is not reachable from `origin/HEAD`, and a branch whose tip is not reachable from the current HEAD, which `git branch -d` would reject.
+In a repository that merges by squash or rebase, merged branches are therefore kept.
+Before each deletion, it builds the plan again and keeps any branch whose tip, worktree, or ignored entries changed since the preview.
+It removes a worktree with `git worktree remove` without `--force` and then deletes the branch with `git branch -d`, never `-D`.
+Removing a worktree deletes its ignored files, so the preview lists up to ten ignored entries for each worktree it will remove.
+If `origin/HEAD` cannot be resolved, nothing is deleted and the command exits `3`; if a removal or deletion fails, it stops, reports what was not attempted, and exits `1`.
+`docs/specs/2026-10-27-clean-gone-command.md` owns the full contract.
 
 `commit` reads the staged diff, committed root `AGENTS.md` when present, and eight recent commit subjects.
 It does not stage unstaged or untracked files.
@@ -201,7 +213,7 @@ The command does not write a file, generate a title, contact GitHub, open or upd
 Exit codes:
 
 - `0` succeeded, or the turn completed.
-- `1` the turn, review, or PR draft failed, the thread was not found, or output could not be written.
+- `1` the turn, review, or PR draft failed, a `clean-gone` worktree removal or branch deletion failed, the thread was not found, or output could not be written.
 - `2` invalid command usage.
 - `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check.
 - `4` the App Server failed.

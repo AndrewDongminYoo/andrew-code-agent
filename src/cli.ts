@@ -11,6 +11,7 @@ import {
   SUPPORTED_CAPABILITIES,
   type RequestedCapability,
 } from "./constants.js";
+import { cleanGoneCommand } from "./commands/clean-gone.js";
 import { commitCommand, type CommitMessageFormat } from "./commands/commit.js";
 import { runDoctor } from "./commands/doctor.js";
 import { prCommand } from "./commands/pr.js";
@@ -27,6 +28,7 @@ import { statusCommand } from "./commands/status.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime/paths.js";
 
 const usage = {
+  "clean-gone": "andrew-agent clean-gone",
   commit: "andrew-agent commit [--long | --short]",
   doctor: "andrew-agent doctor",
   pr: "andrew-agent pr [base]",
@@ -53,6 +55,7 @@ const CAPABILITY_ASSIGNMENT = `${CAPABILITY_FLAG}=`;
 // The CLI never supplies one and passes `undefined` so the callee's default
 // applies, but the type says what the functions actually accept.
 interface CommandHandlers {
+  readonly "clean-gone": (io: CommandIO) => Promise<ExitCode>;
   readonly commit: (
     io: CommandIO,
     messageFormat: CommitMessageFormat,
@@ -93,6 +96,7 @@ interface MainOptions extends CommandIO {
 }
 
 const defaultHandlers: CommandHandlers = {
+  "clean-gone": (io) => cleanGoneCommand(process.cwd(), io),
   commit: (io, messageFormat) =>
     commitCommand(process.cwd(), io, undefined, messageFormat),
   doctor: doctorCommand,
@@ -185,6 +189,7 @@ export async function main(
       );
       return 3;
     }
+    if (command === "clean-gone") return await handlers["clean-gone"](io);
     if (command === "commit")
       return await handlers.commit(io, commitMessageFormat);
     if (command === "doctor") return await handlers.doctor(io, env);
@@ -367,6 +372,7 @@ function validPositionals(
   positionals: readonly string[],
 ): boolean {
   if (positionals.some((value) => value.length === 0)) return false;
+  if (command === "clean-gone") return positionals.length === 0;
   if (command === "commit") return positionals.length === 0;
   if (command === "doctor") return positionals.length === 0;
   if (command === "pr") return positionals.length <= 1;
@@ -403,6 +409,7 @@ async function writeUsage(
     return;
   }
   await writeLine(output, "Usage:");
+  await writeLine(output, usage["clean-gone"]);
   await writeLine(output, usage.commit);
   await writeLine(output, usage.doctor);
   await writeLine(output, usage.pr);
