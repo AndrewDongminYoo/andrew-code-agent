@@ -28,7 +28,7 @@ The command keeps a candidate and reports one reason when any of these holds:
 - `CURRENT_BRANCH`: the branch is checked out in the worktree where the command runs.
 - `MAIN_WORKTREE`: the branch is checked out in the main worktree, which cannot be removed.
 - `WORKTREE_IN_PROGRESS`: a rebase or bisect in some worktree will return to the branch. That worktree is detached meanwhile, so `git worktree list` does not name the branch.
-- `WORKTREE_DIRTY`: its worktree has staged, unstaged, or untracked changes. The check pins `--untracked-files=normal`, and the worktree removal pins `status.showUntrackedFiles=normal`, so a repository or global `status.showUntrackedFiles=no` cannot hide untracked files from either.
+- `WORKTREE_DIRTY`: its worktree has staged, unstaged, or untracked changes, or an index entry marked assume-unchanged or skip-worktree, whose edits `git status` does not report. The check pins `--untracked-files=normal`, and the worktree removal pins `status.showUntrackedFiles=normal`, so a repository or global `status.showUntrackedFiles=no` cannot hide untracked files from either.
 - `WORKTREE_LOCKED`: its worktree is locked.
 - `WORKTREE_MISSING`: its worktree directory does not exist (Git reports it as prunable).
 - `WORKTREE_UNREADABLE`: the status of its worktree cannot be read.
@@ -96,7 +96,7 @@ Each criterion is covered by a test against a fixture repository with a local ba
 8. The preview lists the ignored paths of a worktree before it is removed.
 9. A branch whose tip moves between the preview and deletion is refused.
 10. A worktree that gains an untracked or ignored file between the preview and deletion is kept with its file.
-11. An untracked file keeps its worktree even with `status.showUntrackedFiles=no` in the repository configuration.
+11. An untracked file keeps its worktree even with `status.showUntrackedFiles=no` in the repository configuration, and a tracked edit hidden by assume-unchanged or skip-worktree keeps its worktree too.
 12. A branch being rebased in a worktree is refused with `WORKTREE_IN_PROGRESS`, and later candidates are still deleted.
 13. The CLI grammar, README, scoped tests, `pnpm check`, and `trunk check --all --no-fix` cover the command on macOS.
 

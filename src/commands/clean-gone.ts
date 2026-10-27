@@ -293,7 +293,17 @@ async function classify(
     if (worktree.prunable) return keep("WORKTREE_MISSING");
     if (worktree.locked) return keep("WORKTREE_LOCKED");
     let status: string;
+    let index: string;
     try {
+      // `-v` tags assume-unchanged entries in lowercase and skip-worktree
+      // entries with `S`; status reports neither entry's edits, and
+      // `git worktree remove` would delete them.
+      index = await executeGit(worktree.path, [
+        "ls-files",
+        "--cached",
+        "-v",
+        "-z",
+      ]);
       status = await executeGit(worktree.path, [
         "status",
         "--porcelain=v1",
@@ -304,6 +314,12 @@ async function classify(
     } catch {
       return keep("WORKTREE_UNREADABLE");
     }
+    if (
+      index
+        .split("\0")
+        .some((entry) => entry.length > 0 && !entry.startsWith("H "))
+    )
+      return keep("WORKTREE_DIRTY");
     const entries = status.split("\0").filter((entry) => entry.length > 0);
     // A rename entry carries its source path as a second field with no
     // status prefix; any non-ignored entry already makes the worktree dirty.

@@ -281,6 +281,31 @@ test("an untracked file counts as dirty even when status.showUntrackedFiles is n
   });
 });
 
+test("tracked edits hidden by assume-unchanged or skip-worktree keep their worktree", async () => {
+  assert.notEqual(cleanGoneModule, null);
+  await withClone(async ({ base, root }) => {
+    await goneBranch(root, "feature-v");
+    await goneBranch(root, "feature-w");
+    const assumed = join(base, "wt-v");
+    const skipped = join(base, "wt-w");
+    await git(root, "worktree", "add", "--quiet", assumed, "feature-v");
+    await git(root, "worktree", "add", "--quiet", skipped, "feature-w");
+    await git(assumed, "update-index", "--assume-unchanged", "tracked.txt");
+    await writeFile(join(assumed, "tracked.txt"), "hidden edit\n");
+    await git(skipped, "update-index", "--skip-worktree", "tracked.txt");
+    await writeFile(join(skipped, "tracked.txt"), "hidden edit\n");
+    assert.equal(await git(assumed, "status", "--porcelain"), "", "the fixture must hide the edit from status");
+    assert.equal(await git(skipped, "status", "--porcelain"), "", "the fixture must hide the edit from status");
+    const io = output();
+    const code = await cleanGoneModule.cleanGoneCommand(root, io);
+    assert.equal(code, 0, io.read().stderr);
+    assert.equal(await readFile(join(assumed, "tracked.txt"), "utf8"), "hidden edit\n");
+    assert.equal(await readFile(join(skipped, "tracked.txt"), "utf8"), "hidden edit\n");
+    assert.match(io.read().stdout, /feature-v.*WORKTREE_DIRTY/);
+    assert.match(io.read().stdout, /feature-w.*WORKTREE_DIRTY/);
+  });
+});
+
 test("a worktree that gains an untracked or ignored file after the preview is kept", async () => {
   assert.notEqual(cleanGoneModule, null);
   await withClone(async ({ base, root }) => {
