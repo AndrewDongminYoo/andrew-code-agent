@@ -195,9 +195,6 @@ export async function main(
         io,
         parsed.values.staged === true,
       );
-    // ponytail: the requested set reaches the handler and is ignored there
-    // until step 2 of docs/plans/2026-08-25-v0.2-oracle-capability.md threads
-    // it into prepareCandidate. Parsing it is not yet enabling it.
     if (command === "run")
       return await handlers.run(
         positionals[0]!,
