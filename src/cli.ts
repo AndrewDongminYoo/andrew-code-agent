@@ -26,6 +26,10 @@ import {
 } from "./commands/run.js";
 import { statusCommand } from "./commands/status.js";
 import { triageCommand } from "./commands/triage.js";
+import {
+  verifyFixCommand,
+  type VerifyFixOptions,
+} from "./commands/verify-fix.js";
 import { resolveRuntimePaths, type RuntimePaths } from "./runtime/paths.js";
 
 const usage = {
@@ -38,6 +42,8 @@ const usage = {
   resume: "andrew-agent resume <thread-id> [prompt]",
   status: "andrew-agent status [thread-id]",
   triage: "andrew-agent triage <pr>",
+  "verify-fix":
+    "andrew-agent verify-fix [base] [--with <path>]... [--test <path>]... -- <command> [args...]",
 } as const;
 
 type PublicCommand = keyof typeof usage;
@@ -91,6 +97,10 @@ interface CommandHandlers {
     io: CommandIO,
   ) => Promise<ExitCode>;
   readonly triage: (pullRequest: number, io: CommandIO) => Promise<ExitCode>;
+  readonly "verify-fix": (
+    options: VerifyFixOptions,
+    io: CommandIO,
+  ) => Promise<ExitCode>;
 }
 
 interface MainOptions extends CommandIO {
@@ -112,6 +122,7 @@ const defaultHandlers: CommandHandlers = {
   resume: resumeCommand,
   status: statusCommand,
   triage: (pullRequest, io) => triageCommand(process.cwd(), pullRequest, io),
+  "verify-fix": (options, io) => verifyFixCommand(process.cwd(), options, io),
 };
 
 export async function main(
@@ -137,6 +148,8 @@ export async function main(
     const command = argv[0];
     if (!isPublicCommand(command)) return await usageFailure(io);
     const commandArguments = argv.slice(1);
+    if (command === "verify-fix")
+      return await verifyFix(commandArguments, io, handlers);
     const separatorIndex = commandArguments.indexOf("--");
     const optionRegion =
       separatorIndex < 0
@@ -431,6 +444,68 @@ async function writeUsage(
   await writeLine(output, usage.resume);
   await writeLine(output, usage.status);
   await writeLine(output, usage.triage);
+  await writeLine(output, usage["verify-fix"]);
+}
+
+// The test command after `--` belongs to the operator and is passed through
+// unparsed, so only the region before the first `--` is read as options.
+async function verifyFix(
+  commandArguments: readonly string[],
+  io: CommandIO,
+  handlers: CommandHandlers,
+): Promise<ExitCode> {
+  const separatorIndex = commandArguments.indexOf("--");
+  const optionRegion =
+    separatorIndex < 0
+      ? commandArguments
+      : commandArguments.slice(0, separatorIndex);
+  const withPaths: string[] = [];
+  const testPaths: string[] = [];
+  const positionals: string[] = [];
+  let help = false;
+  for (let index = 0; index < optionRegion.length; index += 1) {
+    const argument = optionRegion[index]!;
+    if (argument === "-h" || argument === "--help") {
+      help = true;
+    } else if (argument === "--with" || argument === "--test") {
+      const value = optionRegion[index + 1];
+      if (value === undefined || value === "" || value.startsWith("-"))
+        return await usageFailure(io, "verify-fix");
+      (argument === "--with" ? withPaths : testPaths).push(value);
+      index += 1;
+    } else if (argument.startsWith("-") || argument === "") {
+      return await usageFailure(io, "verify-fix");
+    } else {
+      positionals.push(argument);
+    }
+  }
+  if (help) {
+    if (
+      separatorIndex >= 0 ||
+      positionals.length !== 0 ||
+      optionRegion.length !== 1
+    )
+      return await usageFailure(io, "verify-fix");
+    await writeLine(io.stdout, `Usage: ${usage["verify-fix"]}`);
+    return 0;
+  }
+  const command = commandArguments.slice(separatorIndex + 1);
+  if (
+    separatorIndex < 0 ||
+    command.length === 0 ||
+    command[0] === "" ||
+    positionals.length > 1
+  )
+    return await usageFailure(io, "verify-fix");
+  return await handlers["verify-fix"](
+    {
+      ...(positionals[0] === undefined ? {} : { baseInput: positionals[0] }),
+      withPaths,
+      testPaths,
+      command,
+    },
+    io,
+  );
 }
 
 const invokedPath = process.argv[1];
