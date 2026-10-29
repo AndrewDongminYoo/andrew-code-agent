@@ -656,10 +656,13 @@ function preflightMessage(error: unknown): string {
   return "Unable to prepare branch review.";
 }
 
-export function runtimePreparationMessage(error: unknown): string | undefined {
+export function runtimePreparationMessage(
+  error: unknown,
+  command = "Review",
+): string | undefined {
   if (error instanceof RuntimePathError)
-    return `Review runtime preparation failed: ${error.code}.`;
+    return `${command} runtime preparation failed: ${error.code}.`;
   if (error instanceof ReviewPreparationError)
-    return "Review runtime preparation failed.";
+    return `${command} runtime preparation failed.`;
   return undefined;
 }

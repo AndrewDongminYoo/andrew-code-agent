@@ -14,6 +14,7 @@ import {
 import { cleanGoneCommand } from "./commands/clean-gone.js";
 import { commitCommand, type CommitMessageFormat } from "./commands/commit.js";
 import { runDoctor } from "./commands/doctor.js";
+import { driftCommand } from "./commands/drift.js";
 import { prCommand } from "./commands/pr.js";
 import { reviewCommand } from "./commands/review.js";
 import { resumeCommand } from "./commands/resume.js";
@@ -36,6 +37,7 @@ const usage = {
   "clean-gone": "andrew-agent clean-gone",
   commit: "andrew-agent commit [--long | --short]",
   doctor: "andrew-agent doctor",
+  drift: "andrew-agent drift",
   pr: "andrew-agent pr [base]",
   review: "andrew-agent review [--staged | base]",
   run: "andrew-agent run <repository> <prompt>",
@@ -69,6 +71,7 @@ interface CommandHandlers {
     messageFormat: CommitMessageFormat,
   ) => Promise<ExitCode>;
   readonly doctor: (io: CommandIO, env: NodeJS.ProcessEnv) => Promise<ExitCode>;
+  readonly drift: (io: CommandIO) => Promise<ExitCode>;
   readonly pr: (
     baseRef: string | undefined,
     io: CommandIO,
@@ -113,6 +116,7 @@ const defaultHandlers: CommandHandlers = {
   commit: (io, messageFormat) =>
     commitCommand(process.cwd(), io, undefined, messageFormat),
   doctor: doctorCommand,
+  drift: (io) => driftCommand(process.cwd(), io),
   pr: (baseRef, io) => prCommand(process.cwd(), baseRef, io),
   review: (baseRef, io, staged) =>
     staged
@@ -210,6 +214,7 @@ export async function main(
     if (command === "commit")
       return await handlers.commit(io, commitMessageFormat);
     if (command === "doctor") return await handlers.doctor(io, env);
+    if (command === "drift") return await handlers.drift(io);
     if (command === "pr") return await handlers.pr(positionals[0], io);
     if (command === "review")
       return await handlers.review(
@@ -394,6 +399,7 @@ function validPositionals(
   if (command === "clean-gone") return positionals.length === 0;
   if (command === "commit") return positionals.length === 0;
   if (command === "doctor") return positionals.length === 0;
+  if (command === "drift") return positionals.length === 0;
   if (command === "pr") return positionals.length <= 1;
   if (command === "review") return positionals.length <= 1;
   if (command === "run") return positionals.length === 2;
@@ -438,6 +444,7 @@ async function writeUsage(
   await writeLine(output, usage["clean-gone"]);
   await writeLine(output, usage.commit);
   await writeLine(output, usage.doctor);
+  await writeLine(output, usage.drift);
   await writeLine(output, usage.pr);
   await writeLine(output, usage.review);
   await writeLine(output, usage.run);
