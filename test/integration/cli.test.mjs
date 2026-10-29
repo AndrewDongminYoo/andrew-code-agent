@@ -5,7 +5,7 @@ import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Readable, Writable } from "node:stream";
-import test from "node:test";
+import test, { after } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
@@ -37,8 +37,17 @@ function capture() {
   };
 }
 
+// Every fixture repository is removed when the file finishes, so a test that
+// forgets its own `rm` no longer leaves one behind in the system temporary
+// directory on each run.
+const createdRepositories = new Set();
+after(async () => {
+  for (const root of createdRepositories) await rm(root, { recursive: true, force: true });
+});
+
 async function createRepository() {
   const root = await realpath(await mkdtemp(join(tmpdir(), "andrew-agent-cli-repo-")));
+  createdRepositories.add(root);
   await execFile("git", ["init", "--quiet", root]);
   await execFile("git", ["-C", root, "config", "user.email", "test@example.invalid"]);
   await execFile("git", ["-C", root, "config", "user.name", "Test User"]);
