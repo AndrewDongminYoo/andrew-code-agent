@@ -138,6 +138,7 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
 - `andrew-agent clean-gone` removes local branches whose upstream is gone, together with their worktrees, when invoked from a terminal, after printing a preview.
 - `andrew-agent commit [--long | --short]` proposes one subject and body for the staged changes in the current repository, then commits automatically when invoked from a terminal.
 - `andrew-agent doctor` reports readiness and exits 0 only when nothing is a blocker.
+- `andrew-agent drift` has Codex audit the committed `CLAUDE.md`, `AGENTS.md`, `README.md`, and `docs/specs/` Markdown against the code at HEAD and reports each stale claim with its document line and code evidence; it never edits documents.
 - `andrew-agent pr [base]` drafts a Markdown pull-request body from committed current-branch changes against an explicit base or the default `origin/HEAD` base.
 - `andrew-agent review [--staged | base]` reviews committed current-branch changes against an explicit base or the default `origin/HEAD` base, or, with `--staged`, only the staged changes against HEAD.
 - `andrew-agent run <repository> <prompt>` builds, installs, and runs one turn.
@@ -221,6 +222,13 @@ After Codex finishes, the command reads the local HEAD and the pull request head
 It never replies, reacts, resolves a thread, edits a pull request, or pushes.
 `docs/specs/2026-10-27-triage-command.md` owns the full contract.
 
+`drift` requires a named branch and a clean worktree, and audits only the committed HEAD.
+It audits `CLAUDE.md`, `AGENTS.md`, and `README.md` at the repository root and every Markdown file under `docs/specs/`; `docs/plans/` and `docs/notes/` are dated records and are never audited, and a repository with none of the audited documents exits `3`.
+Codex runs in the same isolated checkout and read-only sandbox as `review` and must return a JSON list of findings, each with the document path and line, the stale claim, and a contradicting code path and line or a statement that the referenced item does not exist.
+A finding outside the audited documents or at a line that does not exist at HEAD rejects the whole response with exit `1`.
+The command exits `0` with no findings and `1` when it reports findings, rechecks HEAD, the branch, and worktree cleanliness afterwards, and discards the result with exit `3` if anything moved.
+`docs/specs/2026-10-29-drift-command.md` owns the full contract.
+
 `verify-fix` uses the same named-branch, clean-worktree, exact three-dot comparison, and isolated-checkout boundaries as `review`, and never runs Codex.
 You name the test command after `--`; it runs as an argument vector without a shell, and the command never reads one from the repository.
 A changed path is a test path when it lies under a `test`, `tests`, `__tests__`, or `spec` directory or its file name contains `.test.`, `.spec.`, or `_test.`; any `--test <path>` replaces those defaults.
@@ -235,9 +243,9 @@ The command prints both runs' status and an escaped tail of their output, rechec
 Exit codes:
 
 - `0` succeeded, or the turn completed.
-- `1` the turn, review, PR draft, or triage failed, `verify-fix` did not verify the fix, a `clean-gone` worktree removal or branch deletion failed, the thread was not found, or output could not be written.
+- `1` the turn, review, PR draft, or triage failed, `drift` reported findings or its Codex run or output failed, `verify-fix` did not verify the fix, a `clean-gone` worktree removal or branch deletion failed, the thread was not found, or output could not be written.
 - `2` invalid command usage.
-- `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check, or a triage GitHub read, size bound, or head check refused the run, or `verify-fix` could not classify, prepare, sandbox, or recheck its runs.
+- `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check, or a triage GitHub read, size bound, or head check refused the run, or `verify-fix` could not classify, prepare, sandbox, or recheck its runs, or `drift` found no audited document or discarded a result whose inputs moved.
 - `4` the App Server failed.
 - `130` the turn was interrupted.
 
