@@ -82,6 +82,20 @@ const buggy = "export function add(a, b) {\n  return a - b;\n}\n";
 const fixed = "export function add(a, b) {\n  return a + b;\n}\n";
 const addTest = 'import { add } from "../src/add.mjs";\nif (add(2, 3) !== 5) {\n  console.error("add(2, 3) returned " + add(2, 3));\n  process.exit(1);\n}\nconsole.log("add ok");\n';
 
+test("a source diff.orderFile that reorders changed tests does not fail the restore check", async () => {
+  assert.notEqual(verifyFixModule, null);
+  await withRepository({ base: { "src/add.mjs": buggy }, head: { "src/add.mjs": fixed, "test/a.test.mjs": addTest, "test/z.test.mjs": addTest } }, async (root) => {
+    const orderFile = join(root, ".git", "andrew-agent-test-order");
+    await writeFile(orderFile, "test/z.test.mjs\ntest/a.test.mjs\nsrc/*\n");
+    await git(root, "config", "diff.orderFile", orderFile);
+    const reordered = await git(root, "diff", "--name-only", "main", "HEAD");
+    assert.equal(reordered, "test/z.test.mjs\ntest/a.test.mjs\nsrc/add.mjs", "the fixture must reorder the source diff");
+    const result = await verify(root, { command: [node, "test/a.test.mjs"] });
+    assert.equal(result.code, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /^Test paths: 2\. Production paths: 1\.$/m);
+  });
+});
+
 test("verify-fix exits 0 when the test fails without the fix and passes with it", async () => {
   assert.notEqual(verifyFixModule, null, "the built verify-fix command must exist");
   // The test also writes inside the checkout and inside TMPDIR, which the

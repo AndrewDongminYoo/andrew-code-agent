@@ -591,11 +591,17 @@ async function restoreProductionPaths(
     ["status", "--porcelain=v1", "-z", "--no-renames", "--untracked-files=all"],
     isolated,
   );
-  const expected = input.testPaths.map((path) => `${path}\0`).join("");
+  // The paths are compared as sorted lists: the source repository's
+  // `diff.orderFile` orders `readChangedPaths`, and this isolated checkout
+  // ignores that configuration, so the two sides list them differently.
+  const expected = [...input.testPaths].sort().join("\0");
+  const restored = indexDifference.endsWith("\0")
+    ? indexDifference.slice(0, -1).split("\0").sort().join("\0")
+    : indexDifference;
   const unstagedOrUntracked = worktreeDifference
     .split("\0")
     .filter((entry) => entry !== "" && entry[1] !== " ");
-  if (indexDifference !== expected || unstagedOrUntracked.length !== 0)
+  if (restored !== expected || unstagedOrUntracked.length !== 0)
     throw new VerifyFixError(
       "Unable to restore the production paths in the verification checkout.",
     );
