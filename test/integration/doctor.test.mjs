@@ -460,7 +460,10 @@ async function withFixture(options, run) {
   }
 }
 
-async function runDoctorIsolated(fixture, timeoutMs = 2000) {
+// The bound is a hang guard, not a speed check: one doctor run spawns several
+// children, each allowed the fixture's 2000 ms `commandTimeoutMs`, so a bound
+// equal to one child's budget reported a slow but live run as a hang.
+async function runDoctorIsolated(fixture, timeoutMs = 30_000) {
   const script = join(fixture.root, "isolated-doctor.mjs");
   await writeFile(
     script,
