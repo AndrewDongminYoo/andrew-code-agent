@@ -144,6 +144,7 @@ starting HEAD, terminal HEAD, turn id, terminal status, and the repository's fin
 - `andrew-agent resume <thread-id> [prompt]` prints a stored thread, or continues it.
 - `andrew-agent status [thread-id]` prints the stored record, and live status when given an id.
 - `andrew-agent triage <pr>` reads the unresolved bot review threads of one pull request through the `gh` login and has Codex classify each finding as valid, invalid, or already fixed at the checked-out PR head; it never writes to GitHub.
+- `andrew-agent verify-fix [base] [--with <path>]... [--test <path>]... -- <command> [args...]` runs your test command once with the branch's production changes reverted and once at HEAD, in isolated checkouts with the network blocked, and exits 0 only when the tests fail without the fix and pass with it.
 
 `status` with no argument resolves the latest thread for the repository you are standing in.
 `resume` with no prompt prints the stored record and starts no turn.
@@ -220,12 +221,23 @@ After Codex finishes, the command reads the local HEAD and the pull request head
 It never replies, reacts, resolves a thread, edits a pull request, or pushes.
 `docs/specs/2026-10-27-triage-command.md` owns the full contract.
 
+`verify-fix` uses the same named-branch, clean-worktree, exact three-dot comparison, and isolated-checkout boundaries as `review`, and never runs Codex.
+You name the test command after `--`; it runs as an argument vector without a shell, and the command never reads one from the repository.
+A changed path is a test path when it lies under a `test`, `tests`, `__tests__`, or `spec` directory or its file name contains `.test.`, `.spec.`, or `_test.`; any `--test <path>` replaces those defaults.
+An empty test set or production set is refused with exit `3`.
+Checkout A is HEAD with every production path restored to the merge base, and checkout B is HEAD.
+Each `--with <path>` names an untracked path inside the worktree, such as `node_modules`, that is cloned into both checkouts with APFS copy-on-write.
+Each run executes under `/usr/bin/sandbox-exec` with all network access denied, loopback included, reads of the source worktree denied, and file writes allowed only inside its checkout and a dedicated `TMPDIR`, plus `/dev/null`; if the sandbox cannot be applied, the command refuses to run.
+Each run is limited to 10 minutes and 1 MiB of combined output, and a timeout or an exceeded limit is reported as neither a pass nor a fail.
+The command prints both runs' status and an escaped tail of their output, rechecks the comparison afterwards, and discards the verdict with exit `3` if anything moved.
+`docs/specs/2026-10-29-verify-fix-command.md` owns the full contract.
+
 Exit codes:
 
 - `0` succeeded, or the turn completed.
-- `1` the turn, review, PR draft, or triage failed, a `clean-gone` worktree removal or branch deletion failed, the thread was not found, or output could not be written.
+- `1` the turn, review, PR draft, or triage failed, `verify-fix` did not verify the fix, a `clean-gone` worktree removal or branch deletion failed, the thread was not found, or output could not be written.
 - `2` invalid command usage.
-- `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check, or a triage GitHub read, size bound, or head check refused the run.
+- `3` repository, comparison, preflight, or runtime preparation failed, including a failed Doctor check, or a triage GitHub read, size bound, or head check refused the run, or `verify-fix` could not classify, prepare, sandbox, or recheck its runs.
 - `4` the App Server failed.
 - `130` the turn was interrupted.
 
