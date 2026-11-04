@@ -189,7 +189,7 @@ The review must tie defects to changed paths and lines, explain their failure me
 After Codex finishes, the command rechecks HEAD, the branch ref, the base ref, and worktree cleanliness before it prints the response.
 It discards a stale response if any reviewed input changed and never edits, commits, pushes, or publishes review comments.
 If temporary-checkout cleanup fails, it emits a redacted warning without discarding the review response or replacing the original review failure.
-If the operator interrupts the review, it terminates the Codex process group and attempts checkout cleanup before returning a failure.
+If the user interrupts the review, it terminates the Codex process group and attempts checkout cleanup before returning a failure.
 An empty comparison exits successfully without invoking Codex.
 
 `review --staged` reviews only the staged changes against HEAD, so it can run before `commit`.
