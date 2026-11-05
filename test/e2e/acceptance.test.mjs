@@ -713,8 +713,8 @@ test(
         "the real Codex did not rewrite the managed config, so this gate is vacuous",
       );
 
-      // Doctor is read-only, so this is the rewrite seen exactly as an
-      // operator sees it between runs. It reported ACTIVE_INSTALL as a blocker
+      // Doctor is read-only, so this is the rewrite seen exactly as a
+      // user sees it between runs. It reported ACTIVE_INSTALL as a blocker
       // and exited 1 before the reset-before-run class existed.
       const doctor = await runCli(environment, ["doctor"]);
       assert.equal(doctor.code, 0, `${doctor.stdout}\n${doctor.stderr}`);

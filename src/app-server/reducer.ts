@@ -43,7 +43,7 @@ export interface TurnState {
 // each however much is stored.
 const MAX_FIELD_LENGTH = 512;
 // Only a message is kept at the larger size, because it is the one value the
-// operator reads in full and 512 cut real summaries mid-sentence.
+// user reads in full and 512 cut real summaries mid-sentence.
 const MAX_MESSAGE_LENGTH = 4096;
 // Command output is content, not metadata like `command` and `cwd` beside it.
 // The renderer emits it across as many bounded lines as it needs once the
