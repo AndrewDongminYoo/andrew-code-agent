@@ -35,7 +35,7 @@ The Verification section must contain only the two host-supplied facts above.
 Summary must not contain raw angle-bracket syntax or fenced-code markers that could hide the following Verification section in rendered Markdown.
 The prompt tells Codex not to put validation results in Summary; the host does not attempt to classify the meaning of arbitrary Summary prose.
 After Codex finishes, the command rechecks the current HEAD, branch ref, base commit, and worktree cleanliness.
-If any reviewed input changed, it discards the draft and asks the operator to rerun the command.
+If any reviewed input changed, it discards the draft and asks the user to rerun the command.
 
 ## Output and failure behavior
 
@@ -48,11 +48,11 @@ The command does not create a file, commit, push, open or update a pull request,
 - Exit `3` means repository, comparison, diff-check, or runtime preparation failed.
 
 Temporary-checkout cleanup warnings remain redacted and do not replace a successful body or the primary generation failure.
-An operator interrupt terminates the Codex process group and attempts checkout cleanup before returning a failure.
+A user interrupt terminates the Codex process group and attempts checkout cleanup before returning a failure.
 
 ## Non-goals
 
-The first version does not run arbitrary repository checks, infer CI status, read prior terminal logs, accept operator-supplied validation evidence, generate a PR title, or publish to GitHub.
+The first version does not run arbitrary repository checks, infer CI status, read prior terminal logs, accept user-supplied validation evidence, generate a PR title, or publish to GitHub.
 Supplying independently captured local, CI, integration, or runtime evidence is a later feature with a separate provenance contract.
 
 ## Acceptance criteria

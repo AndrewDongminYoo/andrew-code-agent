@@ -1,6 +1,6 @@
 # Specification: Gone-branch cleanup command
 
-Date: 2026-10-27 Status: approved by the operator on 2026-10-27
+Date: 2026-10-27 Status: approved on 2026-10-27
 
 ## Goal
 
@@ -49,7 +49,7 @@ This was confirmed on Git 2.54.0 on 2026-10-27: a worktree that held only an ign
 
 The preview lists, for each worktree it will remove, the number of ignored entries and the first ten of them.
 An entry is what `git status --ignored` prints, so an ignored directory is one entry rather than every file inside it.
-Removing the worktree deletes those paths; the operator chose this over refusing such worktrees on 2026-10-27.
+Removing the worktree deletes those paths; this was chosen over refusing such worktrees on 2026-10-27.
 
 ## Preview and authorization
 
@@ -108,4 +108,4 @@ Each criterion is covered by a test against a fixture repository with a local ba
 Oracle's precedent from the `clean-gone` skill supports refusing the checked-out branch and dirty, locked, or missing worktrees, removing the worktree before the branch, and not parsing `git branch -vv`, whose `[origin/x: gone]` shape once produced a false diagnosis.
 The skill decides "merged" from GitHub pull-request state and deletes with `-D`; this command cannot, because `docs/specs/2026-10-27-branch-deletion-boundary.md` keeps it to ancestry and `git branch -d`.
 The skill's 2026-10-25 precedent requires the tip to be contained in the updated default branch before deletion, which matches `NOT_ON_DEFAULT`.
-The skill also skips a worktree that holds ignored paths, because it removes with `--force`; this command lists ignored paths in the preview and removes them instead, by operator decision recorded at approval.
+The skill also skips a worktree that holds ignored paths, because it removes with `--force`; this command lists ignored paths in the preview and removes them instead, by a decision recorded at approval.

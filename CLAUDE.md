@@ -109,7 +109,7 @@ Command handlers take a `CommandDependencies` record whose defaults are the real
 
 ### Exit codes
 
-`README.md` owns the operator-facing table.
+`README.md` owns the user-facing table.
 It was verified against the `return` and `outcome =` sites in `src/cli.ts`, `src/commands/run.ts`, `src/commands/resume.ts`, and `src/commands/status.ts`; re-derive it there rather than from memory if the mapping changes.
 
 ### Fail-closed invariants

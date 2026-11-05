@@ -19,7 +19,7 @@ This is phase 4 of the sequence recorded on issue #25 on 2026-09-03.
 
 ## Global Constraints
 
-- The test never reads the operator's live wiki; the vault is a temporary
+- The test never reads the user's live wiki; the vault is a temporary
   repository under `tmpdir()` and only the server _code_ is linked in.
 - The test is opt-in behind `ANDREW_AGENT_REAL_SMOKE=1`,
   `ANDREW_AGENT_SMOKE_AUTH`, and a new `ANDREW_AGENT_WIKI_SERVER_ROOT` naming the wiki checkout whose `mcp-server` to link; unset means a printed skip notice, like the other live gates in `test/e2e/acceptance.test.mjs`.

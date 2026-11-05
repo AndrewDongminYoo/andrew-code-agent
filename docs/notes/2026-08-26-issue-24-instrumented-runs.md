@@ -92,7 +92,7 @@ Both runs also logged this, on the parent's own thread:
 
 This one is not a gap.
 `test/contract/reducer.test.mjs` carries the case "still rejects a completion whose items were never loaded", whose message reads "notLoaded carries no observed inventory and stays fail-closed", so the rejection was chosen.
-What the runs add is the consequence: `notLoaded` is what an **interrupted** turn's `turn/completed` actually carries, so the choice costs the coordinator the server's own terminal report on every interrupt, including one the operator asks for.
+What the runs add is the consequence: `notLoaded` is what an **interrupted** turn's `turn/completed` actually carries, so the choice costs the coordinator the server's own terminal report on every interrupt, including one the user asks for.
 
 Both captures reached it with `fatalFailure` already set, where `settle()` resolves `"failed"` regardless.
 So D3 changes no reported status until D1 and D2 are closed; it becomes observable on a genuine interrupt after that.
@@ -169,7 +169,7 @@ Each arm ran once, on a machine loaded to between 5 and 11 all session, so the t
 | rejects `notLoaded` | `failed`        | 1    | 6.372 s        |
 
 So the cost was larger than this note first recorded.
-Rejecting the frame does not merely fall back to the five-second interrupt grace timer: the reducer throw sets `fatalFailure`, where `settle()` resolves `"failed"` regardless, so an interrupt the operator asked for was reported as a failure and exited 1.
+Rejecting the frame does not merely fall back to the five-second interrupt grace timer: the reducer throw sets `fatalFailure`, where `settle()` resolves `"failed"` regardless, so an interrupt the user asked for was reported as a failure and exited 1.
 The earlier reading that D3 "changes no reported status until D1 and D2 are closed" held for those two captures, which already had `fatalFailure` set for another reason.
 It does not hold for a live interrupt.
 

@@ -280,7 +280,7 @@ test("a message in flight renders a constant, and its text only when complete", 
 });
 
 // The same cap that bounded the reprints also truncated the answer where it was
-// printed, mid-sentence, in the one place the operator reads it.
+// printed, mid-sentence, in the one place the user reads it.
 test("a completed message longer than the old cap renders without truncation", () => {
   const text = "요약: ".concat("변경 사항을 확인했습니다. ".repeat(40));
   const lines = renderer().renderTurnState({
@@ -413,7 +413,7 @@ test("two commands printing the same output each render their own lines", () => 
 });
 
 // The reducer appends the marker when it drops the tail. Chunking must carry it
-// through, or the operator reads a short output as a complete one.
+// through, or the user reads a short output as a complete one.
 test("a completed command keeps the truncation marker the reducer appended", () => {
   const lines = renderer().renderTurnState({
     threadId: "thread-1",
@@ -624,7 +624,7 @@ test("reports context pressure only when the server measured it", () => {
   };
   const linesFor = (tokenUsage) => renderer().renderTurnState({ ...base, tokenUsage }).join("\n");
 
-  // The ratio is what the operator acts on, so it is rendered rather than
+  // The ratio is what the user acts on, so it is rendered rather than
   // left to be divided by hand.
   assert.match(linesFor({ totalTokens: 204000, contextWindow: 272000 }), /Context usage: 204000 of 272000 tokens \(75%\)/);
   // A window the server never reported cannot produce a ratio, and the total

@@ -6,7 +6,7 @@ It changes no product code.
 
 This run predates a later fix: projecting `mcp_servers.probe.command` (or any `mcp_servers.*` path) through `config_keys`, as Step 4 does below, is now refused with `ManifestErrorCode` `RESERVED_CONFIG_KEY`, so the manifest edit this note made would no longer parse.
 
-Measured 2026-09-04 against the pinned `~/.codex/packages/standalone/releases/0.152.1-aarch64-apple-darwin/bin/codex` (`codex-cli 0.152.1`), product at `9b3d4c7`, the operator's real bundle source at `2260a82` (read only, never written to).
+Measured 2026-09-04 against the pinned `~/.codex/packages/standalone/releases/0.152.1-aarch64-apple-darwin/bin/codex` (`codex-cli 0.152.1`), product at `9b3d4c7`, the real bundle source at `2260a82` (read only, never written to).
 
 ## Step 1: a recording MCP "server"
 
@@ -60,14 +60,14 @@ Two changes from the brief's literal recipe, both discovered empirically and rec
   (`/private/tmp`) is mode `1777`; `createScratchRoot` in `src/commands/doctor.ts` refuses any scratch parent whose mode has the group- or other-write bits set, which is the correct behavior — the fixture's `TMPDIR` default of `/tmp` only ever works there because the whole fixture is disposable and the check is about safety, not convenience.
   A real shell's `$TMPDIR` is normally a private per-user directory under `/var/folders/...` and would pass; this measurement used an explicit owner-only (`0700`) directory instead.
 
-A throwaway clone of the operator's own bundle source (`git clone --quiet /Users/dongminyu/.codex /tmp/mcp-probe/source`, read-only against the original) got two commits, neither touching `/Users/dongminyu/.codex` itself:
+A throwaway clone of the bundle source (`git clone --quiet /Users/dongminyu/.codex /tmp/mcp-probe/source`, read-only against the original) got two commits, neither touching `/Users/dongminyu/.codex` itself:
 
 1. `config.toml` gained `[mcp_servers.probe]` with `command` and
    `startup_timeout_sec` only (scalar keys, matching the brief's "this proves the spawn, not the array keys"), and `agent-bundle.toml`'s `config_keys` gained `mcp_servers.probe.command` and `mcp_servers.probe.startup_timeout_sec`.
 2. `hooks/handoff-first-precompact.sh` had its `MARKER_DIR` value changed from
    `${CODEX_STATE_HOME}/cache/handoff-first` to `${CODEX_STATE_HOME}/handoffmarkers`.
    The original text fails this product's own manifest validation (`FORBIDDEN_PATH_SEGMENT`, rule `forbidden-path-segment`) because the file's content contains the substring `cache/handoff-first`, and `cache` is one of `agent-bundle.toml`'s own `forbidden.path_segments`.
-   This is confirmed present in the real, currently-committed `~/.codex` HEAD (`git -C ~/.codex show HEAD:hooks/handoff-first-precompact.sh`) and is unrelated to MCP servers or to this task's edits — it is a pre-existing property of the operator's real bundle source that a normal build from it would also hit.
+   This is confirmed present in the real, currently-committed `~/.codex` HEAD (`git -C ~/.codex show HEAD:hooks/handoff-first-precompact.sh`) and is unrelated to MCP servers or to this task's edits — it is a pre-existing property of the real bundle source that a normal build from it would also hit.
    It is reported here as a finding, not fixed in the real repository, and the probe clone's edit exists only to get a candidate bundle far enough to spawn the MCP child.
 
 Command (`HOME`, `ANDREW_AGENT_CODEX_SOURCE`, `ANDREW_AGENT_STATE_ROOT`, and `ANDREW_AGENT_CODEX_BIN` built the same way `environmentFor` in `test/e2e/acceptance.test.mjs` builds them; `PATH` differs from that harness, which inherits the outer process's own `PATH` — this measurement instead passed a fully explicit, hand-narrowed `PATH` so every input to the run stayed named rather than ambient):
@@ -151,7 +151,7 @@ A manifest section that wants a variable in the MCP child's environment cannot r
 
 ## Does the child's PATH contain pnpm's directory?
 
-`buildChildPath()` in `src/app-server/client.ts` builds the App Server's own `PATH` from `dirname(process.execPath)`, then every absolute entry of the CLI process's own `PATH`, then `/usr/bin` and `/bin` — so in a normal operator invocation, whatever directory holds `pnpm` on the operator's real `PATH` would be forwarded.
+`buildChildPath()` in `src/app-server/client.ts` builds the App Server's own `PATH` from `dirname(process.execPath)`, then every absolute entry of the CLI process's own `PATH`, then `/usr/bin` and `/bin` — so in a normal user invocation, whatever directory holds `pnpm` on the user's real `PATH` would be forwarded.
 The Step 4 run above cannot answer this: its CLI `PATH` was hand-narrowed to `<node bin dir>:/usr/bin:/bin:/usr/sbin:/sbin`, which excludes pnpm's directory by construction, not by measurement.
 
 `command -v pnpm` reports `/opt/homebrew/bin/pnpm`.
@@ -186,7 +186,7 @@ PATH=
 All six segments passed to the CLI reach the child unchanged and in order, with the same two Codex-managed directories prepended as the first run.
 `/opt/homebrew/bin` is present.
 
-**`MCP_PATH_CONTAINS_PNPM_DIR = true`**, whenever that directory is on the `PATH` of the process that starts the App Server — which `buildChildPath()` guarantees for a normal operator invocation, since it forwards every absolute entry of that `PATH` unfiltered.
+**`MCP_PATH_CONTAINS_PNPM_DIR = true`**, whenever that directory is on the `PATH` of the process that starts the App Server — which `buildChildPath()` guarantees for a normal user invocation, since it forwards every absolute entry of that `PATH` unfiltered.
 
 ## What this does not establish
 

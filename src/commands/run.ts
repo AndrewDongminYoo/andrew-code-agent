@@ -457,7 +457,7 @@ export function diagnosticFor(error: unknown, phase: string): string {
     return withCause("Candidate readiness failed", blockerList(error.blockers));
   // Resolving the runtime paths is preparation whatever phase the caller
   // labelled it: resume does it while still in its local phase, and reporting
-  // a missing codex binary as a thread lookup failure sends the operator to
+  // a missing codex binary as a thread lookup failure sends the user to
   // the wrong place.
   if (error instanceof RuntimePathError)
     return withCause("Runtime preparation failed", error.code);

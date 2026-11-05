@@ -5,15 +5,15 @@
 No `andrew-agent` command contacts GitHub.
 `docs/specs/2026-09-21-pr-command.md` excludes GitHub access from the `pr` command and lists publishing to GitHub as a non-goal.
 A command that triages hosted review findings (issue #81) must at least read the review threads of a pull request.
-Issue #80 asks the operator to set that boundary before any implementation.
+Issue #80 asks for that boundary to be set before any implementation.
 
 ## Decision
 
-The operator decided this boundary on 2026-10-27.
+This boundary was decided on 2026-10-27.
 
 The CLI may read GitHub, and only read it.
 A command may read the review threads of one pull request and that pull request's head SHA.
-It reads them through the operator's existing `gh` login.
+It reads them through the user's existing `gh` login.
 
 The CLI never writes to GitHub.
 This prohibition is permanent: it is not a first-version limit.
@@ -26,7 +26,7 @@ The command bounds the size of that text before it reaches the prompt, and it es
 ## Constraints added while drafting
 
 These constraints were added when this spec was written, as fail-closed readings of the decision above.
-The operator approved them with the spec, not as separate answers.
+They were approved with the spec, not as separate answers.
 
 - The CLI does not store, copy, or accept a GitHub credential other than the `gh` login.
 - A future command that needs a GitHub write needs a new decision that replaces this spec; it cannot extend this one.

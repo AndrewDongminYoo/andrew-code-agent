@@ -58,6 +58,6 @@ Apply bounded local repairs until no supported findings remain.
 
 Use concern-based semantic commits, push `feat/pr-command`, and open a PR against `main`.
 Observe current-head CI, CodeRabbit or its explicit skip, hosted Codex review, and every paginated review thread.
-Stop at the operator merge boundary.
+Stop at the user merge boundary.
 
 Visual approval is not required because the change affects CLI parsing, Markdown text output, documentation, and automated tests only.

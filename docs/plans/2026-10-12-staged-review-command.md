@@ -1,6 +1,6 @@
 # Staged Review Command Implementation Plan
 
-Date: 2026-10-12 Status: approved by the operator on 2026-10-12 (issue #74); see the reconciliation section
+Date: 2026-10-12 Status: approved on 2026-10-12 (issue #74); see the reconciliation section
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task.
 > Steps use checkbox (`- [ ]`) syntax for tracking.

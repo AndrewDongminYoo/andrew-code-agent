@@ -92,7 +92,7 @@ That is a narrower task, and it is the honest one: what is being measured is whe
 
 Recorded so the next session does not re-derive them:
 
-- **A per-run allowance for named paths.** Precise, and it means an operator
+- **A per-run allowance for named paths.** Precise, and it means a user
   choosing to widen the boundary states which path and why.
   It also adds a surface where a manifest could quietly grant `$HOME`.
 - **A pre-warm step outside the turn.** Run the toolchain's cache-populating

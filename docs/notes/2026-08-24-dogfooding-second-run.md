@@ -25,7 +25,7 @@ The state that blocked the first run is present throughout: after every turn the
 A deliberate attempt to reproduce the drift by hand missed the shape and is worth recording for what it did find instead.
 Appending a second copy of the trust block produced a duplicate TOML key rather than the first run's drift, and `codex app-server --strict-config` rejects that file with `config.toml:63:11: duplicate key` and a parse error naming the line.
 Doctor reduces the whole of that to `blocker STRICT_CONFIG: Strict Codex configuration validation failed.` — the check spawns the real Codex against a shadow copy and reads only its exit code, and `classifyStrictConfig` discards the child's output on purpose (`src/commands/doctor.ts:920`).
-So an operator with a genuinely malformed managed config gets no line, no column, and no reason, while the binary underneath printed all three.
+So a user with a genuinely malformed managed config gets no line, no column, and no reason, while the binary underneath printed all three.
 `run` from that same file still succeeded at exit 0, since the reset replaced it before the turn started.
 
 ### P1 — the streaming renderer no longer reprints prefixes
@@ -113,7 +113,7 @@ Every failure probe named its check code where the first run printed one opaque 
 
 - **Newlines still render as literal `\x0A`.** Every multi-line answer arrives
   as one unbroken run per chunk.
-  The escaping is right and the result is still not prose an operator reads comfortably.
+  The escaping is right and the result is still not prose a user reads comfortably.
   Recorded, not fixed.
 - **`Command output:` is still truncated** at the ordinary rendered-value
   bound, which is a different cap from the message one and was not part of `#7`.
@@ -139,9 +139,9 @@ Two further diagnostics cost a second command each:
 ## One new observation
 
 t01 spent its first shell command entirely inside the managed home, reading `codex-home/plugins/cache/openai-curated-remote/superpowers/6.3.0/skills/using-superpowers/SKILL.md`, and its second read more of that same tree before reaching `src/output.js`.
-The bundle's own skill material is turn work the operator pays for and can see in the log; whether that is worth its cost is a bundle-composition question, not a defect, and this run only notes that it is visible.
+The bundle's own skill material is turn work the user pays for and can see in the log; whether that is worth its cost is a bundle-composition question, not a defect, and this run only notes that it is visible.
 
 ## What this suggests
 
 The three P1s the first run named are closed and the P0 with them, so the product is usable in a way it was not on 2026-08-22.
-What remains is P2-shaped and mostly presentational: the escaped newline is the one that still costs the operator on every turn, and it is the only remaining finding that touches the same terminal path `#7` already rewrote.
+What remains is P2-shaped and mostly presentational: the escaped newline is the one that still costs the user on every turn, and it is the only remaining finding that touches the same terminal path `#7` already rewrote.

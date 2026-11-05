@@ -2,11 +2,11 @@
 
 This note records the live synthetic-vault gate for issue #25.
 The run used `codex-cli 0.152.1` and Oracle provider commit `354e7d0853389c15f69af10090e557ddd4caa95b`.
-The fixture did not read the operator's wiki pages.
+The fixture did not read the real wiki pages.
 
 ## Command
 
-The operator ran this command with the local placeholders resolved:
+This command was run with the local placeholders resolved:
 
 ```bash
 ANDREW_AGENT_REAL_SMOKE=1 \

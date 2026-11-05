@@ -46,5 +46,5 @@ Confirm that no-change and zero-finding outcomes remain successful rather than m
 
 ## Completion boundary
 
-This plan ends at a reviewed PR ready for operator merge.
+This plan ends at a reviewed PR ready for user merge.
 Merge, branch cleanup, and memory recording require separate authority.
