@@ -9,7 +9,7 @@ The boundaries are listed in full under [v0.1 limitations](#v01-limitations).
 ## Requirements
 
 - macOS. The runtime refuses every other platform.
-- Node.js 24.20.0 and pnpm 11.22.0.
+- Node.js `^24.20.0` and pnpm `^11.22.0` (compatible updates within the same major version).
 - Codex `0.152.1` exactly. A different version is a Doctor blocker and fails
   before the App Server starts.
 - A Git worktree to act on, and a clean Git worktree to build the bundle from.
@@ -17,6 +17,8 @@ The boundaries are listed in full under [v0.1 limitations](#v01-limitations).
 ## Install
 
 The package is private and is never published.
+The development toolchain stays pinned through `.nvmrc` and `packageManager`; `engines` declares the compatible installation range.
+The engine ranges retain the previously pinned versions as conservative support baselines, rather than measured technical minimums.
 Build it from a checkout:
 
 ```bash
