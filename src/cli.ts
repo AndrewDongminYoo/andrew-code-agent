@@ -376,7 +376,7 @@ function isSupportedCapability(value: string): value is RequestedCapability {
 }
 
 // A capability whose declared input is absent fails by name rather than being
-// dropped, so an operator never gets a quiet run without what they asked for.
+// dropped, so a user never gets a quiet run without what they asked for.
 // Only presence is decided here; canonicalizing the root is runtime-path work.
 function missingCapabilityInput(
   capabilities: readonly RequestedCapability[],
@@ -454,7 +454,7 @@ async function writeUsage(
   await writeLine(output, usage["verify-fix"]);
 }
 
-// The test command after `--` belongs to the operator and is passed through
+// The test command after `--` belongs to the user and is passed through
 // unparsed, so only the region before the first `--` is read as options.
 async function verifyFix(
   commandArguments: readonly string[],

@@ -22,7 +22,7 @@ Raw stdout lines were appended verbatim before any parse, so a field the generat
 
 The conversation mirrored the product's own, read from `client.ts` and `coordinator.ts` rather than invented: `initialize` with the product's `clientInfo` and capabilities, `initialized`, then `thread/start` with `approvalPolicy: "on-request"`, `approvalsReviewer: "user"`, `sandbox: "workspace-write"`, then `turn/start` with the coordinator's `workspaceWrite` policy — the target repository as the only writable root and `networkAccess: false`.
 
-Environment: the pinned `0.152.1` binary, the operator's already-authenticated managed `codex-home`, and a throwaway git repository holding one file.
+Environment: the pinned `0.152.1` binary, the already-authenticated managed `codex-home`, and a throwaway git repository holding one file.
 Every approval was answered `decline`, and the declined write was confirmed absent afterwards.
 
 ## What the binary sent
@@ -45,7 +45,7 @@ Every one is a difference in values the schema already permits, except `availabl
 
 `availableDecisions` held `accept`, an `acceptWithExecpolicyAmendment` object, and `cancel`; `commandActions` held one `{ type: "unknown", command }`.
 
-`command` arrives already wrapped in the login shell (`/bin/zsh -lc '...'`) while `commandActions[].command` carries the bare command, and `reason` is written in the operator's language.
+`command` arrives already wrapped in the login shell (`/bin/zsh -lc '...'`) while `commandActions[].command` carries the bare command, and `reason` is written in the user's language.
 Korean is not itself an escaping case — `escapeTerminalControls` matches only `Cc/Cf/Zl/Zp` — so what the frame exercises is that multi-byte text passes through unmangled and that per-code-point byte accounting does not false-trip a bound.
 
 ## What the capture revealed that nobody had acted on
@@ -60,13 +60,13 @@ Filed as issue #53 and closed in the same branch.
 
 **The grant is not request-scoped, and a first draft said it was.** The generated params type documents `proposedExecpolicyAmendment` as allowing similar commands _without prompting_, so accepting it changes policy for later commands.
 `acceptedForSession: false` does not constrain that: nothing outside `approvals.ts` reads the flag, and the coordinator forwards `response` alone.
-The label now states the scope, because the prompt is the only place the operator learns it.
+The label now states the scope, because the prompt is the only place the user learns it.
 
 The network amendment beside it has the same undisclosed forward scope — its own doc says "for future requests" — and its label is unchanged here.
 Its label already runs to 97 bytes against a 96-byte budget with a 64-byte host, so appending a scope clause would make a long-host request refuse rather than prompt.
 Worth fixing, not by appending.
 
-Displaying the argv took two corrections, both of the same shape: the operator would have authorized something other than what was shown.
+Displaying the argv took two corrections, both of the same shape: the user would have authorized something other than what was shown.
 
 The first draft sliced the tokens to `MAX_APPROVAL_LIST_ITEMS`, displaying `curl -sS --max-time 20 -D - -o /dev/null` while the response carried that plus `https://example.com`.
 `bounded()` marks a byte truncation; a token slice drops the tail in silence.

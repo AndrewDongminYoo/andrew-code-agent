@@ -4,7 +4,7 @@ Date: 2026-09-18 Status: implementation present; local review and PR delivery pe
 
 ## Direction
 
-The operator approved `commit` as the first daily task and asked to wait for ten real uses before choosing another command.
+I approved `commit` as the first daily task and asked to wait for ten real uses before choosing another command.
 The approved direction uses a staged-only proposal, direct terminal invocation as authorization, HEAD and index recheck, normal Git commit, and no push from this command.
 
 ## Steps and checks
@@ -38,5 +38,5 @@ Check failure diagnostics and temporary state cleanup.
 
 ## Completion boundary
 
-This plan ends at a reviewed PR ready for operator merge.
+This plan ends at a reviewed PR ready for user merge.
 Merge, branch cleanup, and memory recording require their separate authority.

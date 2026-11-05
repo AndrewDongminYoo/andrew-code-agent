@@ -5,13 +5,13 @@
 No `andrew-agent` command runs a command that belongs to the target repository.
 `docs/specs/2026-09-21-pr-command.md` lists running arbitrary repository checks as a non-goal.
 A fix-verification command (issue #83) must run at least one test command twice: once without the production change and once with it.
-Issue #82 asks the operator to set that boundary before any implementation.
+Issue #82 asks for that boundary to be set before any implementation.
 
 ## Decision
 
-The operator decided this boundary on 2026-10-27.
+This boundary was decided on 2026-10-27.
 
-The operator names the test command as a command argument.
+The user names the test command as a command argument.
 Codex never chooses, infers, or changes the test command.
 The command does not read a test command from the repository, from `agent-bundle.toml`, or from any other configuration file.
 
@@ -24,7 +24,7 @@ Each run of the test command has a time limit and an output limit.
 ## Constraints added while drafting
 
 These constraints were added when this spec was written, as fail-closed readings of the decision above.
-The operator approved them with the spec, not as separate answers.
+They were approved with the spec, not as separate answers.
 
 - When a run exceeds the time limit, the command stops the whole process group and reports the run as timed out, not as a pass or a failure of the test.
 - When a run exceeds the output limit, the command stops the run and reports that the limit was exceeded.

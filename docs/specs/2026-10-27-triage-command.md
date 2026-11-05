@@ -1,11 +1,11 @@
 # Specification: Review thread triage command
 
 Date: 2026-10-27
-Status: approved by the operator through the issue #81 brief
+Status: approved through the issue #81 brief
 
 ## Goal
 
-Give the operator an evidence-based classification of the automated review findings on one pull request through `andrew-agent triage <pr>`.
+Give the user an evidence-based classification of the automated review findings on one pull request through `andrew-agent triage <pr>`.
 Each finding is classified as valid, invalid, or already fixed at the pull request head, with repository evidence.
 The command follows `docs/specs/2026-10-27-github-review-thread-access.md`: it reads GitHub through the `gh` login and never writes to it.
 
@@ -16,7 +16,7 @@ It must be a positive decimal integer without a leading zero and at most `214748
 
 The command requires a named current branch and a clean worktree.
 The local HEAD commit must equal the pull request's `headRefOid` on GitHub.
-If it does not, the command exits `3` before Codex runs and asks the operator to check out the pull request head.
+If it does not, the command exits `3` before Codex runs and asks the user to check out the pull request head.
 
 ## GitHub reads
 

@@ -48,7 +48,7 @@ const MAX_MESSAGE_LENGTH = 4096;
 // Command output is content, not metadata like `command` and `cwd` beside it.
 // The renderer emits it across as many bounded lines as it needs once the
 // command completes, so retaining only a field's worth would discard what the
-// operator asked to see. This is the one place that owns the retained size;
+// user asked to see. This is the one place that owns the retained size;
 // the renderer chunks whatever arrives and never restates the number.
 const MAX_COMMAND_OUTPUT_LENGTH = 4096;
 const MAX_ITEMS = 64;
@@ -754,7 +754,7 @@ export function reduceServerMessage(
     // which calls failClosed() and interrupts the turn — the failure recorded
     // in docs/notes/2026-08-26-issue-24-instrumented-runs.md. This value is
     // informational, so anything unreadable leaves the last snapshot in place
-    // rather than costing the operator the run.
+    // rather than costing the user the run.
     if (
       params === null ||
       params.threadId !== state.threadId ||
@@ -826,7 +826,7 @@ export function reduceServerMessage(
     // view makes the same claim with nothing loaded at all, and it is what an
     // interrupted turn's completion actually carries, measured against codex
     // 0.148.0 on 2026-08-26. Rejecting it threw away the server's own
-    // terminal report, which reported an operator's own interrupt as `failed`
+    // terminal report, which reported a user's own interrupt as `failed`
     // at exit 1 five seconds later rather than `interrupted` at 130, measured
     // by interrupting the same live turn under both builds. So it settles the
     // status here on the same terms and still contributes no inventory.

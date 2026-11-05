@@ -907,7 +907,7 @@ function choices(request: ValidRequest): readonly Choice[] {
     // WITHOUT prompting, so accepting it changes policy for later commands.
     // `acceptedForSession` does not constrain that and cannot — nothing outside
     // this file reads it, and the coordinator forwards `response` alone. The
-    // prompt is the only place the operator learns what they are granting.
+    // prompt is the only place the user learns what they are granting.
     const execpolicyAmendment = request.params.proposedExecpolicyAmendment;
     if (Array.isArray(execpolicyAmendment) && execpolicyAmendment.length > 0) {
       values.push({
@@ -1052,7 +1052,7 @@ function hasCompletePromptContext(
   )
     return false;
   // The amendment is granted in full while the prompt shows it bounded, so
-  // without this the operator would authorize argv bytes the display had cut.
+  // without this the user would authorize argv bytes the display had cut.
   // Every other displayed field is gated here rather than trusted to
   // `bounded()`, and refusing is what makes the truncation unreachable: a
   // `command` too long to render already declines without prompting, and this
@@ -1119,7 +1119,7 @@ function prompt(
   ] as const)
     if (typeof params[key] === "string")
       context.push(`${key}: ${bounded(params[key])}`);
-  // Without this the operator would be offered the amendment choice above with
+  // Without this the user would be offered the amendment choice above with
   // no sight of the argv it grants. Two ways to display it wrongly, both of
   // which authorize something other than what was shown, and both rejected:
   // slicing the tokens drops the tail silently, and joining them on a space

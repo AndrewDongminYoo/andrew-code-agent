@@ -66,7 +66,7 @@ A metadata or provider failure returns no source content for that operation.
 
 ## Synthetic fixture
 
-Tests must use a temporary synthetic Oracle root and must not read the operator's live wiki.
+Tests must use a temporary synthetic Oracle root and must not read the user's live wiki.
 The fixture contains these tracked inputs:
 
 - One eligible page with the literal `PUBLIC_ORACLE_CANARY_7A42` and no

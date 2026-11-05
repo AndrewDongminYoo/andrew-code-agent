@@ -769,7 +769,7 @@ test("the enabled Oracle root is scanned for even when the manifest never heard 
     const clean = await renderBundle(repository, manifest(), { oracle: { llmWikiRoot: wiki } });
     assert.equal(clean.files.some((file) => new TextDecoder().decode(file.bytes).includes(wiki)), false);
 
-    // A bundled file that hardcodes the operator's wiki path instead of the
+    // A bundled file that hardcodes the user's wiki path instead of the
     // token is exactly what this scan exists to stop.
     await writeFile(join(repository, "agents", "oracle.toml"), `name = "oracle"\nwiki_root = "${wiki}"\n`);
     await execFile("git", ["-C", repository, "add", "--all"]);

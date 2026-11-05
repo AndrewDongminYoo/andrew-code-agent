@@ -3,7 +3,7 @@
 // Every scenario spawns dist/cli.js as a child process with an explicitly
 // constructed environment. The child must never inherit process.env: the
 // runtime resolves HOME and the ANDREW_AGENT_* roots from its own environment,
-// so an inherited one would reach the operator's real Codex home and real
+// so an inherited one would reach the user's real Codex home and real
 // Application Support directory.
 
 import assert from "node:assert/strict";
@@ -253,7 +253,7 @@ async function runCliOnPty(fixture, argv, selection) {
   }
 }
 
-test("a gated action is approved when the operator answers on a terminal", async () => {
+test("a gated action is approved when the user answers on a terminal", async () => {
   const fixture = await createEnvironment();
   try {
     const scriptPath = await writeApprovalScript(fixture);
@@ -370,7 +370,7 @@ test("an unaccountable install journal blocks the next run instead of proceeding
     );
 
     // The leftover journal invalidates the active installation rather than
-    // surfacing under INSTALL_JOURNAL, which is what an operator will read.
+    // surfacing under INSTALL_JOURNAL, which is what a user will read.
     const doctor = await runCli(environment, ["doctor"]);
     assert.equal(findings(doctor.stdout).get("ACTIVE_INSTALL"), "blocker", doctor.stdout);
     assert.equal(doctor.code, 1);
@@ -390,7 +390,7 @@ test("an unaccountable install journal blocks the next run instead of proceeding
 });
 
 // The fixture synthesizes authentication into the managed home, which is the
-// one step an operator has to perform themselves. Without this case the
+// one step a user has to perform themselves. Without this case the
 // acceptance layer never exercises a machine that has not been logged in —
 // the gap that let the README document a first-run sequence that could not
 // work.
@@ -591,7 +591,7 @@ test(
 
     const fixture = await createEnvironment();
     try {
-      // The managed home must be the fixture's, never the operator's.
+      // The managed home must be the fixture's, never the user's.
       const productionStateRoot = join(
         process.env.HOME ?? "/nonexistent",
         "Library", "Application Support", "andrew-code-agent",

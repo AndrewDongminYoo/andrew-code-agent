@@ -1,10 +1,10 @@
 # Specification: Staged commit command
 
-Date: 2026-09-18 Updated: 2026-09-20 Status: approved by the operator's commit-first brief
+Date: 2026-09-18 Updated: 2026-09-20 Status: approved through the commit-first brief
 
 ## Goal
 
-Give the operator one useful daily task through `andrew-agent commit`.
+Give the user one useful daily task through `andrew-agent commit`.
 Keep the existing clean-worktree rule for `run` and `resume` intact.
 
 ## Input and proposal
@@ -60,7 +60,7 @@ It does not implement `review`, `pr`, automatic commit splitting, or push.
 
 Oracle's staged-index precedent supports the immediate index recheck.
 Oracle's confirmation precedent originally supported the explicit `yes` boundary.
-After eight real uses, the operator found the repeated prompt unnecessary and explicitly made direct terminal invocation the authorization boundary while retaining preview-only non-interactive behavior.
+After eight real uses, the repeated prompt was found unnecessary and direct terminal invocation was explicitly made the authorization boundary while retaining preview-only non-interactive behavior.
 Its hook precedent supports normal hook execution and post-commit comparison.
 Oracle found no precedent for the exact long-message structure or default.
 Its file-transport precedent supports passing the generated message through `git commit --file` instead of shell-interpolated text.

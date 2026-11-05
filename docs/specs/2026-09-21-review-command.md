@@ -1,10 +1,10 @@
 # Specification: Branch review command
 
-Date: 2026-09-21 Status: approved by the operator's review-command brief
+Date: 2026-09-21 Status: approved through the review-command brief
 
 ## Goal
 
-Give the operator an evidence-based review of committed changes on the current branch compared with a base branch through `andrew-agent review [base]`.
+Give the user an evidence-based review of committed changes on the current branch compared with a base branch through `andrew-agent review [base]`.
 Report confirmed defects separately from missing verification and do not modify the repository.
 
 ## Comparison boundary
@@ -34,10 +34,10 @@ It lists missing verification separately because absent validation is not proof 
 It states when no defects are found and identifies validation that it did not run.
 
 The command holds the final model response until it rechecks the current HEAD, branch ref, base commit, and clean worktree.
-If any reviewed Git input changed, it discards the response and asks the operator to rerun the review.
+If any reviewed Git input changed, it discards the response and asks the user to rerun the review.
 The command prints the resolved comparison identities before the final review response.
 If temporary-checkout cleanup fails, the command emits a redacted warning while preserving a successful response or the original review failure and exit code.
-If the operator interrupts the review, the command terminates the Codex process group and attempts checkout cleanup before returning a failure.
+If the user interrupts the review, the command terminates the Codex process group and attempts checkout cleanup before returning a failure.
 
 ## Limits and non-goals
 

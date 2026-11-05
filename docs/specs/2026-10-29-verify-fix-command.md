@@ -1,11 +1,11 @@
 # Specification: Fix verification command
 
-Date: 2026-10-29 Status: approved by the operator on 2026-10-29 through the `/pr-loop` plan gate
+Date: 2026-10-29 Status: approved on 2026-10-29 through the `/pr-loop` plan gate
 
 ## Goal
 
 Show that the tests on the current branch catch its fix through `andrew-agent verify-fix [base] [--with <path>]... [--test <path>]... -- <command> [args...]` (issue #83).
-The command runs the operator's test command twice: once with the production changes reverted and once at HEAD.
+The command runs the user's test command twice: once with the production changes reverted and once at HEAD.
 It follows the boundary in `docs/specs/2026-10-27-repository-test-command-boundary.md` and does not widen it.
 
 ## Input
@@ -69,7 +69,7 @@ Measured on macOS 27.0.1 with Git 2.54.0 on 2026-10-29: under this profile, `cur
 Creating a hard link inside the checkout to a file outside it, writing through a symbolic link that points outside, and renaming an outside file into the checkout were each refused with `Operation not permitted`, and the outside file stayed unchanged.
 Under the same profile, `node --test` ran and wrote inside the checkout and `TMPDIR`.
 With the source read deny and without the `/dev/tty` and `/dev/dtracehelper` write allowances, measured on the same day: `cat` through an absolute symbolic link from the checkout into `SOURCE`, `ls`, and `stat` of `SOURCE` each failed with `Operation not permitted`, a write to `/dev/tty` was refused, a write to `/dev/null` succeeded, and `node --test` still ran.
-A first attempt that allowed only loopback also let `github.com` through, which is why the operator chose to deny all network access.
+A first attempt that allowed only loopback also let `github.com` through, which is why denying all network access was chosen.
 
 ## Limits
 

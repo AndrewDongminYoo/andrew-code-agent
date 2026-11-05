@@ -1,11 +1,11 @@
 # Specification: Documentation drift command
 
 Date: 2026-10-29
-Status: approved by the operator through the issue #75 brief
+Status: approved through the issue #75 brief
 
 ## Goal
 
-Give the operator a read-only audit of project documentation against the code through `andrew-agent drift`.
+Give the user a read-only audit of project documentation against the code through `andrew-agent drift`.
 Each finding cites the document line that makes a stale claim and the code location that contradicts it, or states that the referenced item does not exist.
 The command reports only; it never edits a document, commits, or pushes.
 

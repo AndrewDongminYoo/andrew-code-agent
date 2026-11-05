@@ -1285,7 +1285,7 @@ test("accepts the approval kind the newly pinned binary sends, and names it in t
     assert.equal(result.kind, "response", kind);
     assert.deepEqual(result.response, { decision: "accept" }, kind);
     // The human gate is the safety mechanism, so it has to say which of the
-    // two the operator is approving.
+    // two the user is approving.
     assert.match(out.text(), new RegExp(`kind: ${kind}`), kind);
   }
 
@@ -1312,7 +1312,7 @@ test("answers a command approval captured from the pinned binary", async () => {
   const accepted = await approvals().answerApproval(command, input("1\n"), sink.stream, 100);
   assert.deepEqual(accepted.response, { decision: "accept" });
   // Three things only the observed frame carries: the request kind, a numeric
-  // request id, and a reason in the operator's language, which must survive
+  // request id, and a reason in the user's language, which must survive
   // escaping and per-code-point byte accounting without being mangled.
   assert.match(sink.text(), /^kind: command$/m);
   assert.match(sink.text(), /^Request: 0$/m);
@@ -1321,7 +1321,7 @@ test("answers a command approval captured from the pinned binary", async () => {
   // operator is offered it at 4 (issue #53; the frame carries no network
   // amendment). The label states the scope, because the generated params type
   // documents the amendment as allowing similar commands without prompting and
-  // the prompt is the only place the operator learns that. Anchored on
+  // the prompt is the only place the user learns that. Anchored on
   // `Selection: ` so a sixth option cannot be appended past the match: without
   // that tail the regex is a prefix and pins nothing.
   assert.match(
@@ -1360,7 +1360,7 @@ test("answers a command approval captured from the pinned binary", async () => {
   });
   assert.equal(amended.acceptedForSession, false);
   // An argv too long to render is refused before any prompt, exactly as an
-  // over-long `command` is. Without this the operator would be shown a cut
+  // over-long `command` is. Without this the user would be shown a cut
   // display and grant the whole array; the observed argv is 79 bytes, so the
   // display bound is unreachable in the case above and only this one covers it.
   for (const argv of [

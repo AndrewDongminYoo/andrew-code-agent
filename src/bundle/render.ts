@@ -152,7 +152,7 @@ export async function renderBundle(
   assertFinalTargets(files);
   // The enabled root is scanned for as a literal of this run. Rendering is
   // what turns a source file into bundled bytes, so this is the last point at
-  // which the operator's path can be caught before it is written out.
+  // which the user's path can be caught before it is written out.
   validatePortableFiles(
     files,
     manifest,

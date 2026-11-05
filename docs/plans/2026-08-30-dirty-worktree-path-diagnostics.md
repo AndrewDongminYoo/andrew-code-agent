@@ -62,4 +62,4 @@ git status --short
 
 ## Delivery boundary
 
-Do not stage, commit, push, close the issue, or open a pull request without a separate operator request.
+Do not stage, commit, push, close the issue, or open a pull request without a separate user request.

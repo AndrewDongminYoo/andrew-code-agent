@@ -15,7 +15,7 @@ The blocking result is not any single task: the product installs correctly and t
 - The coordinator hard-codes `sandboxPolicy.networkAccess: false` and
   `writableRoots: [repositoryRoot]`, so no turn could install a package.
   The boundary is not repository-only, though: the same policy sets `excludeTmpdirEnvVar: false` and `excludeSlashTmp: false`, so the process temporary directory and `/tmp` stay writable alongside the repository.
-- Authentication used a copy of the operator's dedicated agent credentials
+- Authentication used a copy of the dedicated agent credentials
   rather than an interactive `codex login`, so the documented first-run login path is **not** covered here.
 - `ANDREW_AGENT_CODEX_SOURCE` and `ANDREW_AGENT_CODEX_BIN` were exported in
   the shell for every invocation.
@@ -140,7 +140,7 @@ That is what holds the 15-second turn to 142 reprints rather than one per token 
 ### P1 — messages longer than 512 characters are never shown in full
 
 The same cap truncates the answer itself.
-`bounded` replaces the tail with a `[truncated]` marker, and the operator sees no more than that: t05 and t07 both ended their final `agentMessage completed` line mid-path with the marker, so the closing summary of what changed was cut off in the only place it was printed.
+`bounded` replaces the tail with a `[truncated]` marker, and the user sees no more than that: t05 and t07 both ended their final `agentMessage completed` line mid-path with the marker, so the closing summary of what changed was cut off in the only place it was printed.
 
 `MAX_TEXT_LENGTH` is a reducer-side display bound, not a protocol limit — JSONL lines are bounded separately at 16 MiB.
 Whatever the right cap is, 512 characters is shorter than the summaries the agent actually writes.
@@ -175,7 +175,7 @@ A person pressing Ctrl-C once, or twice at human speed, gets an exit code and a 
 `README.md` "Approval and safety model" covers approvals only.
 The coordinator also sets `networkAccess: false`, which is not documented, and that flag bounds shell commands rather than the turn.
 t07 answered a registry question through three `webSearch` items with no approval request and no shell command, so a turn does reach the network.
-The rendered `webSearch` lines carry neither the query nor the result, so the operator cannot see what was fetched.
+The rendered `webSearch` lines carry neither the query nor the result, so the user cannot see what was fetched.
 
 ### P3 — first-run documentation and packaging friction
 
@@ -195,7 +195,7 @@ The rendered `webSearch` lines carry neither the query nor the result, so the op
 ## What this suggests for the next change set
 
 The P0 is the only finding that blocks use.
-It has no workaround an operator could find without reading `install.ts`, so it is worth landing on its own, reviewable against a reproduction rather than bundled with cosmetics.
+It has no workaround a user could find without reading `install.ts`, so it is worth landing on its own, reviewable against a reproduction rather than bundled with cosmetics.
 
 The three P1s are what make the product unpleasant rather than unusable, and each is small: name the failing check in the exit-3 message, render agent message deltas rather than accumulated prefixes, and raise or remove `MAX_TEXT_LENGTH` so a summary is not cut off mid-sentence.
 The last two are the same call site, so they are one change rather than two.

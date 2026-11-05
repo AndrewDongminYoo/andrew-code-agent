@@ -1,10 +1,10 @@
 # Specification: Staged review command
 
-Date: 2026-10-12 Status: approved by the operator on 2026-10-12 (issue #74); see the reconciliation section
+Date: 2026-10-12 Status: approved on 2026-10-12 (issue #74); see the reconciliation section
 
 ## Goal
 
-Give the operator an evidence-based review of staged changes before `andrew-agent commit` creates the commit, through `andrew-agent review --staged`.
+Give the user an evidence-based review of staged changes before `andrew-agent commit` creates the commit, through `andrew-agent review --staged`.
 Keep the review contract of `docs/specs/2026-09-21-review-command.md`: report confirmed defects separately from missing verification, and do not modify the source repository.
 
 ## Command grammar
@@ -103,7 +103,7 @@ Unstaged and untracked changes made during the review do not invalidate the resp
 
 Before the response, the command prints one identity line: `Reviewing staged changes on <symbolic HEAD> (<HEAD commit>).`
 
-Cleanup warnings, operator interrupts, and exit codes follow the branch review:
+Cleanup warnings, user interrupts, and exit codes follow the branch review:
 
 - Exit `0` means the review completed or there were no staged changes.
 - Exit `1` means the Codex review or terminal output failed.
@@ -133,7 +133,7 @@ It does not guarantee that Codex ran every relevant test.
 
 ## Consultation record
 
-The issue #74 brief and the operator's design approval on 2026-10-12 fixed the isolated-checkout approach, the dirty-worktree allowance, and the shared reader.
+The issue #74 brief and the design approval on 2026-10-12 fixed the isolated-checkout approach, the dirty-worktree allowance, and the shared reader.
 A probe on 2026-10-12 applied a staged patch with a modification, a deletion, a rename, a mode change, and a binary file to a fresh repository with `git apply --index --binary`.
 The resulting index listing was byte-for-byte equal to the source listing, and the unstaged edit and the untracked file did not appear.
 
@@ -144,7 +144,7 @@ A second probe on 2026-10-12, with Git 2.54.0, exercised conditions that the fir
 - An intent-to-add entry appeared in `git ls-files --stage` with the empty blob object ID and was absent from `git diff --cached`, so the applied checkout listing differed from the source listing.
 - With only an intent-to-add entry and no other staged change, `git diff --cached` printed nothing.
 
-An independent review before operator review asked for the pinned apply patch, the reachable mismatch fixture, the explicit worktree checks, and typed refusal reasons in the shared reader.
+An independent review before user review asked for the pinned apply patch, the reachable mismatch fixture, the explicit worktree checks, and typed refusal reasons in the shared reader.
 
 ## Reconciliation (2026-10-12, final branch review)
 

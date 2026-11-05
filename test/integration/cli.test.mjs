@@ -1587,7 +1587,7 @@ test("resume derives its boundary from the record and refuses to be widened", as
   const moved = await attempt({ grant: { requestedCapabilities: ["oracle"], oracleRootDigest: digestOf(rootA) }, flag: ["oracle"], currentRoot: rootB });
   assert.equal(moved.code, 3);
   assert.equal(moved.stderr, "Resume refused: THREAD_ORACLE_ROOT_CHANGED.\n");
-  // Neither root is disclosed, and no path reaches the operator at all.
+  // Neither root is disclosed, and no path reaches the user at all.
   for (const path of [rootA, rootB]) assert.equal(moved.stderr.includes(path), false);
   assert.equal(moved.order.includes("lock"), false);
 

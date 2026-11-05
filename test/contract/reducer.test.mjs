@@ -1341,7 +1341,7 @@ test("refuses a summary completion whose retained inventory is corrupted", () =>
 // bounded line of each regardless. Command output is the one exception, and it
 // is content rather than metadata: the renderer emits it across as many bounded
 // lines as it needs once the command completes, so retaining a field's worth of
-// it would discard what the operator asked to see.
+// it would discard what the user asked to see.
 test("message text and command output take the larger retained bound", () => {
   const long = "x".repeat(5000);
   const state = stateWith([
