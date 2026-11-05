@@ -1318,7 +1318,7 @@ test("answers a command approval captured from the pinned binary", async () => {
   assert.match(sink.text(), /^Request: 0$/m);
   assert.match(sink.text(), /샌드박스에서 example\.com DNS/);
   // The server proposes an execpolicy amendment and supplies its argv, so the
-  // operator is offered it at 4 (issue #53; the frame carries no network
+  // user is offered it at 4 (issue #53; the frame carries no network
   // amendment). The label states the scope, because the generated params type
   // documents the amendment as allowing similar commands without prompting and
   // the prompt is the only place the user learns that. Anchored on
@@ -1376,7 +1376,7 @@ test("answers a command approval captured from the pinned binary", async () => {
   }
 
   // The option appears only when the server proposes one: without it the
-  // operator sees the same four choices as before, and Cancel is back at 4.
+  // user sees the same four choices as before, and Cancel is back at 4.
   const withoutAmendment = structuredClone(command);
   withoutAmendment.params.proposedExecpolicyAmendment = null;
   const plain = output();
