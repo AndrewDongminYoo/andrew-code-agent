@@ -266,7 +266,7 @@ async function materializeFakeTrees(root, files) {
 }
 
 async function writeCodexExecutable(path, options = {}) {
-  const version = options.version ?? "codex-cli 0.166.0";
+  const version = options.version ?? "codex-cli 0.167.0";
   const strict = options.strict ?? "success";
   const markerPath = options.markerPath;
   const strictDiagnostic =
@@ -689,8 +689,8 @@ test("uses exact Codex version and schema compatibility", async () => {
     assert.deepEqual(finding(result, "CODEX_VERSION"), {
       severity: "blocker",
       code: "CODEX_VERSION",
-      message: "Resolved Codex version does not match codex-cli 0.166.0.",
-      remediation: "Install codex-cli 0.166.0 and retry.",
+      message: "Resolved Codex version does not match codex-cli 0.167.0.",
+      remediation: "Install codex-cli 0.167.0 and retry.",
     });
     assert.deepEqual(
       result.findings
@@ -702,13 +702,13 @@ test("uses exact Codex version and schema compatibility", async () => {
       severity: "warning",
       code: "SCHEMA_COMPATIBILITY",
       message: "Codex schema compatibility was not evaluated because the pinned Codex version was unavailable.",
-      remediation: "Install codex-cli 0.166.0 and retry.",
+      remediation: "Install codex-cli 0.167.0 and retry.",
     });
     assert.deepEqual(finding(result, "STRICT_CONFIG"), {
       severity: "warning",
       code: "STRICT_CONFIG",
       message: "Strict Codex configuration validation was not evaluated because the pinned Codex version was unavailable.",
-      remediation: "Install codex-cli 0.166.0 and retry.",
+      remediation: "Install codex-cli 0.167.0 and retry.",
     });
     assert.equal(strictSpawns, 0);
     assert.equal(contractSpawns, 0);
@@ -738,7 +738,7 @@ test("derives schema compatibility from the generated contract", async (t) => {
         severity: "blocker",
         code: "SCHEMA_COMPATIBILITY",
         message: "The resolved Codex binary generates a different app-server contract than the pinned one.",
-        remediation: "Reinstall codex-cli 0.166.0 from a trusted source and retry.",
+        remediation: "Reinstall codex-cli 0.167.0 from a trusted source and retry.",
       });
     });
   });
@@ -758,7 +758,7 @@ test("derives schema compatibility from the generated contract", async (t) => {
         severity: "warning",
         code: "STRICT_CONFIG",
         message: "Strict Codex configuration validation was not evaluated because the resolved Codex binary failed the contract check.",
-        remediation: "Reinstall codex-cli 0.166.0 from a trusted source and retry.",
+        remediation: "Reinstall codex-cli 0.167.0 from a trusted source and retry.",
       });
     });
   });
@@ -772,7 +772,7 @@ test("derives schema compatibility from the generated contract", async (t) => {
         severity: "blocker",
         code: "SCHEMA_COMPATIBILITY",
         message: "Codex schema compatibility cannot be established.",
-        remediation: "Reinstall codex-cli 0.166.0 from a trusted source and retry.",
+        remediation: "Reinstall codex-cli 0.167.0 from a trusted source and retry.",
       });
     });
   });
