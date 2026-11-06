@@ -7,7 +7,7 @@ const MAX_MODEL_OUTPUT_BYTES = 1024 * 1024;
 export class CodexAuthenticationError extends Error {
   constructor() {
     super(
-      "Codex authentication failed. Sign in again with the managed CODEX_HOME and retry.",
+      "Codex authentication failed. Check the configured provider credentials. If you use managed Codex login, sign in again with CODEX_HOME and retry.",
     );
     this.name = "CodexAuthenticationError";
   }

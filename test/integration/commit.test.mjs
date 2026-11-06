@@ -694,7 +694,10 @@ test("the default proposal path accepts a completed Codex response without commi
   });
 });
 
-test("commit reports a managed authentication failure without exposing upstream diagnostics", async () => {
+for (const event of [
+  { name: "turn.failed", frame: { type: "turn.failed", error: { message: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, secret-upstream-detail" } } },
+  { name: "error", frame: { type: "error", message: "unexpected status 401 Unauthorized: provider rejected credentials, secret-upstream-detail" } },
+]) test(`commit reports authentication failures from ${event.name} without assuming the provider`, async () => {
   await withRepository(async (root) => {
     await writeFile(join(root, "tracked.txt"), "staged\n");
     await git(root, "add", "tracked.txt");
@@ -702,7 +705,7 @@ test("commit reports a managed authentication failure without exposing upstream 
     const staged = await git(root, "diff", "--cached");
     const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-auth-"));
     const binary = join(runtime, "fake-codex");
-    const response = JSON.stringify({ type: "turn.failed", error: { message: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, secret-upstream-detail" } });
+    const response = JSON.stringify(event.frame);
     await writeFile(binary, `#!${process.execPath}\nprocess.stdin.resume();\nprocess.stdin.on("end", () => { console.log(${JSON.stringify(response)}); console.error("secret-stderr-detail"); process.exitCode = 1; });\n`);
     await chmod(binary, 0o700);
     try {
@@ -720,8 +723,10 @@ test("commit reports a managed authentication failure without exposing upstream 
       );
       assert.equal(result.code, 1);
       assert.match(result.stderr, /Codex authentication failed/);
-      assert.match(result.stderr, /managed CODEX_HOME/);
-      assert.doesNotMatch(result.stderr, /secret-|Unable to propose/);
+      assert.match(result.stderr, /Check the configured provider credentials/);
+      assert.match(result.stderr, /If you use managed Codex login/);
+      assert.match(result.stderr, /CODEX_HOME/);
+      assert.doesNotMatch(result.stdout + result.stderr, /secret-|Unable to propose/);
       assert.equal(await git(root, "rev-parse", "HEAD"), head);
       assert.equal(await git(root, "diff", "--cached"), staged);
     } finally {
