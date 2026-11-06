@@ -14,6 +14,7 @@ concurrency:
 
 jobs:
   detect:
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-latest
     timeout-minutes: 15
     outputs:
@@ -45,7 +46,7 @@ jobs:
 
   publish:
     needs: detect
-    if: needs.detect.outputs.changed == 'true'
+    if: github.ref == 'refs/heads/main' && needs.detect.outputs.changed == 'true'
     runs-on: macos-latest
     timeout-minutes: 5
     permissions:

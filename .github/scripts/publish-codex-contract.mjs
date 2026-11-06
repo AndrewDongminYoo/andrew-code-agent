@@ -34,6 +34,8 @@ export function alreadyReported(pulls) {
   return pulls.some((pull) => pull.state === "open" || pull.state === "closed");
 }
 async function main() {
+  if (process.env.GITHUB_REF !== "refs/heads/main")
+    throw new Error("Publication requires refs/heads/main");
   const directory = process.env.CODEX_MONITOR_OUTPUT;
   const repository = process.env.GITHUB_REPOSITORY;
   if (!directory || repository !== "AndrewDongminYoo/andrew-code-agent")

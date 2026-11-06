@@ -459,6 +459,7 @@ The contract test regenerates both trees in a temporary directory and compares t
 ### Upstream contract monitoring
 
 The `Codex contract monitor` workflow checks the latest stable `openai/codex` release daily at 03:17 UTC and supports manual runs from GitHub Actions.
+Manual runs on other branches skip detection and publication.
 It downloads the matching macOS binary, verifies the release asset SHA-256 and reported version, and generates both non-experimental contract trees in empty directories.
 A newer release with identical paths and bytes creates no PR or mention.
 A generation or download failure fails the workflow instead of reporting an unchanged contract.

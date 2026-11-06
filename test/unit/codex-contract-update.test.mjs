@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { writeFileSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -80,3 +81,22 @@ test("publisher refuses unrelated paths, symlinks, and invalid result metadata",
   assert.throws(() => validatePublication(result, ["src/constants.ts"], ["120000"]), /mode/);
   assert.throws(() => validatePublication({ ...result, changed: false }, ["src/constants.ts"], []), /result/);
 });
+
+test("successful generation writes both stable contract trees", () => fixture(async ({ root }) => {
+  const fresh = join(root, "success");
+  const calls = [];
+  await generate("fake", "0.167.0", fresh, (binary, args) => {
+    assert.equal(binary, "fake");
+    calls.push(args);
+    if (args[0] === "--version") return "codex-cli 0.167.0";
+    writeFileSync(join(args[3], "generated.txt"), args[1]);
+    return "";
+  });
+  assert.deepEqual(calls, [
+    ["--version"],
+    ["app-server", "generate-ts", "--out", join(fresh, trees[0])],
+    ["app-server", "generate-json-schema", "--out", join(fresh, trees[1])],
+  ]);
+  assert.equal(await readFile(join(fresh, trees[0], "generated.txt"), "utf8"), "generate-ts");
+  assert.equal(await readFile(join(fresh, trees[1], "generated.txt"), "utf8"), "generate-json-schema");
+}));

@@ -37,9 +37,9 @@ async function fixture(run) {
     const gitShim = join(tools, "git");
     await writeFile(gitShim, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst cp = require('node:child_process');\nconst args = process.argv.slice(2);\nif (['ls-remote', 'fetch', 'push'].includes(args[0]) && !fs.readFileSync(process.env.GH_LOG, 'utf8').includes('setup-git')) { console.error('private remote requires git authentication first'); process.exit(128); }\nconst result = cp.spawnSync(${JSON.stringify(realGit)}, args, { stdio: 'inherit' });\nprocess.exit(result.status ?? 1);\n`);
     await chmod(gitShim, 0o700);
-    const publish = (pulls = []) => execFileSync(process.execPath, [join(repo, ".github/scripts/publish-codex-contract.mjs")], {
+    const publish = (pulls = [], ref = "refs/heads/main") => execFileSync(process.execPath, [join(repo, ".github/scripts/publish-codex-contract.mjs")], {
       cwd: repo, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, GH_LOG: log, FIXTURE_PULLS: JSON.stringify(pulls), CODEX_MONITOR_OUTPUT: artifacts, GITHUB_REPOSITORY: "AndrewDongminYoo/andrew-code-agent" },
+      env: { ...process.env, PATH: `${tools}:${process.env.PATH}`, GH_LOG: log, FIXTURE_PULLS: JSON.stringify(pulls), CODEX_MONITOR_OUTPUT: artifacts, GITHUB_REPOSITORY: "AndrewDongminYoo/andrew-code-agent", GITHUB_REF: ref },
     });
     await run({ repo, remote, artifacts, log, git, publish, base });
   } finally { await rm(scratch, { recursive: true, force: true }); }
@@ -48,6 +48,8 @@ test("publisher pushes a candidate and requests a draft PR with review limits", 
   assert.match(publish(), /example.invalid\/draft/);
   const remote = git("ls-remote", "--heads", "origin", "automation/codex-contract-0.167.0");
   assert.match(remote, /refs\/heads\/automation\/codex-contract-0.167.0/);
+  git("fetch", "origin", "automation/codex-contract-0.167.0");
+  assert.equal(git("show", "FETCH_HEAD:src/constants.ts"), "new contract\n");
   const calls = (await readFile(log, "utf8")).trim().split("\n").map(JSON.parse);
   const create = calls.find((args) => args[0] === "pr");
   assert.ok(create.includes("--draft"));
@@ -83,4 +85,9 @@ test("publisher never overwrites a different pre-existing branch", () => fixture
   const before = git("ls-remote", "--heads", "origin");
   assert.throws(publish, (error) => /refusing to overwrite/.test(error.stderr));
   assert.equal(git("ls-remote", "--heads", "origin"), before);
+}));
+
+test("publisher refuses feature-branch manual dispatch before remote writes", () => fixture(async ({ git, publish }) => {
+  assert.throws(() => publish([], "refs/heads/feature"), (error) => /Publication requires refs\/heads\/main/.test(error.stderr));
+  assert.equal(git("ls-remote", "--heads", "origin"), "");
 }));
