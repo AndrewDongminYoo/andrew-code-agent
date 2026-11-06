@@ -694,6 +694,47 @@ test("the default proposal path accepts a completed Codex response without commi
   });
 });
 
+for (const event of [
+  { name: "turn.failed", frame: { type: "turn.failed", error: { message: "unexpected status 401 Unauthorized: Missing bearer or basic authentication in header, secret-upstream-detail" } } },
+  { name: "error", frame: { type: "error", message: "unexpected status 401 Unauthorized: provider rejected credentials, secret-upstream-detail" } },
+]) test(`commit reports authentication failures from ${event.name} without assuming the provider`, async () => {
+  await withRepository(async (root) => {
+    await writeFile(join(root, "tracked.txt"), "staged\n");
+    await git(root, "add", "tracked.txt");
+    const head = await git(root, "rev-parse", "HEAD");
+    const staged = await git(root, "diff", "--cached");
+    const runtime = await mkdtemp(join(tmpdir(), "andrew-agent-commit-auth-"));
+    const binary = join(runtime, "fake-codex");
+    const response = JSON.stringify(event.frame);
+    await writeFile(binary, `#!${process.execPath}\nprocess.stdin.resume();\nprocess.stdin.on("end", () => { console.log(${JSON.stringify(response)}); console.error("secret-stderr-detail"); process.exitCode = 1; });\n`);
+    await chmod(binary, 0o700);
+    try {
+      const result = await execFile(process.execPath, [join(process.cwd(), "dist", "cli.js"), "commit"], {
+        cwd: root,
+        env: {
+          ...process.env,
+          ANDREW_AGENT_CODEX_SOURCE: root,
+          ANDREW_AGENT_STATE_ROOT: join(runtime, "state"),
+          ANDREW_AGENT_CODEX_BIN: binary,
+        },
+      }).then(
+        ({ stdout, stderr }) => ({ code: 0, stdout, stderr }),
+        (error) => ({ code: error.code, stdout: error.stdout, stderr: error.stderr }),
+      );
+      assert.equal(result.code, 1);
+      assert.match(result.stderr, /Codex authentication failed/);
+      assert.match(result.stderr, /Check the configured provider credentials/);
+      assert.match(result.stderr, /If you use managed Codex login/);
+      assert.match(result.stderr, /CODEX_HOME/);
+      assert.doesNotMatch(result.stdout + result.stderr, /secret-|Unable to propose/);
+      assert.equal(await git(root, "rev-parse", "HEAD"), head);
+      assert.equal(await git(root, "diff", "--cached"), staged);
+    } finally {
+      await rm(runtime, { recursive: true, force: true });
+    }
+  });
+});
+
 test("an early Codex exit reports a proposal failure without an unhandled stdin error", async () => {
   assert.notEqual(commitModule, null);
   await withRepository(async (root) => {
