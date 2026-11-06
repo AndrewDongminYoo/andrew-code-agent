@@ -3,14 +3,12 @@ import { lstat, readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 
 /**
- * Total file bytes the walk will read from one pair of trees. The committed
- * trees measure about 3.7 MB at the pinned Codex version, and the freshly
- * generated pair doctor compares against them is written by a spawned child,
- * so each file's size is checked before it is read.
+ * Total file bytes the walk will read from one pair of trees.
+ * Doctor's freshly generated pair is written by a spawned child, so each file's size is checked before it is read.
  */
 const maxContractBytes = 32 * 1024 * 1024;
 
-/** Files one pair of trees may hold. The committed pair holds 1003. */
+/** Maximum files one pair of trees may hold. */
 const maxContractFiles = 100_000;
 
 export interface CodexContractRoots {
