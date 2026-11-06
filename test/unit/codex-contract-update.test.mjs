@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -99,4 +100,29 @@ test("successful generation writes both stable contract trees", () => fixture(as
   ]);
   assert.equal(await readFile(join(fresh, trees[0], "generated.txt"), "utf8"), "generate-ts");
   assert.equal(await readFile(join(fresh, trees[1], "generated.txt"), "utf8"), "generate-json-schema");
+}));
+
+test("release lookup uses the supplied GitHub token", () => fixture(async ({ root }) => {
+  const preload = join(root, "fetch.mjs");
+  const capture = join(root, "headers.json");
+  await writeFile(preload, `import { writeFileSync } from "node:fs";\nglobalThis.fetch = async (_url, options) => { writeFileSync(${JSON.stringify(capture)}, JSON.stringify(options.headers ?? {})); return new Response(JSON.stringify({ tag_name: "rust-v0.0.0" }), { status: 200 }); };\n`);
+  execFileSync(process.execPath, ["--import", preload, ".github/scripts/codex-contract-update.mjs"], {
+    encoding: "utf8", env: { ...process.env, GH_TOKEN: "fixture-api-token", CODEX_MONITOR_OUTPUT: join(root, "result") },
+  });
+  const headers = new Headers(JSON.parse(await readFile(capture, "utf8")));
+  assert.equal(headers.get("authorization"), "Bearer fixture-api-token");
+}));
+test("candidate version and generator subprocesses receive no GitHub credentials", () => fixture(async ({ root, fresh }) => {
+  const executable = join(root, "candidate.mjs");
+  const capture = join(root, "candidate-env.jsonl");
+  await writeFile(executable, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(capture)}, JSON.stringify({ gh: process.env.GH_TOKEN ?? null, github: process.env.GITHUB_TOKEN ?? null }) + "\\n");\nif (process.argv[2] === "--version") console.log("codex-cli 0.167.0");\n`);
+  await chmod(executable, 0o700);
+  const previous = { GH_TOKEN: process.env.GH_TOKEN, GITHUB_TOKEN: process.env.GITHUB_TOKEN };
+  process.env.GH_TOKEN = "fixture-api-token";
+  process.env.GITHUB_TOKEN = "fixture-other-token";
+  try { await generate(executable, "0.167.0", fresh); }
+  finally { for (const [key, value] of Object.entries(previous)) { if (value === undefined) delete process.env[key]; else process.env[key] = value; } }
+  const frames = (await readFile(capture, "utf8")).trim().split("\n").map(JSON.parse);
+  assert.equal(frames.length, 3);
+  assert.deepEqual(frames, Array.from({ length: 3 }, () => ({ gh: null, github: null })));
 }));

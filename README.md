@@ -467,6 +467,7 @@ A generation or download failure fails the workflow instead of reporting an unch
 When the contract changes, a separate job opens a draft PR with both generated trees, the runtime pin, contract digest, explicit version fixtures, and README updated together.
 The draft mentions `AndrewDongminYoo` and records the comparison base, release, digest, and remaining verification.
 Open and closed PRs for the same release suppress duplicate PRs; existing branches are never force-pushed or overwritten.
+The release API request uses the detection job’s read-only `GH_TOKEN`, which is removed from candidate version and generator subprocesses.
 The candidate binary runs only in the detection job with read-only repository permissions; only the publisher receives repository and PR write permissions.
 
 The repository must enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** for `GITHUB_TOKEN` to open drafts.

@@ -45,9 +45,10 @@ export function newer(candidate, adopted) {
       value > right[i] && left.slice(0, i).every((v, j) => v === right[j]),
   );
 }
-export function command(binary, args, cwd = root) {
+export function command(binary, args, cwd = root, env = process.env) {
   return execFileSync(binary, args, {
     cwd,
+    env,
     encoding: "utf8",
     timeout: 120_000,
     maxBuffer: 32 * 1024 * 1024,
@@ -93,17 +94,25 @@ export async function compareContracts(repo, fresh) {
   return changes;
 }
 export async function generate(binary, version, fresh, run = command) {
-  if (run(binary, ["--version"]).trim() !== `codex-cli ${version}`)
+  const env = { ...process.env };
+  delete env.GH_TOKEN;
+  delete env.GITHUB_TOKEN;
+  if (run(binary, ["--version"], root, env).trim() !== `codex-cli ${version}`)
     throw new Error("Candidate binary version does not match the release");
   for (const [i, tree] of trees.entries()) {
     const destination = join(fresh, tree);
     await mkdir(destination, { recursive: true });
-    run(binary, [
-      "app-server",
-      i === 0 ? "generate-ts" : "generate-json-schema",
-      "--out",
-      destination,
-    ]);
+    run(
+      binary,
+      [
+        "app-server",
+        i === 0 ? "generate-ts" : "generate-json-schema",
+        "--out",
+        destination,
+      ],
+      root,
+      env,
+    );
   }
 }
 export async function prepare(repo, fresh, version, digest) {
@@ -185,9 +194,12 @@ async function main() {
   const { REQUIRED_CODEX_VERSION: adopted } = await import(
     pathToFileURL(join(root, "dist/constants.js"))
   );
+  const headers = { Accept: "application/vnd.github+json" };
+  if (process.env.GH_TOKEN)
+    headers.Authorization = `Bearer ${process.env.GH_TOKEN}`;
   const response = await fetch(
     "https://api.github.com/repos/openai/codex/releases/latest",
-    { signal: AbortSignal.timeout(30_000) },
+    { headers, signal: AbortSignal.timeout(30_000) },
   );
   if (!response.ok)
     throw new Error(`Release lookup failed: ${response.status}`);
