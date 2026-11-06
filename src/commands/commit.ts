@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { boundedTerminalText } from "../app-server/terminal.js";
-import { runCodexExec } from "../codex/exec.js";
+import { CodexAuthenticationError, runCodexExec } from "../codex/exec.js";
 import { executeGit } from "../git/process.js";
 import {
   readStagedChanges,
@@ -484,5 +484,8 @@ export async function runCodex(
 }
 
 function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof CommitError ? error.message : fallback;
+  return error instanceof CommitError ||
+    error instanceof CodexAuthenticationError
+    ? error.message
+    : fallback;
 }

@@ -166,6 +166,7 @@ If `origin/HEAD` cannot be resolved, nothing is deleted and the command exits `3
 `commit` reads the staged diff, committed root `AGENTS.md` when present, and eight recent commit subjects.
 It does not stage unstaged or untracked files.
 The proposal runs with the managed Codex login in an ephemeral, read-only scratch directory with the shell tool disabled.
+If Codex returns an authentication error, sign in again using the managed `CODEX_HOME` from [First run](#first-run) before retrying.
 The command sends the staged patch and style context without passing the repository root.
 The read-only sandbox is a write boundary; it does not itself restrict every file the Codex process can read.
 Long format is the default and records the proposed subject, a blank line, and the proposed summary as the commit body.

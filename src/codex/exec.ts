@@ -4,6 +4,15 @@ import { spawn } from "node:child_process";
 
 const MAX_MODEL_OUTPUT_BYTES = 1024 * 1024;
 
+export class CodexAuthenticationError extends Error {
+  constructor() {
+    super(
+      "Codex authentication failed. Sign in again with the managed CODEX_HOME and retry.",
+    );
+    this.name = "CodexAuthenticationError";
+  }
+}
+
 export interface CodexExecMessages {
   readonly timeout: string;
   readonly outputLimit: string;
@@ -101,7 +110,36 @@ export async function runCodexExec(input: CodexExecInput): Promise<string> {
         return fail(terminationError);
       }
       if (overflow) return fail(new Error(input.messages.outputLimit));
-      if (code !== 0) return fail(new Error(input.messages.failed));
+      if (code !== 0) {
+        const authenticationFailed = stdout.split("\n").some((line) => {
+          try {
+            const event: unknown = JSON.parse(line);
+            if (typeof event !== "object" || event === null) return false;
+            const entry = event as {
+              type?: unknown;
+              message?: unknown;
+              error?: { message?: unknown };
+            };
+            const message =
+              entry.type === "error"
+                ? entry.message
+                : entry.type === "turn.failed"
+                  ? entry.error?.message
+                  : undefined;
+            return (
+              typeof message === "string" &&
+              /\b401\b|\bunauthorized\b/i.test(message)
+            );
+          } catch {
+            return false;
+          }
+        });
+        return fail(
+          authenticationFailed
+            ? new CodexAuthenticationError()
+            : new Error(input.messages.failed),
+        );
+      }
       let lastMessage = "";
       let completed = false;
       try {
