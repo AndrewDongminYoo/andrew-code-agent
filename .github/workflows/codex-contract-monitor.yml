@@ -1,0 +1,72 @@
+name: Codex contract monitor
+
+on:
+  schedule:
+    - cron: 17 3 * * *
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-contract-monitor
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    if: github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 15
+    outputs:
+      changed: ${{ steps.compare.outputs.changed }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Compare the stable release contract
+        id: compare
+        env:
+          CODEX_MONITOR_OUTPUT: ${{ runner.temp }}/codex-monitor
+        run: node .github/scripts/codex-contract-update.mjs --prepare
+      - name: Transfer the candidate patch
+        if: steps.compare.outputs.changed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: codex-contract-candidate
+          path: ${{ runner.temp }}/codex-monitor/
+          retention-days: 7
+          if-no-files-found: error
+
+  publish:
+    needs: detect
+    if: github.ref == 'refs/heads/main' && needs.detect.outputs.changed == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: codex-contract-candidate
+          path: ${{ runner.temp }}/codex-monitor
+      - name: Open one draft PR per changed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          CODEX_MONITOR_OUTPUT: ${{ runner.temp }}/codex-monitor
+        run: node .github/scripts/publish-codex-contract.mjs
