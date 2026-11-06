@@ -18,6 +18,7 @@ The boundaries are listed in full under [v0.1 limitations](#v01-limitations).
 
 The package is private and is never published.
 The development toolchain stays pinned through `.nvmrc` and `packageManager`; `engines` declares the compatible installation range.
+The `@types/node` declaration package follows the Node.js major selected by `.nvmrc`.
 The engine ranges retain the previously pinned versions as conservative support baselines, rather than measured technical minimums.
 Build it from a checkout:
 
