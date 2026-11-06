@@ -456,5 +456,33 @@ Update the constant in the same commit; `pnpm test:unit` recomputes it from the 
 Do not edit or format files under either generated tree by hand.
 The contract test regenerates both trees in a temporary directory and compares their complete relative path, mode, and byte inventories.
 
+### Upstream contract monitoring
+
+The `Codex contract monitor` workflow checks the latest stable `openai/codex` release daily at 03:17 UTC and supports manual runs from GitHub Actions.
+It downloads the matching macOS binary, verifies the release asset SHA-256 and reported version, and generates both non-experimental contract trees in empty directories.
+A newer release with identical paths and bytes creates no PR or mention.
+A generation or download failure fails the workflow instead of reporting an unchanged contract.
+
+When the contract changes, a separate job opens a draft PR with both generated trees, the runtime pin, contract digest, explicit version fixtures, and README updated together.
+The draft mentions `AndrewDongminYoo` and records the comparison base, release, digest, and remaining verification.
+Open and closed PRs for the same release suppress duplicate PRs; existing branches are never force-pushed or overwritten.
+The candidate binary runs only in the detection job with read-only repository permissions; only the publisher receives repository and PR write permissions.
+
+The repository must enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** for `GITHUB_TOKEN` to open drafts.
+The workflow does not approve or merge PRs.
+GitHub may require operator approval before CI runs on a PR created with `GITHUB_TOKEN`.
+Required CI and an authenticated real-Codex smoke check still gate adoption; schema equality does not prove runtime compatibility.
+See [GitHub workflow-token behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
+
+For a local comparison without modifying the adopted contract, build first and run:
+
+```bash
+pnpm build
+CODEX_MONITOR_OUTPUT="$(mktemp -d)" node .github/scripts/codex-contract-update.mjs
+```
+
+The output directory receives `result.json`; the workflow also uses `--prepare` to stage a candidate patch in its disposable checkout.
+This comparison needs network access but no Codex login or inference request.
+
 The generated TypeScript package uses the CommonJS boundary in `src/generated/package.json`.
 The build copies that boundary to `dist/generated/package.json`; verify they stay identical with `cmp src/generated/package.json dist/generated/package.json`.
