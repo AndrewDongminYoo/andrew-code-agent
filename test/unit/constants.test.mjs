@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -30,5 +31,15 @@ test("pins the digest of the committed Codex contract trees", async () => {
       schemas: repoPath("schemas/codex-app-server"),
     }),
     constants.REQUIRED_CODEX_CONTRACT_DIGEST,
+  );
+});
+
+test("Node declarations match the runtime major selected by .nvmrc", async () => {
+  const manifest = JSON.parse(await readFile(repoPath("package.json"), "utf8"));
+  const runtime = (await readFile(repoPath(".nvmrc"), "utf8")).trim().replace(/^v/, "");
+  assert.equal(
+    manifest.devDependencies["@types/node"].split(".")[0],
+    runtime.split(".")[0],
+    "Node declarations must match the selected runtime major",
   );
 });
