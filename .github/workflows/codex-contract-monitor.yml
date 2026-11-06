@@ -33,6 +33,7 @@ jobs:
       - name: Compare the stable release contract
         id: compare
         env:
+          GH_TOKEN: ${{ github.token }}
           CODEX_MONITOR_OUTPUT: ${{ runner.temp }}/codex-monitor
         run: node .github/scripts/codex-contract-update.mjs --prepare
       - name: Transfer the candidate patch
