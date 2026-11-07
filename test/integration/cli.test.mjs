@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { execFile as execFileCallback } from "node:child_process";
-import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { Readable, Writable } from "node:stream";
@@ -1416,6 +1416,19 @@ test("package bin targets the executable compiled CLI", async () => {
   assert.equal(source.startsWith("#!/usr/bin/env node\n"), true);
   const { stdout } = await execFile(process.execPath, [fileURLToPath(new URL("../../dist/cli.js", import.meta.url)), "--help"]);
   assert.match(stdout, /andrew-agent run <repository> <prompt>/);
+});
+
+test("the compiled CLI runs when invoked through a symbolic link, as a global install does", async () => {
+  modules();
+  const root = await mkdtemp(join(tmpdir(), "andrew-agent-bin-"));
+  try {
+    const link = join(root, "andrew-agent");
+    await symlink(fileURLToPath(new URL("../../dist/cli.js", import.meta.url)), link);
+    const { stdout } = await execFile(process.execPath, [link, "--help"]);
+    assert.match(stdout, /andrew-agent commit \[--long \| --short\]/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("the capability flag is parsed, validated, and gated on its declared input", async () => {
