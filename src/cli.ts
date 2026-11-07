@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /// <reference types="node" />
 
+import { realpathSync } from "node:fs";
 import { realpath } from "node:fs/promises";
 import { release, tmpdir } from "node:os";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 
 import {
@@ -515,10 +516,12 @@ async function verifyFix(
   );
 }
 
+// A global install reaches this file through a symbolic link, so argv[1] is the
+// link while import.meta.url is the resolved module; compare real paths.
 const invokedPath = process.argv[1];
 if (
   invokedPath !== undefined &&
-  import.meta.url === pathToFileURL(invokedPath).href
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(invokedPath)
 ) {
   process.exitCode = await main();
 }
