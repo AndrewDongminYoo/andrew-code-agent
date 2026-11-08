@@ -1,5 +1,6 @@
 /// <reference types="node" />
 
+import { isUtf8 } from "node:buffer";
 import {
   execFile as execFileCallback,
   spawn,
@@ -21,7 +22,7 @@ import type { Readable } from "node:stream";
 import { promisify } from "node:util";
 
 import { escapeTerminalControls } from "../app-server/terminal.js";
-import { executeGit } from "../git/process.js";
+import { executeGit, executeGitBytes } from "../git/process.js";
 import {
   assertCleanGitSnapshot,
   GitRuntimeError,
@@ -439,31 +440,47 @@ async function assertNoTrackedSymlinks(
   repositoryRoot: string,
   head: string,
 ): Promise<void> {
-  const raw = await executeGit(repositoryRoot, [
+  const rawModes = await executeGit(repositoryRoot, [
     "ls-tree",
     "-r",
     "-z",
     "--full-tree",
+    "--format=%(objectmode)",
     head,
   ]);
-  if (raw === "") return;
-  if (!raw.endsWith("\0"))
+  if (rawModes === "") return;
+  if (!rawModes.endsWith("\0"))
     throw new VerifyFixError("Unable to read the HEAD tree.");
-  for (const entry of raw.slice(0, -1).split("\0")) {
-    const separator = entry.indexOf("\t");
-    const metadata = entry.slice(0, separator);
-    const path = entry.slice(separator + 1);
-    if (
-      separator < 0 ||
-      path === "" ||
-      !/^[0-7]{6} (?:blob|commit) (?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(metadata)
-    )
-      throw new VerifyFixError("Unable to read the HEAD tree.");
-    if (metadata.startsWith("120000 "))
-      throw new VerifyFixError(
-        `verify-fix does not support tracked symlinks in HEAD: ${path}.`,
-      );
-  }
+  const modes = rawModes.slice(0, -1).split("\0");
+  if (modes.some((mode) => !/^[0-7]{6}$/.test(mode)))
+    throw new VerifyFixError("Unable to read the HEAD tree.");
+  const firstSymlink = modes.indexOf("120000");
+  if (firstSymlink < 0) return;
+  // Custom %(path) formats quote controls even with -z; --name-only keeps
+  // the original path while both listings remain smaller than the index.
+  const rawPaths = await executeGitBytes(repositoryRoot, [
+    "ls-tree",
+    "-r",
+    "-z",
+    "--full-tree",
+    "--name-only",
+    head,
+  ]);
+  if (rawPaths.at(-1) !== 0)
+    throw new VerifyFixError("Unable to read the HEAD tree.");
+  const paths = rawPaths.subarray(0, -1).toString("latin1").split("\0");
+  if (paths.length !== modes.length || paths.some((path) => path === ""))
+    throw new VerifyFixError("Unable to read the HEAD tree.");
+  const pathBytes = Buffer.from(paths[firstSymlink]!, "latin1");
+  const path = isUtf8(pathBytes)
+    ? pathBytes.toString("utf8")
+    : Array.from(
+        pathBytes,
+        (byte) => `\\x${byte.toString(16).toUpperCase().padStart(2, "0")}`,
+      ).join("");
+  throw new VerifyFixError(
+    `verify-fix does not support tracked symlinks in HEAD: ${path}.`,
+  );
 }
 
 async function validateWithPaths(

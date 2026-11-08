@@ -53,10 +53,11 @@ A build error, malformed fixture, unavailable sandbox, or unrelated failure does
 ## Step 2: Add the command-local preflight
 
 - [x] In the initial `verifyFixCommand` try block, after test/production nonempty checks and before `validateWithPaths`, call a private helper with `input.repositoryRoot` and captured `input.head`.
-- [x] Read `git ls-tree -r -z --full-tree <captured-head>` through `executeGit`.
+- [x] Read `git ls-tree -r -z --full-tree --format='%(objectmode)' <captured-head>` through `executeGit`.
       Do not use the moving `HEAD` ref, pathspec filters, filesystem traversal, or diff-only paths.
-- [x] Parse NUL-delimited records and split each record only at its first tab into metadata and path.
-      Read mode `120000` from metadata, retain the complete path, and select the first matching entry in listing order.
+- [x] Parse NUL-delimited modes and find the first mode `120000`.
+      Only when a symlink exists, read a second NUL-delimited `--name-only` listing of the same captured commit through `executeGitBytes` and select the path at that position after validating the entry count.
+      Preserve valid UTF-8 text and encode all pathname bytes as `\xHH` escapes when UTF-8 validation fails.
       Reject incomplete or malformed records instead of treating them as safe; retain the existing Git output bound and preparation-error handling.
 - [x] Throw `VerifyFixError` with the specified diagnostic on the first symlink.
       Let `preflightMessage` escape terminal controls once and the existing catch return `3`.
@@ -123,3 +124,12 @@ With the dedicated temporary directory, `pnpm test:integration` passed 484 tests
 The 11 skips require optional live-manifest, pinned-Codex, real-smoke, or Oracle-vault inputs and do not cover this command, which never runs Codex.
 `trunk check --all --no-fix` checked 1,241 files with no issues.
 One structured local review covered all six changed files and found no blocking findings; the shared checkout, sandbox policy, and public interfaces are unchanged.
+
+Hosted review identified that the default tree format adds one byte per ordinary entry compared with the existing index listing and can exceed the 16 MiB output bound first.
+A real clean repository fixture keeps its index listing below that bound while its default tree listing exceeds it; the new regression failed before the correction.
+The preflight now requests only modes, then names only when a symlink exists, retaining the output bound without narrowing the existing index reader's supported range.
+Separate listings avoid Git's custom `%(path)` format, which quotes control characters even with `-z`; the existing control-character regression caught that behavior during the correction.
+The second hosted finding identified replacement characters in diagnostics for non-UTF-8 Git pathnames.
+A raw Git-tree fixture reproduced that loss before the byte-preserving correction.
+Because APFS cannot materialize the invalid name, this fixture overrides only the worktree-status read while commit, index, and tree reads use real Git data; it verifies diagnostic encoding rather than claiming an end-to-end network-filesystem test.
+After both corrections, all 29 focused command tests passed, `pnpm check` passed typechecking and 759 tests with the same 11 opt-in skips, and Trunk reported no issues.

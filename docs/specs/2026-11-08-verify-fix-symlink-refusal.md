@@ -28,6 +28,7 @@ verify-fix does not support tracked symlinks in HEAD: <path>.
 
 `<path>` is the repository-relative path of the first symlink in the recursive Git tree listing.
 Preserve embedded whitespace during parsing and escape terminal control characters with the existing diagnostic formatter.
+If a pathname is not valid UTF-8, represent all its bytes as `\xHH` escapes instead of replacing invalid bytes.
 Do not resolve or follow the link target.
 A failed or incomplete tree read is a preparation failure with exit `3`; it must never be interpreted as a symlink-free tree.
 

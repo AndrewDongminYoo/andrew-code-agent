@@ -84,6 +84,58 @@ const buggy = "export function add(a, b) {\n  return a - b;\n}\n";
 const fixed = "export function add(a, b) {\n  return a + b;\n}\n";
 const addTest = 'import { add } from "../src/add.mjs";\nif (add(2, 3) !== 5) {\n  console.error("add(2, 3) returned " + add(2, 3));\n  process.exit(1);\n}\nconsole.log("add ok");\n';
 
+test("the symlink diagnostic preserves invalid UTF-8 bytes from a real Git tree", async () => {
+  await withRepository({ base: { "src/add.mjs": buggy }, head: { "src/add.mjs": fixed, "test/add.test.mjs": addTest } }, async (root) => {
+    const realGit = (await execFile("/usr/bin/which", ["git"], { encoding: "utf8" })).stdout.trim();
+    const originalTree = (await execFile(realGit, ["-C", root, "cat-file", "tree", "HEAD"], { encoding: "buffer" })).stdout;
+    const blob = await git(root, "rev-parse", "HEAD:src/add.mjs");
+    const rawPath = Buffer.from([0x62, 0x61, 0x64, 0x2d, 0xff]);
+    const treeFile = join(root, ".git", "byte-path-tree");
+    await writeFile(treeFile, Buffer.concat([Buffer.from("120000 "), rawPath, Buffer.from([0]), Buffer.from(blob, "hex"), originalTree]));
+    const tree = await git(root, "hash-object", "-w", "-t", "tree", treeFile);
+    const commit = await git(root, "commit-tree", tree, "-p", "HEAD", "-m", "test: raw pathname");
+    await git(root, "update-ref", "refs/heads/feature", commit);
+    await git(root, "read-tree", commit);
+    const paths = (await execFile(realGit, ["-C", root, "ls-tree", "-r", "-z", "--name-only", "HEAD"], { encoding: "buffer" })).stdout;
+    assert.deepEqual(paths.subarray(0, rawPath.length), rawPath);
+    // APFS cannot materialize this name. Override only the worktree-status
+    // read; every commit, index and tree read still uses the real Git data.
+    assert.match(await git(root, "status", "--porcelain"), /^D /);
+    const bin = join(root, ".git", "byte-path-bin");
+    await mkdir(bin);
+    await writeFile(join(bin, "git"), `#!${node}\nimport { spawnSync } from "node:child_process";\nconst args = process.argv.slice(2);\nif (args.includes("status") && args.includes("--porcelain=v2")) process.exit(0);\nconst result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });\nprocess.exit(result.status ?? 1);\n`, { mode: 0o755 });
+    const indexBefore = await readFile(join(root, ".git", "index"));
+    await assert.rejects(execFile(node, [join(import.meta.dirname, "../../dist/cli.js"), "verify-fix", "--", node, "test/add.test.mjs"], { cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }), (error) => {
+      assert.equal(error.code, 3);
+      assert.equal(error.stdout, "");
+      assert.equal(error.stderr, "verify-fix does not support tracked symlinks in HEAD: \\x62\\x61\\x64\\x2D\\xFF.\n");
+      return true;
+    });
+    assert.equal(await git(root, "rev-parse", "HEAD"), commit);
+    assert.deepEqual(await readFile(join(root, ".git", "index")), indexBefore);
+  });
+});
+
+test("a large symlink-free HEAD within the index limit reaches with-path validation", async () => {
+  const limit = 16 * 1024 * 1024;
+  const prefix = `${"a".repeat(200)}/${"b".repeat(200)}/${"c".repeat(200)}/`;
+  const path = (index) => `${prefix}${String(index).padStart(6, "0")}${"d".repeat(174)}`;
+  const fixedTreeBytes = ["src/add.mjs", "test/add.test.mjs"].reduce((sum, name) => sum + 54 + name.length, 0);
+  const count = Math.floor((limit - fixedTreeBytes) / (54 + path(0).length)) + 1;
+  const files = Object.fromEntries(Array.from({ length: count }, (_, index) => [path(index), ""]));
+  await withRepository({ base: { ...files, "src/add.mjs": buggy }, head: { "src/add.mjs": fixed, "test/add.test.mjs": addTest } }, async (root) => {
+    const read = async (args) => (await execFile("git", ["-C", root, ...args], { encoding: "buffer", maxBuffer: 2 * limit })).stdout;
+    const index = await read(["ls-files", "--cached", "--stage", "-v", "-z"]);
+    const tree = await read(["ls-tree", "-r", "-z", "--full-tree", "HEAD"]);
+    assert.ok(index.length < limit, "the existing index reader must support this fixture");
+    assert.ok(tree.length > limit, "the default tree listing must exceed the existing output bound");
+    const result = await verify(root, { command: [node, "test/add.test.mjs"], withPaths: ["missing"] });
+    assert.equal(result.code, 3);
+    assert.equal(result.stderr, "A --with path does not exist: missing.\n");
+    assert.equal(result.stdout, "");
+  });
+});
+
 test("verify-fix refuses a tracked symlink before the sandbox or either test starts", async () => {
   assert.notEqual(verifyFixModule, null);
   const observer = await mkdtemp(join(tmpdir(), "andrew-agent-verify-fix-test-observer-"));
