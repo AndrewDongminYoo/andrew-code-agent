@@ -1,0 +1,10 @@
+andrew-code-agent
+Copyright 2026 Dongmin Yu
+
+This product includes software developed as part of the andrew-code-agent
+project, licensed under the Apache License, Version 2.0.
+
+Portions of this repository under src/generated/codex-app-server/ and
+schemas/codex-app-server/ are produced by the OpenAI Codex CLI's own code
+generators rather than written by this project. See THIRD_PARTY_NOTICES.md for
+the generator, the pinned version, and the upstream license.
