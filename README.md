@@ -1,6 +1,9 @@
 # andrew-code-agent
 
-A private, macOS-only command line agent that runs Codex against one Git repository at a time, through a portable configuration bundle built from your own Codex profile.
+A macOS-only command line agent that runs Codex against one Git repository at a time, through a portable configuration bundle built from your own Codex profile.
+
+**Experimental. No support guarantee.**
+This is a personal project published as a reference implementation; see [SECURITY.md](SECURITY.md).
 
 It is deliberately small.
 It does not run unattended, it refuses to act on a repository that is not clean, and it declines any action it cannot get an explicit answer for.
@@ -16,7 +19,7 @@ The boundaries are listed in full under [v0.1 limitations](#v01-limitations).
 
 ## Install
 
-The package is private and is never published.
+The npm package stays `"private": true` so it is never published to a registry by accident; the GitHub repository being public is a separate setting.
 The development toolchain stays pinned through `.nvmrc` and `packageManager`; `engines` declares the compatible installation range.
 The `@types/node` declaration package follows the Node.js major selected by `.nvmrc`.
 The engine ranges retain the previously pinned versions as conservative support baselines, rather than measured technical minimums.
@@ -415,6 +418,12 @@ None of them is hidden behind a fallback.
 - **The `shared-memory` capability is unreachable.** Oracle is supported
   separately as the opt-in capability described above.
 
+## Documentation
+
+- [docs/architecture.md](docs/architecture.md): what a run crosses, layer by layer
+- [docs/threat-model.md](docs/threat-model.md): what is trusted, what is not, and where each boundary sits
+- [docs/dogfooding-case-study.md](docs/dogfooding-case-study.md): two real runs and what they found
+
 ## Development
 
 ```bash
@@ -491,3 +500,7 @@ This comparison needs network access but no Codex login or inference request.
 
 The generated TypeScript package uses the CommonJS boundary in `src/generated/package.json`.
 The build copies that boundary to `dist/generated/package.json`; verify they stay identical with `cmp src/generated/package.json dist/generated/package.json`.
+
+## License
+
+Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for the generated contract trees.
