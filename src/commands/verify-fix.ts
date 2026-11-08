@@ -145,6 +145,7 @@ export async function verifyFixCommand(
       throw new VerifyFixError(
         "No changed production files; there is no fix to verify.",
       );
+    await assertNoTrackedSymlinks(input.repositoryRoot, input.head);
     withPaths = await validateWithPaths(
       input.repositoryRoot,
       options.withPaths,
@@ -432,6 +433,37 @@ function normalizeRelativePath(value: string): string | undefined {
   const normalized = posix.normalize(value).replace(/\/+$/, "");
   if (normalized === "" || normalized === ".") return undefined;
   return normalized;
+}
+
+async function assertNoTrackedSymlinks(
+  repositoryRoot: string,
+  head: string,
+): Promise<void> {
+  const raw = await executeGit(repositoryRoot, [
+    "ls-tree",
+    "-r",
+    "-z",
+    "--full-tree",
+    head,
+  ]);
+  if (raw === "") return;
+  if (!raw.endsWith("\0"))
+    throw new VerifyFixError("Unable to read the HEAD tree.");
+  for (const entry of raw.slice(0, -1).split("\0")) {
+    const separator = entry.indexOf("\t");
+    const metadata = entry.slice(0, separator);
+    const path = entry.slice(separator + 1);
+    if (
+      separator < 0 ||
+      path === "" ||
+      !/^[0-7]{6} (?:blob|commit) (?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(metadata)
+    )
+      throw new VerifyFixError("Unable to read the HEAD tree.");
+    if (metadata.startsWith("120000 "))
+      throw new VerifyFixError(
+        `verify-fix does not support tracked symlinks in HEAD: ${path}.`,
+      );
+  }
 }
 
 async function validateWithPaths(

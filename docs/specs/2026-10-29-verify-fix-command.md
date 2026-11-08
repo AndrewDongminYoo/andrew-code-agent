@@ -30,6 +30,12 @@ Each changed path is a test path or a production path.
 
 ## Checkouts
 
+After classification, the command inspects the complete tree of the captured HEAD commit for mode `120000`, including unchanged tracked symlinks.
+If it finds one, it exits `3` before `--with` preparation, checkout construction, the sandbox probe, or either test run, with no verdict or stdout.
+The diagnostic is `verify-fix does not support tracked symlinks in HEAD: <path>.`, where `<path>` is the first symlink path in recursive Git tree listing order with terminal control characters escaped.
+It does not follow link targets, and a failed or incomplete tree read is also a preparation failure.
+The refusal covers HEAD only; a symlink present only in the merge base can still be restored as a plain file in checkout A.
+
 The command creates one private temporary directory under the real path of the system temporary directory and removes it at the end.
 It does not use the managed runtime state, because this command never runs Codex.
 Inside it, two isolated checkouts are built the same way `review` builds its checkout: a standalone repository, only the exact commits fetched, system and global Git configuration ignored, and tracked symlinks written as plain files.
@@ -87,7 +93,7 @@ An interrupt (`SIGINT`), a termination (`SIGTERM`), or a hangup (`SIGHUP`) durin
 - Exit `0` only when run A exited with a nonzero status and run B exited with status `0`.
 - Exit `1` for every other combination, with one line for each expectation that did not hold.
 - Exit `2` for invalid usage.
-- Exit `3` for any preparation failure: repository state, comparison, classification, `--with` validation, checkout construction, the sandbox probe, or the recheck below.
+- Exit `3` for any preparation failure: repository state, comparison, classification, a tracked symlink in HEAD or failed tree read, `--with` validation, checkout construction, the sandbox probe, or the recheck below.
 
 The output shows the comparison identities, the number of test and production paths, each run's status, and the last 2 KiB of each run's combined output with every terminal control character escaped.
 
@@ -108,3 +114,4 @@ It removes both checkouts before reporting and prints a redacted warning if that
 8. An empty test set or production set, a missing sandbox, a sandbox that cannot be applied, and a comparison that moved during the runs exit `3`.
 9. An interrupt, a termination, or a hangup during a run removes the checkouts and exits `1` without a verdict.
 10. CLI grammar, README, focused integration tests, `pnpm check`, and the Trunk gate cover the command.
+11. A tracked symlink anywhere in HEAD, including an unchanged path, exits `3` before the sandbox probe or either run; the diagnostic identifies the first symlink and escapes terminal controls in its path.

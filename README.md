@@ -239,6 +239,8 @@ The command exits `0` with no findings and `1` when it reports findings, recheck
 You name the test command after `--`; it runs as an argument vector without a shell, and the command never reads one from the repository.
 A changed path is a test path when it lies under a `test`, `tests`, `__tests__`, or `spec` directory or its file name contains `.test.`, `.spec.`, or `_test.`; any `--test <path>` replaces those defaults.
 An empty test set or production set is refused with exit `3`.
+If the complete HEAD tree contains a tracked symlink, even an unchanged one, the command refuses with exit `3` before creating checkouts or running the test command and names the first symlink path.
+This check covers HEAD only; a symlink present only in the merge base can still be restored as a plain file in checkout A.
 Checkout A is HEAD with every production path restored to the merge base, and checkout B is HEAD.
 Each `--with <path>` names an untracked path inside the worktree, such as `node_modules`, that is cloned into both checkouts with APFS copy-on-write.
 Each run executes under `/usr/bin/sandbox-exec` with all network access denied, loopback included, reads of the source worktree denied, and file writes allowed only inside its checkout and a dedicated `TMPDIR`, plus `/dev/null`; if the sandbox cannot be applied, the command refuses to run.
