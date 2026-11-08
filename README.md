@@ -484,7 +484,7 @@ The candidate binary runs only in the detection job with read-only repository pe
 
 The repository must enable **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** for `GITHUB_TOKEN` to open drafts.
 The workflow does not approve or merge PRs.
-GitHub may require operator approval before CI runs on a PR created with `GITHUB_TOKEN`.
+GitHub may require manual approval before CI runs on a PR created with `GITHUB_TOKEN`.
 Required CI and an authenticated real-Codex smoke check still gate adoption; schema equality does not prove runtime compatibility.
 See [GitHub workflow-token behavior](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow).
 

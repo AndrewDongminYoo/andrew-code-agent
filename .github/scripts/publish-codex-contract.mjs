@@ -107,7 +107,7 @@ async function main() {
     "This draft replaces both generated trees and updates the runtime pin, explicit version fixtures, and README together.",
     "The official release asset SHA-256, binary version, fresh generators, and complete contract comparison ran in the read-only detection job.",
     "Required CI and a real authenticated smoke check remain necessary before adoption; schema generation does not establish runtime compatibility.",
-    "GITHUB_TOKEN-created PR workflows may require operator approval in GitHub before CI starts.",
+    "GITHUB_TOKEN-created PR workflows may require manual approval in GitHub before CI starts.",
     "",
     `Changed contract files: ${result.changes.length}.`,
     "No automatic merge or approval is configured.",
