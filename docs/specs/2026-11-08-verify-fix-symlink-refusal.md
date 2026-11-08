@@ -61,5 +61,5 @@ Untracked or ignored symlinks, including those inside a `--with` dependency dire
 
 ## Approval boundary
 
-The operator approved this document and its [implementation plan](../plans/2026-11-08-verify-fix-symlink-refusal.md) on 2026-11-08 before production code or test changes began.
+This document and its [implementation plan](../plans/2026-11-08-verify-fix-symlink-refusal.md) were approved on 2026-11-08 before production code or test changes began.
 The change is a CLI preparation refusal and needs no visual-result approval.
