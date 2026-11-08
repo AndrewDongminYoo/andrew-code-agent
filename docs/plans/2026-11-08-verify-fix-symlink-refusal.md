@@ -69,7 +69,7 @@ A build error, malformed fixture, unavailable sandbox, or unrelated failure does
 - [x] Update the README's `verify-fix` paragraph to explain the full HEAD-tree refusal, first path, exit `3`, and absence of test execution.
 - [x] Update the original command specification's Checkouts, Verdict, and Acceptance criteria sections without rewriting historical sandbox measurements.
       Retain the explanation of shared plain-file materialization and make the HEAD-only limitation explicit.
-- [x] Mark proposal approval only from the operator's actual response, then record completed tasks and observed checks.
+- [x] Mark proposal approval only from an actual approval response, then record completed tasks and observed checks.
 
 ## Step 4: Verify and review
 
@@ -96,9 +96,9 @@ git diff --check
 ## Step 5: Resume the authorized PR loop
 
 - [ ] After approval, implementation, and local verification, prepare scoped Conventional Commits, push the task branch, and open a PR that closes #141.
-- [ ] Follow the parent `pr-loop` for current-head CI, bounded hosted review, live PR-body correction, verified operator assignment, gated merge, and settled follow-through.
-- [x] Preserve the user's plan-approval gate in Git-local state while waiting.
-      The operator approved implementation and resumed `pr-loop` after the planning-only turn.
+- [ ] Follow the parent `pr-loop` for current-head CI, bounded hosted review, live PR-body correction, verified review assignment, gated merge, and settled follow-through.
+- [x] Preserve the plan-approval gate in Git-local state while waiting.
+      Implementation was approved and `pr-loop` resumed after the planning-only turn.
 
 ## Risks and verification limits
 
