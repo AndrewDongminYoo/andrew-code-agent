@@ -24,12 +24,14 @@ async function writeFiles(root, files) {
       continue;
     }
     await mkdir(dirname(join(root, path)), { recursive: true });
-    await writeFile(join(root, path), content);
+    if (typeof content === "object") await symlink(content.symlink, join(root, path));
+    else await writeFile(join(root, path), content);
   }
 }
 
 // `base` is committed on main, `head` is applied on the feature branch; a
-// null value deletes the path. `ignored` files are written after both commits
+// null value deletes the path and { symlink: target } creates a link.
+// `ignored` files are written after both commits
 // and must be covered by a committed `.gitignore`.
 async function withRepository({ base, head, ignored = {} }, run) {
   const root = await mkdtemp(join(tmpdir(), "andrew-agent-verify-fix-test-"));
@@ -81,6 +83,123 @@ async function verificationDirectories() {
 const buggy = "export function add(a, b) {\n  return a - b;\n}\n";
 const fixed = "export function add(a, b) {\n  return a + b;\n}\n";
 const addTest = 'import { add } from "../src/add.mjs";\nif (add(2, 3) !== 5) {\n  console.error("add(2, 3) returned " + add(2, 3));\n  process.exit(1);\n}\nconsole.log("add ok");\n';
+
+test("the symlink diagnostic preserves invalid UTF-8 bytes from a real Git tree", async () => {
+  await withRepository({ base: { "src/add.mjs": buggy }, head: { "src/add.mjs": fixed, "test/add.test.mjs": addTest } }, async (root) => {
+    const realGit = (await execFile("/usr/bin/which", ["git"], { encoding: "utf8" })).stdout.trim();
+    const originalTree = (await execFile(realGit, ["-C", root, "cat-file", "tree", "HEAD"], { encoding: "buffer" })).stdout;
+    const blob = await git(root, "rev-parse", "HEAD:src/add.mjs");
+    const rawPath = Buffer.from([0x62, 0x61, 0x64, 0x2d, 0xff]);
+    const treeFile = join(root, ".git", "byte-path-tree");
+    await writeFile(treeFile, Buffer.concat([Buffer.from("120000 "), rawPath, Buffer.from([0]), Buffer.from(blob, "hex"), originalTree]));
+    const tree = await git(root, "hash-object", "-w", "-t", "tree", treeFile);
+    const commit = await git(root, "commit-tree", tree, "-p", "HEAD", "-m", "test: raw pathname");
+    await git(root, "update-ref", "refs/heads/feature", commit);
+    await git(root, "read-tree", commit);
+    const paths = (await execFile(realGit, ["-C", root, "ls-tree", "-r", "-z", "--name-only", "HEAD"], { encoding: "buffer" })).stdout;
+    assert.deepEqual(paths.subarray(0, rawPath.length), rawPath);
+    // APFS cannot materialize this name. Override only the worktree-status
+    // read; every commit, index and tree read still uses the real Git data.
+    assert.match(await git(root, "status", "--porcelain"), /^D /);
+    const bin = join(root, ".git", "byte-path-bin");
+    await mkdir(bin);
+    await writeFile(join(bin, "git"), `#!${node}\nimport { spawnSync } from "node:child_process";\nconst args = process.argv.slice(2);\nif (args.includes("status") && args.includes("--porcelain=v2")) process.exit(0);\nconst result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });\nprocess.exit(result.status ?? 1);\n`, { mode: 0o755 });
+    const indexBefore = await readFile(join(root, ".git", "index"));
+    await assert.rejects(execFile(node, [join(import.meta.dirname, "../../dist/cli.js"), "verify-fix", "--", node, "test/add.test.mjs"], { cwd: root, env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } }), (error) => {
+      assert.equal(error.code, 3);
+      assert.equal(error.stdout, "");
+      assert.equal(error.stderr, "verify-fix does not support tracked symlinks in HEAD: \\x62\\x61\\x64\\x2D\\xFF.\n");
+      return true;
+    });
+    assert.equal(await git(root, "rev-parse", "HEAD"), commit);
+    assert.deepEqual(await readFile(join(root, ".git", "index")), indexBefore);
+  });
+});
+
+test("a large symlink-free HEAD within the index limit reaches with-path validation", async () => {
+  const limit = 16 * 1024 * 1024;
+  const prefix = `${"a".repeat(200)}/${"b".repeat(200)}/${"c".repeat(200)}/`;
+  const path = (index) => `${prefix}${String(index).padStart(6, "0")}${"d".repeat(174)}`;
+  const fixedTreeBytes = ["src/add.mjs", "test/add.test.mjs"].reduce((sum, name) => sum + 54 + name.length, 0);
+  const count = Math.floor((limit - fixedTreeBytes) / (54 + path(0).length)) + 1;
+  const files = Object.fromEntries(Array.from({ length: count }, (_, index) => [path(index), ""]));
+  await withRepository({ base: { ...files, "src/add.mjs": buggy }, head: { "src/add.mjs": fixed, "test/add.test.mjs": addTest } }, async (root) => {
+    const read = async (args) => (await execFile("git", ["-C", root, ...args], { encoding: "buffer", maxBuffer: 2 * limit })).stdout;
+    const index = await read(["ls-files", "--cached", "--stage", "-v", "-z"]);
+    const tree = await read(["ls-tree", "-r", "-z", "--full-tree", "HEAD"]);
+    assert.ok(index.length < limit, "the existing index reader must support this fixture");
+    assert.ok(tree.length > limit, "the default tree listing must exceed the existing output bound");
+    const result = await verify(root, { command: [node, "test/add.test.mjs"], withPaths: ["missing"] });
+    assert.equal(result.code, 3);
+    assert.equal(result.stderr, "A --with path does not exist: missing.\n");
+    assert.equal(result.stdout, "");
+  });
+});
+
+test("verify-fix refuses a tracked symlink before the sandbox or either test starts", async () => {
+  assert.notEqual(verifyFixModule, null);
+  const observer = await mkdtemp(join(tmpdir(), "andrew-agent-verify-fix-test-observer-"));
+  try {
+    const record = join(observer, "invocations");
+    const sandboxExecutable = join(observer, "sandbox-wrapper");
+    await writeFile(record, "");
+    await writeFile(sandboxExecutable, `#!${node}\nimport { appendFileSync } from "node:fs";\nimport { spawnSync } from "node:child_process";\nappendFileSync(${JSON.stringify(record)}, "invoked\\n");\nconst result = spawnSync("/usr/bin/sandbox-exec", process.argv.slice(2), { stdio: "inherit" });\nprocess.exit(result.status ?? 1);\n`, { mode: 0o755 });
+    await withRepository({ base: { "src/add.mjs": buggy }, head: { "src/add.mjs": fixed, "test/add.test.mjs": addTest } }, async (root) => {
+      const command = [node, "test/add.test.mjs"];
+      const control = await verify(root, { command }, { sandboxExecutable });
+      assert.equal(control.code, 0, control.stdout + control.stderr);
+      assert.equal(await readFile(record, "utf8"), "invoked\ninvoked\ninvoked\n", "the observer must detect the probe and both real test runs");
+      await writeFile(record, "");
+      await symlink("add.mjs", join(root, "src/current.mjs"));
+      await writeFile(join(root, "test/add.test.mjs"), addTest.replace("../src/add.mjs", "../src/current.mjs"));
+      await git(root, "add", "src/current.mjs", "test/add.test.mjs");
+      await git(root, "commit", "--quiet", "-m", "test: import through a tracked symlink");
+      assert.match(await git(root, "ls-tree", "HEAD", "src/current.mjs"), /^120000 blob /);
+      assert.equal((await execFile(node, ["test/add.test.mjs"], { cwd: root })).stdout, "add ok\n", "the fixed test must work in the real source tree");
+      const before = await verificationDirectories();
+      const indexBefore = await git(root, "ls-files", "--stage", "-z");
+      const result = await verify(root, { command }, { sandboxExecutable });
+      assert.equal(result.code, 3, result.stdout + result.stderr);
+      assert.equal(result.stderr, "verify-fix does not support tracked symlinks in HEAD: src/current.mjs.\n");
+      assert.equal(result.stdout, "");
+      assert.equal(await readFile(record, "utf8"), "", "neither the probe nor either run may start");
+      assert.equal(await git(root, "ls-files", "--stage", "-z"), indexBefore);
+      assert.deepEqual(await verificationDirectories(), before);
+    });
+  } finally {
+    await rm(observer, { recursive: true, force: true });
+  }
+});
+
+test("verify-fix refuses the first unchanged nested symlink and escapes its complete path", async () => {
+  assert.notEqual(verifyFixModule, null);
+  const first = "assets/a \t\n\x1b[31m link";
+  await withRepository({ base: { "src/add.mjs": buggy, [first]: { symlink: "../src/add.mjs" }, "assets/z-link": { symlink: "missing-target" } }, head: { "src/add.mjs": fixed, "test/add.test.mjs": addTest } }, async (root) => {
+    const tree = await git(root, "ls-tree", "-r", "-z", "HEAD");
+    assert.match(tree, /^120000 blob [0-9a-f]+\tassets\/a /);
+    assert.ok(tree.includes(`\t${first}\0`));
+    assert.equal(await git(root, "diff", "--name-only", "main", "HEAD", "--", "assets"), "", "the symlinks must be absent from the changed-path list");
+    const before = await verificationDirectories();
+    const result = await verify(root, { command: [node, "test/add.test.mjs"], withPaths: ["missing"] }, { sandboxExecutable: "/nonexistent/sandbox-exec" });
+    assert.equal(result.code, 3);
+    assert.equal(result.stderr, "verify-fix does not support tracked symlinks in HEAD: assets/a \\x09\\x0A\\x1B[31m link.\n");
+    assert.equal(result.stdout, "");
+    assert.deepEqual(await verificationDirectories(), before);
+  });
+});
+
+test("the verify-fix CLI reports a tracked external symlink as a preparation refusal", async () => {
+  await withRepository({ base: { "src/add.mjs": buggy }, head: { "src/add.mjs": fixed, "src/external": { symlink: "/nonexistent/andrew-agent-target" }, "test/add.test.mjs": addTest } }, async (root) => {
+    assert.match(await git(root, "ls-tree", "HEAD", "src/external"), /^120000 blob /);
+    await assert.rejects(execFile(node, [join(import.meta.dirname, "../../dist/cli.js"), "verify-fix", "--", node, "test/add.test.mjs"], { cwd: root }), (error) => {
+      assert.equal(error.code, 3);
+      assert.equal(error.stdout, "");
+      assert.equal(error.stderr, "verify-fix does not support tracked symlinks in HEAD: src/external.\n");
+      return true;
+    });
+    assert.equal(await git(root, "status", "--porcelain", "--untracked-files=all"), "");
+  });
+});
 
 test("a source diff.orderFile that reorders changed tests does not fail the restore check", async () => {
   assert.notEqual(verifyFixModule, null);
