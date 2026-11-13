@@ -5,7 +5,7 @@ import { lstat } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { resolveRepositoryRoot } from "../runtime/git.js";
-import { executeGit } from "./process.js";
+import { executeGit, executeGitBytes } from "./process.js";
 
 export type StagedRefusalReason =
   | "MERGE_IN_PROGRESS"
@@ -30,6 +30,7 @@ export interface StagedChanges {
   readonly head: string;
   readonly headRef: string;
   readonly index: string;
+  readonly indexBytes: Buffer;
   readonly indexDigest: string;
   readonly patch: string;
   readonly paths: readonly string[];
@@ -46,7 +47,14 @@ export async function readStagedChanges(input: string): Promise<StagedChanges> {
       "HEAD",
     ])
   ).trim();
-  const index = await executeGit(repositoryRoot, ["ls-files", "--stage", "-z"]);
+  // The listing is read as raw bytes, because a path that is not UTF-8
+  // decodes to U+FFFD and two different paths then compare equal as strings.
+  const indexBytes = await executeGitBytes(repositoryRoot, [
+    "ls-files",
+    "--stage",
+    "-z",
+  ]);
+  const index = indexBytes.toString("utf8");
   if (index.split("\0").some((entry) => /^\d+ [0-9a-f]+ [123]\t/.test(entry)))
     throw new StagedInputError("UNRESOLVED_CONFLICT");
   // `commit` compares this patch with an unflagged diff of the commit it
@@ -111,6 +119,7 @@ export async function readStagedChanges(input: string): Promise<StagedChanges> {
     head,
     headRef,
     index,
+    indexBytes,
     indexDigest: createHash("sha256").update(index).digest("hex"),
     patch,
     paths,
