@@ -631,7 +631,7 @@ test("makes handshake timeout terminal", async () => {
   const binary = join(root, "codex");
   await writeFile(
     binary,
-    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'codex-cli 0.167.0'; else exec ${JSON.stringify(process.execPath)} -e 'setInterval(() => {}, 1000)'; fi\n`,
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'codex-cli 0.169.0'; else exec ${JSON.stringify(process.execPath)} -e 'setInterval(() => {}, 1000)'; fi\n`,
     { mode: 0o700 },
   );
   try {
@@ -883,7 +883,7 @@ test("rejects handshake timeout before descendant-held stdio closes", async () =
   await writeFile(descendantPid, "");
   await writeFile(
     binary,
-    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'codex-cli 0.167.0'; else exec ${JSON.stringify(process.execPath)} ${JSON.stringify(server)}; fi\n`,
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then echo 'codex-cli 0.169.0'; else exec ${JSON.stringify(process.execPath)} ${JSON.stringify(server)}; fi\n`,
     { mode: 0o700 },
   );
   await writeFile(
@@ -974,7 +974,7 @@ test("handles an app-server spawn error without hanging", async () => {
   const binary = join(root, "codex");
   await writeFile(
     binary,
-    `#!/bin/sh\nif [ "$1" = "--version" ]; then rm "$0"; echo 'codex-cli 0.167.0'; fi\n`,
+    `#!/bin/sh\nif [ "$1" = "--version" ]; then rm "$0"; echo 'codex-cli 0.169.0'; fi\n`,
     { mode: 0o700 },
   );
   let hungTimer;
