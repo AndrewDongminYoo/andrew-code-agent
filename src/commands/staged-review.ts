@@ -45,6 +45,7 @@ export interface StagedReviewInput {
   readonly head: string;
   readonly headRef: string;
   readonly index: string;
+  readonly indexBytes: Buffer;
   readonly patch: string;
   readonly applyPatch: Buffer;
   readonly paths: readonly string[];
@@ -160,6 +161,7 @@ export async function readStagedReviewInput(
     head: staged.head,
     headRef: staged.headRef,
     index: staged.index,
+    indexBytes: staged.indexBytes,
     patch: staged.patch,
     paths: staged.paths,
   };
@@ -287,7 +289,7 @@ export class StagedCheckoutMismatchError extends Error {
 
 export interface StagedCheckoutInput {
   readonly head: string;
-  readonly index: string;
+  readonly indexBytes: Buffer;
   readonly applyPatch: Buffer;
 }
 
@@ -320,6 +322,8 @@ export async function readApplyPatch(repositoryRoot: string): Promise<Buffer> {
 // The index listing (mode, blob, path per entry) is the identity check: patch
 // text varies with user configuration for identical content, the listing does
 // not. An intent-to-add entry is listed but never diffed, so it fails here.
+// The listings are compared as raw bytes: decoded as UTF-8, two paths that
+// differ only in bytes that are not UTF-8 would compare equal.
 export async function createStagedReviewCheckout(
   sourceRepository: string,
   stateRoot: string,
@@ -375,7 +379,7 @@ export async function createStagedReviewCheckout(
         isolated,
       )
     ).trim();
-    const listing = await executeGit(
+    const listing = await executeGitBytes(
       checkout,
       ["ls-files", "--stage", "-z"],
       isolated,
@@ -397,7 +401,7 @@ export async function createStagedReviewCheckout(
     }
     if (
       checkoutHead !== input.head ||
-      listing !== input.index ||
+      !listing.equals(input.indexBytes) ||
       untracked !== "" ||
       !worktreeMatchesIndex
     )

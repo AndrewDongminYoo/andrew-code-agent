@@ -57,6 +57,7 @@ async function sourceIdentity(root) {
   return {
     head: await git(root, "rev-parse", "HEAD"),
     index: await rawGit(root, "ls-files", "--stage", "-z"),
+    indexBytes: (await execFile("git", ["-C", root, "ls-files", "--stage", "-z"], { encoding: "buffer" })).stdout,
     applyPatch: await stagedReviewModule.readApplyPatch(root),
   };
 }
@@ -241,6 +242,25 @@ test("a path name that is not UTF-8 never reaches review renamed", async () => {
       const source = (await execFile("git", ["-C", root, "ls-files", "--stage", "-z"], { encoding: "buffer" })).stdout;
       const copied = (await execFile("git", ["-C", checkout, "ls-files", "--stage", "-z"], { encoding: "buffer" })).stdout;
       assert.ok(source.equals(copied), "the checkout listing must equal the source listing byte for byte");
+    });
+  });
+});
+
+test("a checkout listing that differs from the source only in bytes that are not UTF-8 is a mismatch", async () => {
+  assert.equal(typeof stagedReviewModule?.createStagedReviewCheckout, "function");
+  await withRepository(async (root) => {
+    await writeFile(join(root, "blob.txt"), "latin1 path\n");
+    const blob = await git(root, "hash-object", "-w", "blob.txt");
+    await execFile("sh", ["-c", `printf '100644 ${blob} 0\\tcaf\\351.txt\\n' | git -C "$1" update-index --index-info`, "sh", root]);
+    // Decoding an unquoted patch as UTF-8 renames the path to U+FFFD, which
+    // APFS accepts, so the checkout is built and only the listing can stop it.
+    const renamedPatch = Buffer.from(await rawGit(root, "-c", "core.quotePath=false", "diff", "--cached", "--no-color", "--binary", "--full-index", "--"));
+    assert.ok(renamedPatch.includes(Buffer.from("caf�.txt")), "the fixture patch must carry the renamed path");
+    await withStateRoot(async (stateRoot) => {
+      const identity = { ...(await sourceIdentity(root)), applyPatch: renamedPatch };
+      assert.ok(identity.indexBytes.includes(Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x2e])), "the source listing must carry the raw path byte");
+      await assert.rejects(stagedReviewModule.createStagedReviewCheckout(root, stateRoot, identity), (error) => error instanceof stagedReviewModule.StagedCheckoutMismatchError && error.message === stagedReviewModule.STAGED_MISMATCH_MESSAGE);
+      assert.deepEqual((await readdir(stateRoot)).filter((entry) => entry.startsWith("review-")), []);
     });
   });
 });

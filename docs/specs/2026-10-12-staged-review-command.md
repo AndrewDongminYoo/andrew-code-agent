@@ -175,3 +175,15 @@ Hosted review rounds and the local drain before each push found four more gaps, 
 - **Content that is not UTF-8.** The apply patch was decoded as UTF-8, so a legacy-encoded text file, a binary file without a NUL byte, or a binary file that a diff driver forces to a text diff stopped with the mismatch error.
   `readApplyPatch` now reads the patch as raw bytes through `executeGitBytes` in `src/git/process.ts`, and such a file is reviewed with its exact bytes.
   A path name that is not UTF-8 still stops with exit `3`, because APFS refuses to create it.
+
+## Reconciliation (2026-11-13, listing comparison on raw bytes)
+
+A verification pass found that the index-listing check compared two strings decoded as UTF-8, not the bytes that the "Isolated staged checkout" section requires.
+`git ls-files --stage -z` never quotes a path, and the decoding replaces every byte sequence that is not UTF-8 with U+FFFD, so two listings that differ only in such bytes compared equal.
+A patch that renames `caf\351.txt` to a name that holds U+FFFD builds a checkout that APFS accepts, and the string comparison accepted that checkout.
+`readStagedChanges` in `src/git/staged.ts` now reads the source listing through `executeGitBytes` and returns it as `indexBytes`, and `createStagedReviewCheckout` reads the temporary listing the same way and compares the two with `Buffer.equals`.
+The mismatch error, its message, and exit `3` are unchanged.
+The test `a checkout listing that differs from the source only in bytes that are not UTF-8 is a mismatch` covers it, and it failed before the change.
+
+The change-detection comparisons still use the decoded listing: the two reads in `readStagedChanges`, the final read in `readStagedReviewInput`, `stagedReviewIdentity`, and the `indexDigest` that `commit` compares.
+They detect a concurrent change to the index, not a difference between the source and the checkout, and they are left as they are.
