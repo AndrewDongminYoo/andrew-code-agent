@@ -2,7 +2,7 @@ export const PRODUCT_NAME = "andrew-code-agent";
 export const PRODUCT_VERSION = "0.2.0";
 export const REQUIRED_NODE_VERSION = "24.20.0";
 export const REQUIRED_PNPM_VERSION = "11.22.0";
-export const REQUIRED_CODEX_VERSION = "0.171.0";
+export const REQUIRED_CODEX_VERSION = "0.172.0";
 
 // Digest of the two trees the Codex app-server generator owns, measured from
 // `src/generated/codex-app-server` and `schemas/codex-app-server` at the pinned
@@ -16,7 +16,7 @@ export const REQUIRED_CODEX_VERSION = "0.171.0";
 // bytes on every architecture the product supports, which is untested here
 // because only one architecture was available.
 export const REQUIRED_CODEX_CONTRACT_DIGEST =
-  "b118f033336439e931211dc336d15feb927e91e990a07075db64a310a6d7ce4d";
+  "9ccf89bab04188e50d18d1d3b3465d4435cf451013d2a1f829b5c136cd03fe32";
 
 // The capability names the CLI may request. `src/bundle/render.ts` refuses a
 // manifest declaring any other name, so this list and that refusal move
